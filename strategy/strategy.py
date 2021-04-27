@@ -94,11 +94,11 @@ def ichimoku_cloud(data):
     df['chikou_span'] = close_prices.shift(-26)
 
     return {
-        'tenkan_sen':df['tenkan_sen'].iloc[-1],
-        'kijun_sen':df['kijun_sen'].iloc[-1],
-        'chikou_span':df['chikou_span'].iloc[-27],
-        'senkou_span_a':df['senkou_span_a'].iloc[-1],
-        'senkou_span_b':df['senkou_span_b'].iloc[-1],
+        'tenkan_sen':df['tenkan_sen'].iloc[-1], # 전환선
+        'kijun_sen':df['kijun_sen'].iloc[-1], # 기준선
+        'chikou_span':df['chikou_span'].iloc[-27], # 후행스팬
+        'senkou_span_a':df['senkou_span_a'].iloc[-1], # 선행스팬1
+        'senkou_span_b':df['senkou_span_b'].iloc[-1], # 선행스팬2
     }
 
 
