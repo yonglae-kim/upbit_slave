@@ -31,7 +31,7 @@ for item in result:
 #     print(dict_market_name[item['market']], item['trade_price'])
 
 #get candles
-result = apis.get_candles_day(list_krw_market[0], 200)
+result = apis.get_candles_minutes(list_krw_market[0], 200, 10)
 
 rsi = strategy.strategy.rsi(result)
 print(list_krw_market[0], 'rsi', rsi)

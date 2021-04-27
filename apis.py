@@ -68,9 +68,8 @@ def get_candles(market="KRW-BTC", count=200, candle_type="days", to=None):
     return res.json()
 
 
-def get_candles_minutes(market="KRW-BTC", count=200):
-    return get_candles(market, count, "minutes/1")
-
+def get_candles_minutes(market="KRW-BTC", count=200, interval=10):
+    return get_candles(market, count, "minutes/" + str(interval))
 
 def get_candles_day(market="KRW-BTC", count=200):
     return get_candles(market, count, "days")
