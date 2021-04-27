@@ -10,6 +10,7 @@ dict_market_name = {}
 # for item in result:
 #     print(item)
 
+# init market list.
 result = apis.get_markets()
 list_market = []
 for item in result:
@@ -21,6 +22,12 @@ for item in result:
         list_usdt_market.append(item['market'])
     dict_market_name[item['market']] = item['korean_name']
 
-result = apis.get_ticker(",".join(list_krw_market))
+#get current trade price
+# result = apis.get_ticker(",".join(list_krw_market))
+# for item in result:
+#     print(dict_market_name[item['market']], item['trade_price'])
+
+#get candles
+result = apis.get_candles_day(list_krw_market[0])
 for item in result:
-    print(dict_market_name[item['market']], item['trade_price'])
+    print(item)

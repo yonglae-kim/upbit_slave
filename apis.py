@@ -57,3 +57,28 @@ def get_ticker(markets):
     querystring = {"markets": markets}
     res = requests.get(server_url + "/v1/ticker", params=querystring)
     return res.json()
+
+
+def get_candles(market="KRW-BTC", count=200, candle_type="days", to=None):
+    querystring = {"market": market, "count": str(count)}
+    if to:
+        querystring["to"] = to
+
+    res = requests.get(server_url + "/v1/candles/" + candle_type, params=querystring)
+    return res.json()
+
+
+def get_candles_minutes(market="KRW-BTC", count=200):
+    return get_candles(market, count, "minutes/1")
+
+
+def get_candles_day(market="KRW-BTC", count=200):
+    return get_candles(market, count, "days")
+
+
+def get_candles_week(market="KRW-BTC", count=200):
+    return get_candles(market, count, "weeks")
+
+
+def get_candles_month(market="KRW-BTC", count=200):
+    return get_candles(market, count, "months")
