@@ -34,4 +34,5 @@ for item in result:
 result = apis.get_candles_minutes(list_krw_market[0], 200, 10)
 
 rsi = strategy.strategy.rsi(result)
-print(list_krw_market[0], 'rsi', rsi)
+storsi = strategy.strategy.stoch_rsi(result)
+print(list_krw_market[0], 'rsi', rsi, storsi)
