@@ -1,4 +1,7 @@
 import apis
+import pandas as pd
+
+import strategy.strategy
 
 list_krw_market = []
 list_btc_market = []
@@ -28,6 +31,7 @@ for item in result:
 #     print(dict_market_name[item['market']], item['trade_price'])
 
 #get candles
-result = apis.get_candles_day(list_krw_market[0])
-for item in result:
-    print(item)
+result = apis.get_candles_day(list_krw_market[0], 200)
+
+rsi = strategy.strategy.rsi(result)
+print(list_krw_market[0], 'rsi', rsi)
