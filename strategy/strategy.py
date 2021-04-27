@@ -50,4 +50,18 @@ def stoch_rsi(data, p1=14, k1=3, d1=3):
     stochrsi = (rsi - rsi.rolling(period).min()) / (rsi.rolling(period).max() - rsi.rolling(period).min())
     stochrsi_k = stochrsi.rolling(smoothK).mean()
     stochrsi_d = stochrsi_k.rolling(smoothD).mean()
-    return {'stochrsi': stochrsi.iloc[-1]*100, 'stochrsi_k': stochrsi_k.iloc[-1]*100, 'stochrsi_d': stochrsi_d.iloc[-1]*100, }
+    return {'stochrsi': stochrsi.iloc[-1] * 100, 'stochrsi_k': stochrsi_k.iloc[-1] * 100,
+            'stochrsi_d': stochrsi_d.iloc[-1] * 100, }
+
+
+def bollinger_bands(data, day=20):
+    df = pd.DataFrame(data)
+
+    df = df['trade_price'].iloc[::-1]
+
+    unit = 2
+    band1 = unit * np.std(df[len(df) - day:len(df)])
+    bb_center = np.mean(df[len(df) - day:len(df)])
+    band_high = bb_center + band1
+    band_low = bb_center - band1
+    return {'high': round(band_high, 2), 'low': round(band_low, 2), }

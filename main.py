@@ -35,4 +35,5 @@ result = apis.get_candles_minutes(list_krw_market[0], 200, 10)
 
 rsi = strategy.strategy.rsi(result)
 storsi = strategy.strategy.stoch_rsi(result)
-print(list_krw_market[0], 'rsi', rsi, storsi)
+bolinger = strategy.strategy.bollinger_bands(result)
+print(list_krw_market[0], 'rsi', rsi, storsi, 'bolinger', bolinger)
