@@ -54,6 +54,7 @@ def stoch_rsi(data, p1=14, k1=3, d1=3):
             'stochrsi_d': stochrsi_d.iloc[-1] * 100, }
 
 
+# 볼린저밴드
 def bollinger_bands(data, day=20):
     df = pd.DataFrame(data)
 
@@ -65,3 +66,39 @@ def bollinger_bands(data, day=20):
     band_high = bb_center + band1
     band_low = bb_center - band1
     return {'high': round(band_high, 2), 'low': round(band_low, 2), }
+
+
+# 일목균형표
+def ichimoku_cloud(data):
+    df = pd.DataFrame(data)
+    df = df.iloc[::-1]
+
+    high_prices = df['high_price']
+    close_prices = df['trade_price']
+    low_prices = df['low_price']
+
+    nine_period_high = df['high_price'].rolling(window=9).max()
+    nine_period_low = df['low_price'].rolling(window=9).min()
+    df['tenkan_sen'] = (nine_period_high + nine_period_low) / 2
+
+    period26_high = high_prices.rolling(window=26).max()
+    period26_low = low_prices.rolling(window=26).min()
+    df['kijun_sen'] = (period26_high + period26_low) / 2
+
+    df['senkou_span_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(26)
+
+    period52_high = high_prices.rolling(window=52).max()
+    period52_low = low_prices.rolling(window=52).min()
+    df['senkou_span_b'] = ((period52_high + period52_low) / 2).shift(26)
+
+    df['chikou_span'] = close_prices.shift(-26)
+
+    return {
+        'tenkan_sen':df['tenkan_sen'].iloc[-1],
+        'kijun_sen':df['kijun_sen'].iloc[-1],
+        'chikou_span':df['chikou_span'].iloc[-27],
+        'senkou_span_a':df['senkou_span_a'].iloc[-1],
+        'senkou_span_b':df['senkou_span_b'].iloc[-1],
+    }
+
+
