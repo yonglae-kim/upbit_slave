@@ -2,6 +2,7 @@ import openpyxl
 import pandas as pd
 import datetime
 import os.path
+import strategy.strategy as st
 import apis
 
 # prepare data
@@ -29,6 +30,12 @@ candles_day.drop(candles_day.columns[0], axis=1, inplace=True)
 
 raw_data = list(candles_day.T.to_dict().values())
 
+is_buy = False
+
+fee = 0.0005  # upbit 원화거래 수수료 0.05%
+init_amount = 1000000  # 초기 시드머니
+amount = init_amount
+hold_coin = 0
 for i in range(len(raw_data), buffer_cnt, -1):
     end = i
     start = end - buffer_cnt
@@ -37,3 +44,16 @@ for i in range(len(raw_data), buffer_cnt, -1):
 
     test_data = raw_data[start:end]
 
+    rsi = st.rsi(test_data)
+    if hold_coin == 0 and rsi < 30:
+        print('BUY', test_data[0]['candle_date_time_kst'], "구매가:", test_data[0]['trade_price'], "/// rsi 값", rsi)
+        hold_coin += (amount * (1 - fee)) / test_data[0]['trade_price']
+        amount = 0
+        is_buy = True
+    elif hold_coin > 0 and rsi > 70:
+        amount += hold_coin * test_data[0]['trade_price'] * (1 + fee)
+        hold_coin = 0
+        print('SELL', test_data[0]['candle_date_time_kst'], "판매가:", test_data[0]['trade_price'], "/// rsi 값", rsi)
+
+percent = (((amount + (hold_coin * raw_data[0]['trade_price'])) - init_amount) / init_amount) * 100
+print("수익률 :", str(round(percent, 2)) + '%')
