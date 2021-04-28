@@ -8,10 +8,10 @@ import time
 
 # prepare data
 candles_day = []
-test_market = 'KRW-XRP'
+test_market = 'KRW-BTC'
 path = 'backdata_candle_day.xlsx'
 buffer_cnt = 200
-multiple_cnt = 2
+multiple_cnt = 3
 minutes_candle_type = 10
 
 if not os.path.exists(path):
@@ -68,12 +68,12 @@ for i in range(len(raw_data), buffer_cnt, -1):
 
 
     rsi = st.rsi(test_data)
-    if hold_coin == 0 and check_buy(test_data):
+    if hold_coin == 0 and check_sell(test_data):
         print('BUY', test_data[0]['candle_date_time_kst'], "구매가:", test_data[0]['trade_price'], rsi)
         hold_coin += (amount * (1 - fee)) / test_data[0]['trade_price']
         amount = 0
         is_buy = True
-    elif hold_coin > 0 and check_sell(test_data):
+    elif hold_coin > 0 and check_buy(test_data):
         amount += hold_coin * test_data[0]['trade_price'] * (1 - fee)
         hold_coin = 0
         print('SELL', test_data[0]['candle_date_time_kst'], "판매가:", test_data[0]['trade_price'], rsi)
