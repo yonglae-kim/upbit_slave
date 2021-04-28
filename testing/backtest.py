@@ -4,19 +4,21 @@ import datetime
 import os.path
 import strategy.strategy as st
 import apis
+import time
 
 # prepare data
 candles_day = []
 test_market = 'KRW-BTC'
 path = 'backdata_candle_day.xlsx'
 buffer_cnt = 200
-multiple_cnt = 5
+multiple_cnt = 2
 
 if not os.path.exists(path):
     print("make back data excel file : ", path)
     date_time = datetime.datetime.now()
     for _ in range(multiple_cnt):  # buffer_cnt * multiple_cnt = 1000 days
-        candles_day.extend(apis.get_candles(test_market, count=buffer_cnt, to=date_time.strftime("%Y-%m-%d %H:%M:%S")))
+        candles_day.extend(apis.get_candles(test_market, candle_type="minutes/1", count=buffer_cnt,
+                                            to=date_time.strftime("%Y-%m-%d %H:%M:%S")))
         date_time -= datetime.timedelta(days=buffer_cnt)
 
     # excel 로 저장
@@ -44,16 +46,37 @@ for i in range(len(raw_data), buffer_cnt, -1):
 
     test_data = raw_data[start:end]
 
-    rsi = st.rsi(test_data)
-    if hold_coin == 0 and rsi < 30:
-        print('BUY', test_data[0]['candle_date_time_kst'], "구매가:", test_data[0]['trade_price'], "/// rsi 값", rsi)
+
+    def check_buy(data):
+        ichimoku = st.ichimoku_cloud(data)
+        cur_price = data[0]['trade_price']
+        if abs(ichimoku['senkou_span_a'] - ichimoku['senkou_span_b']) > cur_price * 0.1:
+            return False
+
+        if ichimoku['tenkan_sen'] < ichimoku['senkou_span_a'] or ichimoku['tenkan_sen'] < ichimoku['senkou_span_b']:
+            return False
+
+        return True
+
+    def check_sell(data):
+        ichimoku = st.ichimoku_cloud(data)
+        cur_price = data[0]['trade_price']
+        if cur_price < ichimoku['senkou_span_b']:
+            return True
+        return False
+
+
+    if hold_coin == 0 and check_buy(test_data):
+        print('BUY', test_data[0]['candle_date_time_kst'], "구매가:", test_data[0]['trade_price'])
         hold_coin += (amount * (1 - fee)) / test_data[0]['trade_price']
         amount = 0
         is_buy = True
-    elif hold_coin > 0 and rsi > 70:
-        amount += hold_coin * test_data[0]['trade_price'] * (1 + fee)
+    elif hold_coin > 0 and check_sell(test_data):
+        amount += hold_coin * test_data[0]['trade_price'] * (1 - fee)
         hold_coin = 0
-        print('SELL', test_data[0]['candle_date_time_kst'], "판매가:", test_data[0]['trade_price'], "/// rsi 값", rsi)
+        print('SELL', test_data[0]['candle_date_time_kst'], "판매가:", test_data[0]['trade_price'])
 
 percent = (((amount + (hold_coin * raw_data[0]['trade_price'])) - init_amount) / init_amount) * 100
 print("수익률 :", str(round(percent, 2)) + '%')
+
+

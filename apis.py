@@ -66,7 +66,7 @@ def get_candles(market="KRW-BTC", count=200, candle_type="days", to=None):
         querystring["to"] = to
 
     res = requests.get(server_url + "/v1/candles/" + candle_type, params=querystring)
-    return pd.DataFrame(res.json())
+    return res.json()
 
 
 def get_candles_minutes(market="KRW-BTC", count=200, interval=10):
