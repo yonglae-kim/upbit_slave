@@ -11,15 +11,16 @@ candles_day = []
 test_market = 'KRW-BTC'
 path = 'backdata_candle_day.xlsx'
 buffer_cnt = 200
-multiple_cnt = 2
+multiple_cnt = 10
+minutes_candle_type = 5
 
 if not os.path.exists(path):
     print("make back data excel file : ", path)
     date_time = datetime.datetime.now()
     for _ in range(multiple_cnt):  # buffer_cnt * multiple_cnt = 1000 days
-        candles_day.extend(apis.get_candles(test_market, candle_type="minutes/1", count=buffer_cnt,
+        candles_day.extend(apis.get_candles(test_market, candle_type="minutes/" + str(minutes_candle_type), count=buffer_cnt,
                                             to=date_time.strftime("%Y-%m-%d %H:%M:%S")))
-        date_time -= datetime.timedelta(days=buffer_cnt)
+        date_time -= datetime.timedelta(minutes=buffer_cnt * minutes_candle_type)
 
     # excel 로 저장
     candles_day = pd.DataFrame(candles_day)
@@ -66,15 +67,16 @@ for i in range(len(raw_data), buffer_cnt, -1):
         return False
 
 
-    if hold_coin == 0 and check_buy(test_data):
-        print('BUY', test_data[0]['candle_date_time_kst'], "구매가:", test_data[0]['trade_price'])
+    rsi = st.rsi(test_data)
+    if hold_coin == 0 and check_buy(test_data) and rsi < 35:
+        print('BUY', test_data[0]['candle_date_time_kst'], "구매가:", test_data[0]['trade_price'], rsi)
         hold_coin += (amount * (1 - fee)) / test_data[0]['trade_price']
         amount = 0
         is_buy = True
     elif hold_coin > 0 and check_sell(test_data):
         amount += hold_coin * test_data[0]['trade_price'] * (1 - fee)
         hold_coin = 0
-        print('SELL', test_data[0]['candle_date_time_kst'], "판매가:", test_data[0]['trade_price'])
+        print('SELL', test_data[0]['candle_date_time_kst'], "판매가:", test_data[0]['trade_price'], rsi)
 
 percent = (((amount + (hold_coin * raw_data[0]['trade_price'])) - init_amount) / init_amount) * 100
 print("수익률 :", str(round(percent, 2)) + '%')
