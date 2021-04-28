@@ -129,3 +129,4 @@ dmypy.json
 .pyre/
 
 slave_constants.py
+/testing/backdata_candle_day.xlsx

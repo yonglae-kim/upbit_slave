@@ -2,6 +2,7 @@ import jwt
 import uuid
 import hashlib
 import slave_constants
+import pandas as pd
 from urllib.parse import urlencode
 
 import requests
@@ -65,11 +66,12 @@ def get_candles(market="KRW-BTC", count=200, candle_type="days", to=None):
         querystring["to"] = to
 
     res = requests.get(server_url + "/v1/candles/" + candle_type, params=querystring)
-    return res.json()
+    return pd.DataFrame(res.json())
 
 
 def get_candles_minutes(market="KRW-BTC", count=200, interval=10):
     return get_candles(market, count, "minutes/" + str(interval))
+
 
 def get_candles_day(market="KRW-BTC", count=200):
     return get_candles(market, count, "days")
