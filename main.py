@@ -27,10 +27,10 @@ for item in result:
     dict_market_name[item['market']] = item['korean_name']
 
 
-def check_buy(data):
+def check_sell(data):
     ichimoku = st.ichimoku_cloud(data)
     cur_price = data[0]['trade_price']
-    if abs(ichimoku['senkou_span_a'] - ichimoku['senkou_span_b']) > cur_price * 0.1:
+    if abs(ichimoku['senkou_span_a'] - ichimoku['senkou_span_b']) > cur_price * 0.05:
         return False
 
     if ichimoku['tenkan_sen'] < ichimoku['senkou_span_a'] or ichimoku['tenkan_sen'] < ichimoku['senkou_span_b']:
@@ -39,7 +39,7 @@ def check_buy(data):
     return True
 
 
-def check_sell(data):
+def check_buy(data):
     ichimoku = st.ichimoku_cloud(data)
     cur_price = data[0]['trade_price']
     if cur_price < ichimoku['senkou_span_b']:
@@ -70,8 +70,9 @@ while 1:
             apis.ask_market("KRW-" + account['currency'], float(account['balance']))
             print("SELL", "KRW-" + account['currency'], account['balance'] + account['currency'],
                   data[0]['trade_price'])
+            time.sleep(10)
 
-    if avail_krw > 20000 and len(has_coin) < 6:
+    if avail_krw > 20000 and len(has_coin) < 3:
         tickers = apis.get_ticker(', '.join(list_krw_market))
         tickers.sort(key=lambda x: float(x['trade_volume']), reverse=True)
         for ticker in tickers[:15]:
@@ -83,5 +84,6 @@ while 1:
                 apis.bid_price(ticker['market'], avail_krw / 5)
                 print("BUY", ticker['market'], str(avail_krw // 5) + "원", data[0]['trade_price'])
                 avail_krw -= avail_krw // 5
+                time.sleep(10)
 
-    time.sleep(60)
+    time.sleep(300)
