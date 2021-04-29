@@ -1,6 +1,7 @@
 import apis
 import slave_constants
 import time
+import datetime
 import strategy.strategy as st
 
 list_krw_market = []
@@ -27,24 +28,28 @@ for item in result:
     dict_market_name[item['market']] = item['korean_name']
 
 
-def check_sell(data):
-    ichimoku = st.ichimoku_cloud(data)
-    cur_price = data[0]['trade_price']
-    if abs(ichimoku['senkou_span_a'] - ichimoku['senkou_span_b']) > cur_price * 0.05:
-        return False
+def check_sell(data, avg_buy_price):
+    macd = st.macd(data)
 
-    if ichimoku['tenkan_sen'] < ichimoku['senkou_span_a'] or ichimoku['tenkan_sen'] < ichimoku['senkou_span_b']:
+    if avg_buy_price * 1.01 > float(data[0]['trade_price']):
         return False
+    if macd['MACDDiff'].iloc[-2] > 0 > macd['MACDDiff'].iloc[-1]:
+        return True
 
-    return True
+    return False
 
 
 def check_buy(data):
-    ichimoku = st.ichimoku_cloud(data)
-    cur_price = data[0]['trade_price']
-    if cur_price < ichimoku['senkou_span_b']:
-        return True
-    return False
+    rsi = st.rsi(data)
+    macd = st.macd(data)
+
+    if rsi > 30:
+        return False
+    if macd['MACDSignal'].iloc[-3] < macd['MACDSignal'].iloc[-2] or macd['MACDSignal'].iloc[-2] > \
+            macd['MACDSignal'].iloc[-1]:
+        return False
+
+    return True
 
 
 while 1:
@@ -64,26 +69,30 @@ while 1:
         my_coins.append(item)
         has_coin.append("KRW-" + item['currency'])
 
+    print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), '보유코인 :', has_coin)
     for account in my_coins:
-        data = apis.get_candles_minutes("KRW-" + account['currency'], interval=10)
-        if check_sell(data):
+        data = apis.get_candles_minutes("KRW-" + account['currency'], interval=3)
+
+        if check_sell(data, float(account['avg_buy_price']))  or float(data[0]['trade_price']) < float(account['avg_buy_price']) * 0.97:
             apis.ask_market("KRW-" + account['currency'], float(account['balance']))
             print("SELL", "KRW-" + account['currency'], account['balance'] + account['currency'],
                   data[0]['trade_price'])
             time.sleep(10)
 
-    if avail_krw > 20000 and len(has_coin) < 3:
+    if avail_krw > 20000 and len(has_coin) < 4:
         tickers = apis.get_ticker(', '.join(list_krw_market))
         tickers.sort(key=lambda x: float(x['trade_volume']), reverse=True)
-        for ticker in tickers[:15]:
+        time.sleep(5)
+        for ticker in tickers:
             if ticker['market'] in has_coin:
                 print(ticker['market'], "has already ")
                 continue
-            data = apis.get_candles_minutes(ticker['market'], interval=10)
+            data = apis.get_candles_minutes(ticker['market'], interval=3)
             if check_buy(data):
                 apis.bid_price(ticker['market'], avail_krw / 5)
                 print("BUY", ticker['market'], str(avail_krw // 5) + "원", data[0]['trade_price'])
                 avail_krw -= avail_krw // 5
-                time.sleep(10)
+                break
+            time.sleep(5)
 
-    time.sleep(300)
+    time.sleep(30)

@@ -94,11 +94,21 @@ def ichimoku_cloud(data):
     df['chikou_span'] = close_prices.shift(-26)
 
     return {
-        'tenkan_sen':df['tenkan_sen'].iloc[-1], # 전환선
-        'kijun_sen':df['kijun_sen'].iloc[-1], # 기준선
-        'chikou_span':df['chikou_span'].iloc[-27], # 후행스팬
-        'senkou_span_a':df['senkou_span_a'].iloc[-1], # 선행스팬1
-        'senkou_span_b':df['senkou_span_b'].iloc[-1], # 선행스팬2
+        'tenkan_sen': df['tenkan_sen'].iloc[-1],  # 전환선
+        'kijun_sen': df['kijun_sen'].iloc[-1],  # 기준선
+        'chikou_span': df['chikou_span'].iloc[-27],  # 후행스팬
+        'senkou_span_a': df['senkou_span_a'].iloc[-1],  # 선행스팬1
+        'senkou_span_b': df['senkou_span_b'].iloc[-1],  # 선행스팬2
     }
 
 
+def macd(data, n_fast=12, n_slow=26, n_signal=9):
+    df = pd.DataFrame(data)
+    df = df.reindex(index=df.index[::-1]).reset_index()
+
+    df["EMAFast"] = df["trade_price"].ewm(span=n_fast).mean()
+    df["EMASlow"] = df["trade_price"].ewm(span=n_slow).mean()
+    df["MACD"] = df["EMAFast"] - df["EMASlow"]
+    df["MACDSignal"] = df["MACD"].ewm(span=n_signal).mean()
+    df["MACDDiff"] = df["MACD"] - df["MACDSignal"]
+    return df
