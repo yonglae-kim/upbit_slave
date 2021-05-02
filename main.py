@@ -33,7 +33,7 @@ def check_sell(data, avg_buy_price):
 
     if avg_buy_price * 1.01 > float(data[0]['trade_price']):
         return False
-    if macd['MACDDiff'].iloc[-2] > 0 > macd['MACDDiff'].iloc[-1]:
+    if macd['MACDDiff'].iloc[-3] > macd['MACDDiff'].iloc[-1]:
         return True
 
     return False
@@ -43,7 +43,7 @@ def check_buy(data):
     rsi = st.rsi(data)
     macd = st.macd(data)
 
-    if rsi > 30:
+    if rsi > 35:
         return False
     if macd['MACDSignal'].iloc[-3] < macd['MACDSignal'].iloc[-2] or macd['MACDSignal'].iloc[-2] > \
             macd['MACDSignal'].iloc[-1]:
@@ -71,9 +71,9 @@ while 1:
 
     print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), '보유코인 :', has_coin)
     for account in my_coins:
-        data = apis.get_candles_minutes("KRW-" + account['currency'], interval=3)
+        data = apis.get_candles_minutes("KRW-" + account['currency'], interval=5)
 
-        if check_sell(data, float(account['avg_buy_price']))  or float(data[0]['trade_price']) < float(account['avg_buy_price']) * 0.97:
+        if check_sell(data, float(account['avg_buy_price']))  or float(data[0]['trade_price']) < float(account['avg_buy_price']) * 0.975:
             apis.ask_market("KRW-" + account['currency'], float(account['balance']))
             print("SELL", "KRW-" + account['currency'], account['balance'] + account['currency'],
                   data[0]['trade_price'])
@@ -89,10 +89,10 @@ while 1:
                 continue
             data = apis.get_candles_minutes(ticker['market'], interval=3)
             if check_buy(data):
-                apis.bid_price(ticker['market'], avail_krw / 5)
+                apis.bid_price(ticker['market'], avail_krw / 2)
                 print("BUY", ticker['market'], str(avail_krw // 5) + "원", data[0]['trade_price'])
                 avail_krw -= avail_krw // 5
                 break
-            time.sleep(5)
+            time.sleep(1)
 
     time.sleep(30)
