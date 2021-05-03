@@ -1,13 +1,17 @@
+import sys
+
 import apis
 import slave_constants
 import time
 import datetime
 import strategy.strategy as st
+import message.tele as tele
 
 list_krw_market = []
 list_btc_market = []
 list_usdt_market = []
 dict_market_name = {}
+
 
 # init market list.
 result = apis.get_markets()
@@ -79,6 +83,8 @@ while 1:
                 apis.ask_market("KRW-" + account['currency'], float(account['balance']))
                 print("SELL", "KRW-" + account['currency'], account['balance'] + account['currency'],
                       data[0]['trade_price'])
+                tele.sendMessage("SELL " + "KRW-" + account['currency'] + " " + data[0]['trade_price'] + " "
+                                 + str((float(data[0]['trade_price']) - float(account['avg_buy_price']))/float(account['avg_buy_price'])) + "%")
                 time.sleep(5)
 
         if avail_krw > 20000 and len(has_coin) < 4:
@@ -93,6 +99,7 @@ while 1:
                 if check_buy(data):
                     apis.bid_price(ticker['market'], avail_krw / 2)
                     print("BUY", ticker['market'], str(avail_krw // 5) + "원", data[0]['trade_price'])
+                    tele.sendMessage("BUY " + ticker['market'] + " " + data[0]['trade_price'])
                     avail_krw -= avail_krw // 5
                     break
                 time.sleep(1)

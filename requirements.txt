@@ -9,3 +9,6 @@ pytz==2021.1
 requests==2.25.1
 six==1.15.0
 urllib3==1.26.4
+
+openpyxl~=3.0.7
+python-telegram-bot~=13.5
