@@ -1,17 +1,17 @@
+import datetime
+import os
 import sys
+import time
 
 import apis
-import slave_constants
-import time
-import datetime
-import strategy.strategy as st
 import message.tele as tele
+import slave_constants
+import strategy.strategy as st
 
 list_krw_market = []
 list_btc_market = []
 list_usdt_market = []
 dict_market_name = {}
-
 
 # init market list.
 result = apis.get_markets()
@@ -56,6 +56,7 @@ def check_buy(data):
         return False
     return True
 
+
 while 1:
     try:
         accounts = apis.get_accounts()
@@ -83,8 +84,9 @@ while 1:
                 apis.ask_market("KRW-" + account['currency'], float(account['balance']))
                 print("SELL", "KRW-" + account['currency'], account['balance'] + account['currency'],
                       data[0]['trade_price'])
-                tele.sendMessage("SELL " + "KRW-" + account['currency'] + " " + data[0]['trade_price'] + " "
-                                 + str((float(data[0]['trade_price']) - float(account['avg_buy_price']))/float(account['avg_buy_price'])) + "%")
+                tele.sendMessage("SELL " + "KRW-" + account['currency'] + " " + str(data[0]['trade_price']) + " "
+                                 + str((float(data[0]['trade_price']) - float(account['avg_buy_price'])) / float(
+                    account['avg_buy_price'])) + "%")
                 time.sleep(5)
 
         if avail_krw > 20000 and len(has_coin) < 4:
@@ -99,14 +101,15 @@ while 1:
                 if check_buy(data):
                     apis.bid_price(ticker['market'], avail_krw / 2)
                     print("BUY", ticker['market'], str(avail_krw // 5) + "원", data[0]['trade_price'])
-                    tele.sendMessage("BUY " + ticker['market'] + " " + data[0]['trade_price'])
+                    tele.sendMessage("BUY " + ticker['market'] + " " + str(data[0]['trade_price']))
                     avail_krw -= avail_krw // 5
                     break
                 time.sleep(1)
-
-        time.sleep(30)
     except KeyboardInterrupt:
         sys.exit()
-    except:
-        print("...")
-
+    except Exception as e:
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+        print(exc_type, fname, exc_tb.tb_lineno, e)
+    finally:
+        time.sleep(30)
