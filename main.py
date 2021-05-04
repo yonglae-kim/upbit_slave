@@ -49,10 +49,10 @@ def check_buy(data):
 
     if rsi > 35:
         return False
-    if macd['MACDSignal'].iloc[-3] < macd['MACDSignal'].iloc[-2] or macd['MACDSignal'].iloc[-2] > \
-            macd['MACDSignal'].iloc[-1]:
+    if macd['MACD'].iloc[-3] < macd['MACD'].iloc[-2] or macd['MACD'].iloc[-2] > \
+            macd['MACD'].iloc[-1]:
         return False
-    if macd['MACDSignal'].iloc[-1] > 0:
+    if macd['MACD'].iloc[-1] > 0:
         return False
     return True
 
@@ -77,7 +77,7 @@ while 1:
 
         print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), '보유코인 :', has_coin)
         for account in my_coins:
-            data = apis.get_candles_minutes("KRW-" + account['currency'], interval=5)
+            data = apis.get_candles_minutes("KRW-" + account['currency'], interval=3)
 
             if check_sell(data, float(account['avg_buy_price'])) or float(data[0]['trade_price']) < float(
                     account['avg_buy_price']) * 0.975:
@@ -85,8 +85,8 @@ while 1:
                 print("SELL", "KRW-" + account['currency'], account['balance'] + account['currency'],
                       data[0]['trade_price'])
                 tele.sendMessage("SELL " + "KRW-" + account['currency'] + " " + str(data[0]['trade_price']) + " "
-                                 + str((float(data[0]['trade_price']) - float(account['avg_buy_price'])) / float(
-                    account['avg_buy_price'])) + "%")
+                                 + str(((float(data[0]['trade_price']) - float(account['avg_buy_price'])) / float(
+                    account['avg_buy_price'])) * 100) + "%")
                 time.sleep(5)
 
         if avail_krw > 20000 and len(has_coin) < 4:
