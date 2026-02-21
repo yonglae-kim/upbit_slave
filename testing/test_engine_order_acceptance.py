@@ -68,6 +68,39 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
         self.assertEqual(order.filled_qty, 0.0)
         self.assertEqual(order.uuid, "order-uuid-1")
 
+
+    def test_preflight_blocks_buy_when_notional_below_exchange_minimum(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], min_order_krw=5000)
+        engine = TradingEngine(broker, notifier, config)
+
+        result = engine._preflight_order(
+            market="KRW-BTC",
+            side="bid",
+            requested_value=4999.9,
+            reference_price=100000.0,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PREFLIGHT_MIN_NOTIONAL")
+
+    def test_preflight_blocks_sell_when_recomputed_notional_is_invalid(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], min_order_krw=5000)
+        engine = TradingEngine(broker, notifier, config)
+
+        result = engine._preflight_order(
+            market="KRW-BTC",
+            side="ask",
+            requested_value=0.000000001,
+            reference_price=100000.0,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PREFLIGHT_MIN_NOTIONAL")
+
     @patch("core.engine.check_buy", return_value=True)
     def test_risk_gate_blocks_buy_on_loss_streak(self, _mock_check_buy):
         broker = BuyOnlyBroker()
