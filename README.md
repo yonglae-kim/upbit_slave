@@ -29,17 +29,6 @@
 python main.py
 ```
 
-## 보안 취약점 점검
-GitHub Actions CI에 `pip-audit` 점검 단계를 추가했습니다.
-- 워크플로우: `.github/workflows/security-audit.yml`
-- 점검 내용: `requirements.txt` 기준 알려진 파이썬 패키지 취약점 검사
-
-로컬에서도 동일하게 점검할 수 있습니다.
-```bash
-pip install pip-audit
-pip-audit -r requirements.txt --strict
-```
-
 ## 운영 보안 체크리스트
 토큰/비밀값이 코드 또는 Git 히스토리에 노출된 경우 아래 절차를 따르세요.
 
