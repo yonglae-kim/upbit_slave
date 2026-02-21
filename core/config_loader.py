@@ -27,6 +27,10 @@ _ENV_KEY_MAP = {
     "sell_profit_threshold": "TRADING_SELL_PROFIT_THRESHOLD",
     "stop_loss_threshold": "TRADING_STOP_LOSS_THRESHOLD",
     "krw_markets": "TRADING_KRW_MARKETS",
+    "universe_top_n1": "TRADING_UNIVERSE_TOP_N1",
+    "universe_watch_n2": "TRADING_UNIVERSE_WATCH_N2",
+    "max_relative_spread": "TRADING_MAX_RELATIVE_SPREAD",
+    "max_candle_missing_rate": "TRADING_MAX_CANDLE_MISSING_RATE",
 }
 
 
@@ -66,9 +70,11 @@ def _parse_env_value(key: str, value: str):
         "macd_n_signal",
         "min_candle_extra",
         "buy_rsi_threshold",
+        "universe_top_n1",
+        "universe_watch_n2",
     }:
         return int(value)
-    if key in {"fee_rate", "sell_profit_threshold", "stop_loss_threshold"}:
+    if key in {"fee_rate", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate"}:
         return float(value)
     return value
 
@@ -101,6 +107,10 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "sell_profit_threshold": (int, float),
         "stop_loss_threshold": (int, float),
         "krw_markets": list,
+        "universe_top_n1": int,
+        "universe_watch_n2": int,
+        "max_relative_spread": (int, float),
+        "max_candle_missing_rate": (int, float),
     }
 
     for key, expected in required_types.items():
@@ -122,6 +132,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "macd_n_fast",
         "macd_n_slow",
         "macd_n_signal",
+        "universe_top_n1",
+        "universe_watch_n2",
     ]
     for key in positive_keys:
         if config[key] <= 0:
@@ -137,6 +149,10 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("stop_loss_threshold must be in (0, 1)")
     if config["macd_n_fast"] >= config["macd_n_slow"]:
         raise ConfigValidationError("macd_n_fast must be smaller than macd_n_slow")
+    if config["max_relative_spread"] < 0:
+        raise ConfigValidationError("max_relative_spread must be >= 0")
+    if not 0 <= config["max_candle_missing_rate"] <= 1:
+        raise ConfigValidationError("max_candle_missing_rate must be in [0, 1]")
 
 
 def load_trading_config() -> TradingConfig:

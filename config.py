@@ -16,4 +16,8 @@ TRADING_CONFIG = {
     "sell_profit_threshold": 1.01,
     "stop_loss_threshold": 0.975,
     "krw_markets": [],
+    "universe_top_n1": 30,
+    "universe_watch_n2": 10,
+    "max_relative_spread": 0.003,
+    "max_candle_missing_rate": 0.1,
 }
