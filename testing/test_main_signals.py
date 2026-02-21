@@ -10,6 +10,7 @@ from core.strategy import (
     detect_sr_pivots,
     filter_active_zones,
     pick_best_zone,
+    score_sr_levels,
 )
 
 
@@ -67,6 +68,18 @@ class MainSignalValidationTest(unittest.TestCase):
         c5 = [make_candle(100 + (i % 5), spread=2.0, bull=(i % 2 == 0)) for i in range(160)]
         c1 = [make_candle(100 + (i % 3), spread=1.3, bull=(i % 2 == 0)) for i in range(140)]
         self.assertFalse(check_sell(self._tf(c1, c5, c15), avg_buy_price=300.0, params=self.params))
+
+
+    def test_sr_scoring_reflects_touch_recency_volume(self):
+        sr_levels = [
+            {"bias": "support", "lower": 99.0, "upper": 100.0, "mid": 99.5, "touches": 2, "last_index": 40, "turnover": 1000.0},
+            {"bias": "support", "lower": 98.0, "upper": 99.0, "mid": 98.5, "touches": 4, "last_index": 90, "turnover": 3000.0},
+        ]
+
+        scored = score_sr_levels(sr_levels, total_bars=120, params=self.params)
+
+        self.assertGreater(scored[0]["score"], scored[1]["score"])
+        self.assertEqual(scored[0]["mid"], 98.5)
 
     def test_sr_pivot_and_zone_detectors_execute(self):
         c15 = [make_candle(100 + (i % 7) - 3, spread=2.0) for i in range(150)]
