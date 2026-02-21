@@ -16,8 +16,8 @@ class UpbitBroker:
     def get_candles(self, market, interval, count=200):
         return apis.get_candles_minutes(market, count=count, interval=interval)
 
-    def buy_market(self, market, price):
-        return apis.bid_price(market, price)
+    def buy_market(self, market, price, identifier=None):
+        return apis.bid_price(market, price, identifier=identifier)
 
-    def sell_market(self, market, volume):
-        return apis.ask_market(market, volume)
+    def sell_market(self, market, volume, identifier=None):
+        return apis.ask_market(market, volume, identifier=identifier)

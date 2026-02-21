@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from core.config import TradingConfig
 from core.interfaces import Broker
-from infra.upbit_ws_client import UpbitWebSocketClient
-from message.notifier import Notifier
+from core.order_state import OrderRecord
 from core.portfolio import normalize_accounts
 from core.strategy import check_buy, check_sell, preprocess_candles
+from infra.upbit_ws_client import UpbitWebSocketClient
+from message.notifier import Notifier
 
 
 class TradingEngine:
@@ -20,6 +23,8 @@ class TradingEngine:
         self.notifier = notifier
         self.config = config
         self.ws_client = ws_client
+        self._order_sequence = 0
+        self.orders_by_identifier: dict[str, OrderRecord] = {}
 
     def start(self) -> None:
         if not self.ws_client:
@@ -63,10 +68,13 @@ class TradingEngine:
             current_price = float(data[0]["trade_price"])
 
             if check_sell(data, avg_buy_price, strategy_params) or current_price < avg_buy_price * strategy_params.stop_loss_threshold:
-                self.broker.sell_market(market, account["balance"])
-                print("SELL", market, str(account["balance"]) + account["currency"], current_price)
+                requested_volume = float(account["balance"])
+                identifier = self._next_order_identifier(market, "ask")
+                response = self.broker.sell_market(market, requested_volume, identifier=identifier)
+                self._record_accepted_order(response, identifier, market, "ask", requested_volume)
+                print("SELL_ACCEPTED", market, str(account["balance"]) + account["currency"], current_price)
                 delta = ((current_price - avg_buy_price) / avg_buy_price) * 100
-                self.notifier.send(f"SELL {market} {current_price} {delta}%")
+                self.notifier.send(f"SELL_ACCEPTED {market} {current_price} {delta}%")
 
         self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
 
@@ -97,7 +105,32 @@ class TradingEngine:
             if available_krw - order_krw < self.config.min_order_krw:
                 continue
 
-            self.broker.buy_market(market, order_krw)
-            print("BUY", market, str(int(order_krw)) + "원", data[0]["trade_price"])
-            self.notifier.send(f"BUY {market} {data[0]['trade_price']}")
+            identifier = self._next_order_identifier(market, "bid")
+            response = self.broker.buy_market(market, order_krw, identifier=identifier)
+            self._record_accepted_order(response, identifier, market, "bid", order_krw)
+            print("BUY_ACCEPTED", market, str(int(order_krw)) + "원", data[0]["trade_price"])
+            self.notifier.send(f"BUY_ACCEPTED {market} {data[0]['trade_price']}")
             break
+
+    def _next_order_identifier(self, market: str, side: str) -> str:
+        self._order_sequence += 1
+        timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+        return f"{market}:{side}:{timestamp}:{self._order_sequence}"
+
+    def _record_accepted_order(
+        self,
+        response,
+        identifier: str,
+        market: str,
+        side: str,
+        requested_qty: float,
+    ) -> None:
+        response_data = response if isinstance(response, dict) else {}
+        order_uuid = response_data.get("uuid")
+        self.orders_by_identifier[identifier] = OrderRecord.accepted(
+            uuid=order_uuid,
+            identifier=identifier,
+            market=market,
+            side=side,
+            requested_qty=requested_qty,
+        )

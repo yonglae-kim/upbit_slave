@@ -65,7 +65,7 @@ class PaperBroker:
         _ = interval
         return self.candles_by_market.get(market, [])[:count]
 
-    def buy_market(self, market: str, price: float):
+    def buy_market(self, market: str, price: float, identifier: str | None = None):
         order_krw = min(float(price), self.krw_balance)
         if order_krw <= 0:
             return {"status": "rejected", "reason": "insufficient_krw"}
@@ -82,9 +82,9 @@ class PaperBroker:
             total_volume = current.volume + filled_volume
             self.positions[market] = Position(volume=total_volume, avg_buy_price=total_cost / total_volume)
 
-        return {"status": "filled", "market": market, "price": fill_price, "volume": filled_volume}
+        return {"status": "filled", "market": market, "price": fill_price, "volume": filled_volume, "identifier": identifier}
 
-    def sell_market(self, market: str, volume: float):
+    def sell_market(self, market: str, volume: float, identifier: str | None = None):
         position = self.positions.get(market)
         if position is None:
             return {"status": "rejected", "reason": "no_position"}
@@ -103,4 +103,4 @@ class PaperBroker:
         else:
             self.positions[market] = Position(volume=remaining_volume, avg_buy_price=position.avg_buy_price)
 
-        return {"status": "filled", "market": market, "price": fill_price, "volume": sell_volume}
+        return {"status": "filled", "market": market, "price": fill_price, "volume": sell_volume, "identifier": identifier}
