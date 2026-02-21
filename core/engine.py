@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from core.candle_buffer import CandleBuffer
 from core.config import TradingConfig
 from core.interfaces import Broker
 from core.order_state import OrderRecord, OrderStatus
-from core.reconciliation import apply_my_asset_event, apply_my_order_event
 from core.portfolio import normalize_accounts
+from core.reconciliation import apply_my_asset_event, apply_my_order_event
 from core.strategy import check_buy, check_sell, preprocess_candles
+from core.universe import UniverseBuilder, filter_by_missing_rate
 from infra.upbit_ws_client import UpbitWebSocketClient
 from message.notifier import Notifier
 
@@ -28,6 +30,8 @@ class TradingEngine:
         self.orders_by_identifier: dict[str, OrderRecord] = {}
         self.portfolio_snapshot: dict[str, dict[str, float]] = {}
         self.order_timeout_seconds = 120
+        self.universe = UniverseBuilder(config)
+        self.candle_buffer = CandleBuffer(maxlen_by_interval={1: 300, 5: 300, 15: 300, config.candle_interval: 300})
 
         if self.ws_client:
             self.ws_client.on_message = self._route_ws_message
@@ -50,12 +54,7 @@ class TradingEngine:
             return
 
         markets = self.broker.get_markets()
-        self.config.krw_markets = [
-            item["market"]
-            for item in markets
-            if item["market"].startswith("KRW-")
-            and not any(excluded in item["market"] for excluded in self.config.do_not_trading)
-        ]
+        self.config.krw_markets = self.universe.collect_krw_markets(markets)
 
     def run_once(self) -> None:
         self.initialize_markets()
@@ -69,7 +68,14 @@ class TradingEngine:
         for account in portfolio.my_coins:
             market = "KRW-" + account["currency"]
             data = preprocess_candles(
-                self.broker.get_candles(market, interval=self.config.candle_interval),
+                self.candle_buffer.get_candles(
+                    market,
+                    self.config.candle_interval,
+                    lambda selected_market, selected_interval: self.broker.get_candles(
+                        selected_market,
+                        interval=selected_interval,
+                    ),
+                ),
                 source_order="newest",
             )
             avg_buy_price = float(account["avg_buy_price"])
@@ -93,17 +99,30 @@ class TradingEngine:
             return
 
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
-        tickers.sort(key=lambda x: float(x["trade_volume"]), reverse=True)
+        watch_markets = self.universe.select_watch_markets(tickers)
 
-        for ticker in tickers:
-            market = ticker["market"]
+        candles_by_market = {
+            market: self.candle_buffer.get_candles(
+                market,
+                self.config.candle_interval,
+                lambda selected_market, selected_interval: self.broker.get_candles(
+                    selected_market,
+                    interval=selected_interval,
+                ),
+            )
+            for market in watch_markets
+        }
+        watch_markets = filter_by_missing_rate(
+            watch_markets,
+            candles_by_market,
+            max_missing_rate=self.config.max_candle_missing_rate,
+        )
+
+        for market in watch_markets:
             if market in held_markets:
                 continue
 
-            data = preprocess_candles(
-                self.broker.get_candles(market, interval=self.config.candle_interval),
-                source_order="newest",
-            )
+            data = preprocess_candles(candles_by_market[market], source_order="newest")
             if not check_buy(data, strategy_params):
                 continue
 

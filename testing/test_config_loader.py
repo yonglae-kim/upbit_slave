@@ -28,7 +28,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'buy_rsi_threshold': 35,\n"
                 "    'sell_profit_threshold': 1.01,\n"
                 "    'stop_loss_threshold': 0.975,\n"
-                "    'krw_markets': []\n"
+                "    'krw_markets': [],\n    'universe_top_n1': 30,\n    'universe_watch_n2': 10,\n    'max_relative_spread': 0.003,\n    'max_candle_missing_rate': 0.1\n"
                 "}\n",
                 encoding="utf-8",
             )
