@@ -6,9 +6,9 @@ pandas>=1.5.3,<2.2
 PyJWT>=2.9.0,<3.0
 python-dateutil==2.8.1
 pytz==2021.1
-requests>=2.32.3,<3.0
+requests>=2.31.0,<2.32
 six==1.15.0
-urllib3>=2.2.2,<3.0
+urllib3>=1.26.18,<2.0
 
 openpyxl~=3.0.7
 websocket-client>=1.8.0,<2.0
