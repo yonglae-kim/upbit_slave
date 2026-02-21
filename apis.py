@@ -274,3 +274,20 @@ def bid_price(market="KRW-BTC", price=100.0, identifier=None):
 # 시장가 매도
 def ask_market(market="KRW-BTC", volumn=1.0, identifier=None):
     return orders(market, "ask", volumn, 0, "market", identifier=identifier)
+
+
+def get_open_orders(market=None, states=("wait", "watch")):
+    query = {}
+    if market:
+        query["market"] = market
+    if states:
+        query["states[]"] = list(states)
+
+    query_string = build_query_string(query) if query else None
+    return _request(
+        "GET",
+        "/v1/orders/open",
+        params=query or None,
+        headers=_auth_headers(query_string),
+        group=API_GROUP_ORDER,
+    )

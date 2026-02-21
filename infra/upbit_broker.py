@@ -21,3 +21,7 @@ class UpbitBroker:
 
     def sell_market(self, market, volume, identifier=None):
         return apis.ask_market(market, volume, identifier=identifier)
+
+
+    def get_open_orders(self, market=None, states=("wait", "watch")):
+        return apis.get_open_orders(market=market, states=states)
