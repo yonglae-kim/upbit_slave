@@ -18,6 +18,15 @@ _ENV_KEY_MAP = {
     "max_holdings": "TRADING_MAX_HOLDINGS",
     "buy_divisor": "TRADING_BUY_DIVISOR",
     "min_buyable_krw": "TRADING_MIN_BUYABLE_KRW",
+    "risk_per_trade_pct": "TRADING_RISK_PER_TRADE_PCT",
+    "max_daily_loss_pct": "TRADING_MAX_DAILY_LOSS_PCT",
+    "max_consecutive_losses": "TRADING_MAX_CONSECUTIVE_LOSSES",
+    "max_concurrent_positions": "TRADING_MAX_CONCURRENT_POSITIONS",
+    "max_correlated_positions": "TRADING_MAX_CORRELATED_POSITIONS",
+    "trailing_stop_pct": "TRADING_TRAILING_STOP_PCT",
+    "partial_take_profit_threshold": "TRADING_PARTIAL_TAKE_PROFIT_THRESHOLD",
+    "partial_take_profit_ratio": "TRADING_PARTIAL_TAKE_PROFIT_RATIO",
+    "partial_stop_loss_ratio": "TRADING_PARTIAL_STOP_LOSS_RATIO",
     "candle_interval": "TRADING_CANDLE_INTERVAL",
     "macd_n_fast": "TRADING_MACD_N_FAST",
     "macd_n_slow": "TRADING_MACD_N_SLOW",
@@ -85,6 +94,8 @@ def _parse_env_value(key: str, value: str):
         "max_holdings",
         "buy_divisor",
         "min_buyable_krw",
+        "max_concurrent_positions",
+        "max_correlated_positions",
         "candle_interval",
         "macd_n_fast",
         "macd_n_slow",
@@ -109,7 +120,7 @@ def _parse_env_value(key: str, value: str):
         "min_candles_15m",
     }:
         return int(value)
-    if key in {"fee_rate", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio"}:
+    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio"}:
         return float(value)
     return value
 
@@ -133,6 +144,16 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "max_holdings": int,
         "buy_divisor": int,
         "min_buyable_krw": int,
+        "correlation_groups": dict,
+        "risk_per_trade_pct": (int, float),
+        "max_daily_loss_pct": (int, float),
+        "max_consecutive_losses": int,
+        "max_concurrent_positions": int,
+        "max_correlated_positions": int,
+        "trailing_stop_pct": (int, float),
+        "partial_take_profit_threshold": (int, float),
+        "partial_take_profit_ratio": (int, float),
+        "partial_stop_loss_ratio": (int, float),
         "candle_interval": int,
         "macd_n_fast": int,
         "macd_n_slow": int,
@@ -184,6 +205,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "max_holdings",
         "buy_divisor",
         "min_buyable_krw",
+        "max_concurrent_positions",
+        "max_correlated_positions",
         "candle_interval",
         "macd_n_fast",
         "macd_n_slow",
@@ -211,6 +234,25 @@ def _validate_schema(config: dict[str, Any]) -> None:
 
     if not 0 <= config["fee_rate"] < 1:
         raise ConfigValidationError("fee_rate must be in [0, 1)")
+    if not 0 < config["risk_per_trade_pct"] <= 1:
+        raise ConfigValidationError("risk_per_trade_pct must be in (0, 1]")
+    if not 0 <= config["max_daily_loss_pct"] <= 1:
+        raise ConfigValidationError("max_daily_loss_pct must be in [0, 1]")
+    if config["max_consecutive_losses"] < 0:
+        raise ConfigValidationError("max_consecutive_losses must be >= 0")
+    if not 0 <= config["trailing_stop_pct"] <= 1:
+        raise ConfigValidationError("trailing_stop_pct must be in [0, 1]")
+    if config["partial_take_profit_threshold"] <= 1:
+        raise ConfigValidationError("partial_take_profit_threshold must be > 1")
+    if not 0 <= config["partial_take_profit_ratio"] <= 1:
+        raise ConfigValidationError("partial_take_profit_ratio must be in [0, 1]")
+    if not 0 <= config["partial_stop_loss_ratio"] <= 1:
+        raise ConfigValidationError("partial_stop_loss_ratio must be in [0, 1]")
+    if config.get("correlation_groups") is None:
+        config["correlation_groups"] = {}
+    if not isinstance(config.get("correlation_groups"), dict):
+        raise ConfigValidationError("correlation_groups must be a dict")
+
     if not 0 <= config["buy_rsi_threshold"] <= 100:
         raise ConfigValidationError("buy_rsi_threshold must be in [0, 100]")
     if config["sell_profit_threshold"] <= 0:

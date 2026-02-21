@@ -61,11 +61,23 @@
   - 근거: `TradingEngine._preflight_order`
 
 ## 4단계: 리스크·집행
-- [ ] 트레이드당 리스크(%) 기반 포지션 사이징
-- [ ] 일손실/연속손실 서킷브레이커
-- [ ] 동시 포지션 및 상관 노출 제한
-- [ ] 부분익절/손절/트레일링 정책 구현
-- [ ] 주문 실패/부분체결 재시도 규칙 구현
+### 4-1. 진입 리스크 산정
+- [x] 트레이드당 리스크(%) 기반 수량/주문금액 계산기 연결 (`RiskManager.compute_risk_sized_order_krw` + `TradingEngine._try_buy`)
+
+### 4-2. 손실 기반 서킷브레이커
+- [x] 일손실 한도 도달 시 신규 진입 차단 (`RiskManager._daily_loss_limit_breached`)
+- [x] 연속손실 한도 도달 시 신규 진입 차단 (`RiskManager.allow_entry`)
+
+### 4-3. 포지션/상관 노출 한도
+- [x] 동시 포지션 수 제한을 설정값으로 분리 (`max_concurrent_positions`)
+- [x] 유사 코인군(상관 그룹) 노출 한도를 설정값으로 분리 (`correlation_groups`, `max_correlated_positions`)
+
+### 4-4. 청산 주문 정책 상태 머신
+- [x] 부분익절/손절/트레일링을 단일 상태 머신으로 통합 (`PositionOrderPolicy.evaluate`)
+- [x] 엔진 청산 경로와 주문 정책 연결 (`TradingEngine._should_exit_position`)
+
+### 4-5. 주문 집행 복원력
+- [x] 주문 실패/부분체결 재시도 규칙 구현 (`TradingEngine._on_order_timeout`)
 
 ## 5단계: 백테스트/검증
 - [ ] 캔들 최대 200개 제한 고려한 백필러 점검

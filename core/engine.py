@@ -8,6 +8,7 @@ from core.candle_buffer import CandleBuffer
 from core.config import TradingConfig
 from core.interfaces import Broker
 from core.order_state import OrderRecord, OrderStatus
+from core.position_policy import PositionExitState, PositionOrderPolicy
 from core.portfolio import normalize_accounts
 from core.reconciliation import apply_my_asset_event, apply_my_order_event
 from core.risk import RiskManager
@@ -39,7 +40,6 @@ class TradingEngine:
         self.timeout_retry_cooldown_seconds = max(0.0, float(config.timeout_retry_cooldown_seconds))
         self.partial_fill_timeout_scale = max(0.1, float(config.partial_fill_timeout_scale))
         self.partial_fill_reduce_ratio = min(1.0, max(0.1, float(config.partial_fill_reduce_ratio)))
-        self.trailing_stop_pct = max(0.0, float(config.trailing_stop_pct))
         self.universe = UniverseBuilder(config)
         self.candle_buffer = CandleBuffer(maxlen_by_interval={1: 300, 5: 300, 15: 300, config.candle_interval: 300})
         self.last_universe_selection_result = None
@@ -48,9 +48,18 @@ class TradingEngine:
             max_daily_loss_pct=config.max_daily_loss_pct,
             max_consecutive_losses=config.max_consecutive_losses,
             max_concurrent_positions=config.max_concurrent_positions,
+            max_correlated_positions=config.max_correlated_positions,
+            correlation_groups=config.correlation_groups,
             min_order_krw=config.min_order_krw,
         )
-        self._high_watermarks: dict[str, float] = {}
+        self.order_policy = PositionOrderPolicy(
+            stop_loss_threshold=config.stop_loss_threshold,
+            trailing_stop_pct=config.trailing_stop_pct,
+            partial_take_profit_threshold=config.partial_take_profit_threshold,
+            partial_take_profit_ratio=config.partial_take_profit_ratio,
+            partial_stop_loss_ratio=config.partial_stop_loss_ratio,
+        )
+        self._position_exit_states: dict[str, PositionExitState] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
 
         if self.ws_client:
@@ -96,8 +105,12 @@ class TradingEngine:
                 continue
             current_price = float(data["1m"][0]["trade_price"])
 
-            if self._should_exit_position(market, data, avg_buy_price, current_price, strategy_params):
-                requested_volume = float(account["balance"])
+            decision = self._should_exit_position(market, data, avg_buy_price, current_price, strategy_params)
+            if decision.should_exit:
+                held_volume = float(account["balance"])
+                requested_volume = held_volume * decision.qty_ratio
+                if requested_volume <= 0:
+                    continue
                 preflight = self._preflight_order(
                     market=market,
                     side="ask",
@@ -113,8 +126,9 @@ class TradingEngine:
                 print("SELL_ACCEPTED", market, str(account["balance"]) + account["currency"], current_price)
                 delta = ((current_price - avg_buy_price) / avg_buy_price) * 100
                 self.risk.record_trade_result((current_price - avg_buy_price) * requested_volume)
-                self._high_watermarks.pop(market, None)
-                self.notifier.send(f"SELL_ACCEPTED {market} {current_price} {delta}%")
+                if decision.qty_ratio >= 1.0:
+                    self._position_exit_states.pop(market, None)
+                self.notifier.send(f"SELL_ACCEPTED {market} {current_price} {delta}% reason={decision.reason}")
 
         self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
 
@@ -144,20 +158,30 @@ class TradingEngine:
             if not check_buy(data, strategy_params):
                 continue
 
-            risk_decision = self.risk.allow_entry(available_krw=available_krw, held_markets=held_markets)
+            risk_decision = self.risk.allow_entry(
+                available_krw=available_krw,
+                held_markets=held_markets,
+                candidate_market=market,
+            )
             if not risk_decision.allowed:
                 continue
 
+            reference_price = float(data["1m"][0]["trade_price"])
+            stop_price = reference_price * self.config.stop_loss_threshold
+            risk_sized_order_krw = self.risk.compute_risk_sized_order_krw(
+                available_krw=available_krw,
+                entry_price=reference_price,
+                stop_price=stop_price,
+            )
             order_krw = min(
                 (available_krw / self.config.buy_divisor) * (1 - self.config.fee_rate),
-                risk_decision.order_krw,
+                risk_sized_order_krw,
             )
             if order_krw < self.config.min_order_krw:
                 continue
             if available_krw - order_krw < self.config.min_order_krw:
                 continue
 
-            reference_price = float(data["1m"][0]["trade_price"])
             preflight = self._preflight_order(
                 market=market,
                 side="bid",
@@ -171,6 +195,7 @@ class TradingEngine:
             identifier = self._next_order_identifier(market, "bid")
             response = self.broker.buy_market(market, preflight["order_value"], identifier=identifier)
             self._record_accepted_order(response, identifier, market, "bid", preflight["order_value"])
+            self._position_exit_states[market] = PositionExitState(peak_price=reference_price)
             print("BUY_ACCEPTED", market, str(int(preflight["order_value"])) + "원", data["1m"][0]["trade_price"])
             self.notifier.send(f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']}")
             break
@@ -516,19 +541,15 @@ class TradingEngine:
         print("ORDER_PREFLIGHT_BLOCKED", code, market, side, requested, rounded_price, notional)
         self.notifier.send(f"ORDER_PREFLIGHT_BLOCKED {code} {market} {side} req={requested} notional={notional}")
 
-    def _should_exit_position(self, market: str, data: dict[str, list[dict]], avg_buy_price: float, current_price: float, strategy_params) -> bool:
-        trailing_stop = self._trailing_stop_triggered(market, current_price)
-        take_profit_or_signal = check_sell(data, avg_buy_price, strategy_params)
-        hard_stop = current_price < avg_buy_price * strategy_params.stop_loss_threshold
-        return trailing_stop or take_profit_or_signal or hard_stop
-
-    def _trailing_stop_triggered(self, market: str, current_price: float) -> bool:
-        peak = self._high_watermarks.get(market, current_price)
-        peak = max(peak, current_price)
-        self._high_watermarks[market] = peak
-        if self.trailing_stop_pct <= 0:
-            return False
-        return current_price <= peak * (1 - self.trailing_stop_pct)
+    def _should_exit_position(self, market: str, data: dict[str, list[dict]], avg_buy_price: float, current_price: float, strategy_params):
+        state = self._position_exit_states.setdefault(market, PositionExitState(peak_price=current_price))
+        signal_exit = check_sell(data, avg_buy_price, strategy_params)
+        return self.order_policy.evaluate(
+            state=state,
+            avg_buy_price=avg_buy_price,
+            current_price=current_price,
+            signal_exit=signal_exit,
+        )
 
     def bootstrap_open_orders(self) -> None:
         if not hasattr(self.broker, "get_open_orders"):
