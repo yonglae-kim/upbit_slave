@@ -7,7 +7,6 @@ from core.config import TradingConfig
 from core.config_loader import load_trading_config
 from core.engine import TradingEngine
 from infra.paper_broker import PaperBroker
-from infra.upbit_broker import UpbitBroker
 from infra.upbit_ws_client import UpbitWebSocketClient
 from message.notifier import Notifier
 
@@ -20,6 +19,9 @@ class NoopNotifier(Notifier):
 def create_broker(config: TradingConfig):
     if config.mode in {"paper", "dry_run"}:
         return PaperBroker(initial_krw=config.paper_initial_krw, fee_rate=config.fee_rate)
+
+    from infra.upbit_broker import UpbitBroker
+
     return UpbitBroker()
 
 
