@@ -16,14 +16,6 @@
    pip install -r requirements.txt
    ```
 
-## 환경 변수 설정
-애플리케이션 실행 전에 아래 환경 변수를 반드시 설정해야 합니다.
-
-- `TELEGRAM_BOT_TOKEN`: 텔레그램 봇 토큰
-- `TELEGRAM_CHAT_ID`: 메시지를 전송할 텔레그램 채팅 ID
-
-예시는 `.env.example` 파일을 참고하세요.
-
 ## 실행 방법
 ```bash
 python main.py
