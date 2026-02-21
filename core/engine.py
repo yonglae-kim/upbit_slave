@@ -4,7 +4,7 @@ from typing import Any, Protocol
 
 from core.config import TradingConfig
 from core.portfolio import normalize_accounts
-from core.strategy import should_buy, should_sell
+from core.strategy import check_buy, check_sell, preprocess_candles
 
 
 class TradeExecutor(Protocol):
@@ -52,6 +52,7 @@ class TradingEngine:
 
     def run_once(self) -> None:
         self.initialize_markets()
+        strategy_params = self.config.to_strategy_params()
 
         accounts = self.executor.get_accounts()
         portfolio = normalize_accounts(accounts, self.config.do_not_trading)
@@ -59,19 +60,22 @@ class TradingEngine:
 
         for account in portfolio.my_coins:
             market = "KRW-" + account["currency"]
-            data = self.executor.get_candles_minutes(market, interval=self.config.candle_interval)
+            data = preprocess_candles(
+                self.executor.get_candles_minutes(market, interval=self.config.candle_interval),
+                source_order="newest",
+            )
             avg_buy_price = float(account["avg_buy_price"])
             current_price = float(data[0]["trade_price"])
 
-            if should_sell(data, avg_buy_price, self.config) or current_price < avg_buy_price * self.config.stop_loss_threshold:
+            if check_sell(data, avg_buy_price, strategy_params) or current_price < avg_buy_price * strategy_params.stop_loss_threshold:
                 self.executor.ask_market(market, account["balance"])
                 print("SELL", market, str(account["balance"]) + account["currency"], current_price)
                 delta = ((current_price - avg_buy_price) / avg_buy_price) * 100
                 self.notifier.send(f"SELL {market} {current_price} {delta}%")
 
-        self._try_buy(portfolio.available_krw, portfolio.held_markets)
+        self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
 
-    def _try_buy(self, available_krw: float, held_markets: list[str]) -> None:
+    def _try_buy(self, available_krw: float, held_markets: list[str], strategy_params) -> None:
         if available_krw <= self.config.min_buyable_krw:
             return
         if len(held_markets) >= self.config.max_holdings:
@@ -85,8 +89,11 @@ class TradingEngine:
             if market in held_markets:
                 continue
 
-            data = self.executor.get_candles_minutes(market, interval=self.config.candle_interval)
-            if not should_buy(data, self.config):
+            data = preprocess_candles(
+                self.executor.get_candles_minutes(market, interval=self.config.candle_interval),
+                source_order="newest",
+            )
+            if not check_buy(data, strategy_params):
                 continue
 
             order_krw = (available_krw / self.config.buy_divisor) * (1 - self.config.fee_rate)

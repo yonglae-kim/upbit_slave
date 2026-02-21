@@ -18,3 +18,16 @@ class TradingConfig:
     sell_profit_threshold: float = 1.01
     stop_loss_threshold: float = 0.975
     krw_markets: list[str] = field(default_factory=list)
+
+    def to_strategy_params(self):
+        from core.strategy import StrategyParams
+
+        return StrategyParams(
+            buy_rsi_threshold=self.buy_rsi_threshold,
+            macd_n_fast=self.macd_n_fast,
+            macd_n_slow=self.macd_n_slow,
+            macd_n_signal=self.macd_n_signal,
+            min_candle_extra=self.min_candle_extra,
+            sell_profit_threshold=self.sell_profit_threshold,
+            stop_loss_threshold=self.stop_loss_threshold,
+        )
