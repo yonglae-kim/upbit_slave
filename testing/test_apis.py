@@ -8,8 +8,14 @@ from unittest.mock import patch
 
 
 class DummyResponse:
+    def __init__(self, status_code=200, body=None, headers=None, text=""):
+        self.status_code = status_code
+        self._body = {"ok": True} if body is None else body
+        self.headers = headers or {}
+        self.text = text
+
     def json(self):
-        return {"ok": True}
+        return self._body
 
 
 class ApiJwtNonceTest(unittest.TestCase):
@@ -17,7 +23,8 @@ class ApiJwtNonceTest(unittest.TestCase):
     def setUpClass(cls):
         sys.modules["jwt"] = types.SimpleNamespace(encode=lambda payload, secret: "")
         sys.modules["pandas"] = types.SimpleNamespace()
-        sys.modules["requests"] = types.SimpleNamespace(get=None, post=None)
+        fake_session = types.SimpleNamespace(request=lambda **kwargs: None)
+        sys.modules["requests"] = types.SimpleNamespace(Session=lambda: fake_session)
         fake_constants = types.SimpleNamespace(
             ACCESS_KEY="test-access-key",
             SECRET_KEY="test-secret-key",
@@ -30,25 +37,25 @@ class ApiJwtNonceTest(unittest.TestCase):
     def _fake_encode(payload, _secret):
         return f"jwt-{payload['nonce']}"
 
-    @patch("apis.requests.get", return_value=DummyResponse())
+    @patch("apis._session.request", return_value=DummyResponse())
     @patch("apis.jwt.encode", side_effect=_fake_encode)
-    def test_get_accounts_generates_new_jwt_every_call(self, _mock_encode, mock_get):
+    def test_get_accounts_generates_new_jwt_every_call(self, _mock_encode, mock_request):
         self.apis.get_accounts()
         self.apis.get_accounts()
 
-        first_header = mock_get.call_args_list[0].kwargs["headers"]["Authorization"]
-        second_header = mock_get.call_args_list[1].kwargs["headers"]["Authorization"]
+        first_header = mock_request.call_args_list[0].kwargs["headers"]["Authorization"]
+        second_header = mock_request.call_args_list[1].kwargs["headers"]["Authorization"]
 
         self.assertNotEqual(first_header, second_header)
 
-    @patch("apis.requests.post", return_value=DummyResponse())
+    @patch("apis._session.request", return_value=DummyResponse())
     @patch("apis.jwt.encode", side_effect=_fake_encode)
-    def test_orders_generates_new_jwt_every_call(self, _mock_encode, mock_post):
+    def test_orders_generates_new_jwt_every_call(self, _mock_encode, mock_request):
         self.apis.orders(market="KRW-BTC", side="bid", volume=0.1, price=1000, ord_type="limit")
         self.apis.orders(market="KRW-BTC", side="bid", volume=0.1, price=1000, ord_type="limit")
 
-        first_header = mock_post.call_args_list[0].kwargs["headers"]["Authorization"]
-        second_header = mock_post.call_args_list[1].kwargs["headers"]["Authorization"]
+        first_header = mock_request.call_args_list[0].kwargs["headers"]["Authorization"]
+        second_header = mock_request.call_args_list[1].kwargs["headers"]["Authorization"]
 
         self.assertNotEqual(first_header, second_header)
 
@@ -85,9 +92,9 @@ class ApiJwtNonceTest(unittest.TestCase):
         )
         self.assertEqual(payload["query_hash_alg"], "SHA512")
 
-    @patch("apis.requests.post", return_value=DummyResponse())
+    @patch("apis._session.request", return_value=DummyResponse())
     @patch("apis.jwt.encode", side_effect=_fake_encode)
-    def test_orders_hash_input_uses_build_query_string(self, mock_encode, _mock_post):
+    def test_orders_hash_input_uses_build_query_string(self, mock_encode, _mock_request):
         self.apis.orders(market="KRW-BTC", side="bid", volume=0.1, price=1000, ord_type="limit")
 
         payload_arg = mock_encode.call_args.args[0]
@@ -95,6 +102,30 @@ class ApiJwtNonceTest(unittest.TestCase):
         expected_hash = hashlib.sha512(expected_query.encode()).hexdigest()
 
         self.assertEqual(payload_arg["query_hash"], expected_hash)
+
+    @patch("apis._session.request", return_value=DummyResponse(headers={"Remaining-Req": "group=market; min=59; sec=9"}))
+    def test_request_parses_remaining_req_header(self, _mock_request):
+        self.apis.get_markets()
+
+        self.assertEqual(
+            self.apis.get_last_remaining_req(),
+            {"group": "market", "min": 59, "sec": 9},
+        )
+
+    @patch("apis._session.request", return_value=DummyResponse(status_code=429, body={"error": "too_many"}))
+    def test_request_returns_rate_limit_signal(self, _mock_request):
+        response = self.apis.get_markets()
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["status_code"], 429)
+        self.assertEqual(response["error_type"], "rate_limit")
+
+    @patch("apis._session.request", return_value=DummyResponse(status_code=500, body={"error": "oops"}))
+    def test_request_raises_api_request_error_for_non_2xx(self, _mock_request):
+        with self.assertRaises(self.apis.ApiRequestError) as context:
+            self.apis.get_markets()
+
+        self.assertEqual(context.exception.status_code, 500)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,80 @@ access_key = slave_constants.ACCESS_KEY
 secret_key = slave_constants.SECRET_KEY
 server_url = slave_constants.SERVER_URL
 
+CONNECT_TIMEOUT = 3.05
+READ_TIMEOUT = 10
+TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
+_session = requests.Session()
+_last_remaining_req = None
+
+
+class ApiRequestError(Exception):
+    def __init__(self, status_code, payload, remaining_req=None):
+        super().__init__(f"Upbit API request failed with status {status_code}")
+        self.status_code = status_code
+        self.payload = payload
+        self.remaining_req = remaining_req
+
+
+def parse_remaining_req(remaining_req_header):
+    if not remaining_req_header:
+        return None
+
+    parsed = {}
+    for token in remaining_req_header.split(';'):
+        key, _sep, value = token.strip().partition('=')
+        if not key or not value:
+            continue
+        parsed[key] = int(value) if value.isdigit() else value
+    return parsed or None
+
+
+def get_last_remaining_req():
+    return _last_remaining_req
+
+
+def _build_rate_limit_signal(status_code, payload, remaining_req, retry_after=None):
+    signal = {
+        "ok": False,
+        "error_type": "rate_limit",
+        "status_code": status_code,
+        "error": payload,
+        "remaining_req": remaining_req,
+        "retry_after": retry_after,
+        "should_stop_loop": status_code == 418,
+    }
+    return signal
+
+
+def _request(method, path, *, params=None, headers=None, timeout=TIMEOUT):
+    global _last_remaining_req
+
+    response = _session.request(
+        method=method,
+        url=server_url + path,
+        params=params,
+        headers=headers,
+        timeout=timeout,
+    )
+
+    remaining_req = parse_remaining_req(response.headers.get("Remaining-Req"))
+    _last_remaining_req = remaining_req
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"message": response.text}
+
+    if response.status_code in (429, 418):
+        retry_after_header = response.headers.get("Retry-After")
+        retry_after = int(retry_after_header) if retry_after_header and retry_after_header.isdigit() else None
+        return _build_rate_limit_signal(response.status_code, payload, remaining_req, retry_after)
+
+    if not 200 <= response.status_code < 300:
+        raise ApiRequestError(response.status_code, payload, remaining_req)
+
+    return payload
+
 
 def build_query_string(params):
     """
@@ -49,20 +123,17 @@ def get_accounts():
     authorize_token = 'Bearer {}'.format(jwt_token)
     headers = {"Authorization": authorize_token}
 
-    res = requests.get(server_url + "/v1/accounts", headers=headers)
-    return res.json()
+    return _request("GET", "/v1/accounts", headers=headers)
 
 
 def get_markets():
     querystring = {"isDetails": "false"}
-    res = requests.get(server_url + "/v1/market/all", params=querystring)
-    return res.json()
+    return _request("GET", "/v1/market/all", params=querystring)
 
 
 def get_ticker(markets):
     querystring = {"markets": markets}
-    res = requests.get(server_url + "/v1/ticker", params=querystring)
-    return res.json()
+    return _request("GET", "/v1/ticker", params=querystring)
 
 
 def get_candles(market="KRW-BTC", count=200, candle_type="days", to=None):
@@ -70,8 +141,7 @@ def get_candles(market="KRW-BTC", count=200, candle_type="days", to=None):
     if to:
         querystring["to"] = to
 
-    res = requests.get(server_url + "/v1/candles/" + candle_type, params=querystring)
-    return res.json()
+    return _request("GET", "/v1/candles/" + candle_type, params=querystring)
 
 
 def get_candles_minutes(market="KRW-BTC", count=200, interval=10):
@@ -109,8 +179,7 @@ def orders(market="KRW-BTC", side="bid", volume=0.01, price=100.0, ord_type="lim
     authorize_token = 'Bearer {}'.format(jwt_token)
     headers = {"Authorization": authorize_token}
 
-    res = requests.post(server_url + "/v1/orders", params=query, headers=headers)
-    return res.json()
+    return _request("POST", "/v1/orders", params=query, headers=headers)
 
 
 # 시장가 매수
