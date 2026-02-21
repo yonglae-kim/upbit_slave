@@ -103,6 +103,25 @@ class ApiJwtNonceTest(unittest.TestCase):
 
         self.assertEqual(payload_arg["query_hash"], expected_hash)
 
+
+    @patch("apis._session.request", return_value=DummyResponse())
+    @patch("apis.jwt.encode", side_effect=_fake_encode)
+    def test_orders_include_identifier_in_query_hash(self, mock_encode, _mock_request):
+        self.apis.orders(
+            market="KRW-BTC",
+            side="bid",
+            volume=0.1,
+            price=1000,
+            ord_type="limit",
+            identifier="engine-1",
+        )
+
+        payload_arg = mock_encode.call_args.args[0]
+        expected_query = "market=KRW-BTC&side=bid&ord_type=limit&volume=0.1&price=1000&identifier=engine-1"
+        expected_hash = hashlib.sha512(expected_query.encode()).hexdigest()
+
+        self.assertEqual(payload_arg["query_hash"], expected_hash)
+
     @patch("apis._session.request", return_value=DummyResponse(headers={"Remaining-Req": "group=market; min=59; sec=9"}))
     def test_request_parses_remaining_req_header(self, _mock_request):
         self.apis.get_markets()

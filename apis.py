@@ -239,7 +239,7 @@ def get_candles_month(market="KRW-BTC", count=200):
     return get_candles(market, count, "months")
 
 
-def orders(market="KRW-BTC", side="bid", volume=0.01, price=100.0, ord_type="limit"):
+def orders(market="KRW-BTC", side="bid", volume=0.01, price=100.0, ord_type="limit", identifier=None):
     query = {
         'market': market,
         'side': side,
@@ -251,6 +251,9 @@ def orders(market="KRW-BTC", side="bid", volume=0.01, price=100.0, ord_type="lim
 
     if price > 0:
         query['price'] = str(price)
+
+    if identifier:
+        query['identifier'] = str(identifier)
 
     query_string = build_query_string(query)
 
@@ -264,10 +267,10 @@ def orders(market="KRW-BTC", side="bid", volume=0.01, price=100.0, ord_type="lim
 
 
 # 시장가 매수
-def bid_price(market="KRW-BTC", price=100.0):
-    return orders(market, "bid", 0, price, "price")
+def bid_price(market="KRW-BTC", price=100.0, identifier=None):
+    return orders(market, "bid", 0, price, "price", identifier=identifier)
 
 
 # 시장가 매도
-def ask_market(market="KRW-BTC", volumn=1.0):
-    return orders(market, "ask", volumn, 0, "market")
+def ask_market(market="KRW-BTC", volumn=1.0, identifier=None):
+    return orders(market, "ask", volumn, 0, "market", identifier=identifier)
