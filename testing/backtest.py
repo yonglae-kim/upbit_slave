@@ -1,10 +1,11 @@
-import openpyxl
-import pandas as pd
 import datetime
 import os.path
-import strategy.strategy as st
+
+import openpyxl  # noqa: F401
+import pandas as pd
+
 import apis
-import time
+from core.strategy import StrategyParams, check_buy, check_sell, preprocess_candles
 
 # prepare data
 candles_day = []
@@ -13,6 +14,13 @@ path = 'backdata_candle_day.xlsx'
 buffer_cnt = 200
 multiple_cnt = 3
 minutes_candle_type = 3
+strategy_params = StrategyParams(
+    buy_rsi_threshold=30,
+    macd_n_fast=12,
+    macd_n_slow=26,
+    macd_n_signal=9,
+    sell_profit_threshold=1.0,
+)
 
 if not os.path.exists(path):
     print("make back data excel file : ", path)
@@ -32,9 +40,7 @@ candles_day = pd.read_excel(path, sheet_name='Sheet1')
 #  remove unnamed index column
 candles_day.drop(candles_day.columns[0], axis=1, inplace=True)
 
-raw_data = list(candles_day.T.to_dict().values())
-
-is_buy = False
+raw_data = preprocess_candles(list(candles_day.T.to_dict().values()), source_order="newest")
 
 fee = 0.0005  # upbit 원화거래 수수료 0.05%
 init_amount = 1000000  # 초기 시드머니
@@ -42,44 +48,19 @@ amount = init_amount
 hold_coin = 0
 for i in range(len(raw_data), buffer_cnt, -1):
     end = i
-    start = end - buffer_cnt
-    if start < 0:
-        start = 0
+    start = max(end - buffer_cnt, 0)
 
     test_data = raw_data[start:end]
+    current_price = test_data[0]['trade_price']
 
-
-    def check_buy(data):
-        rsi = st.rsi(data)
-        macd = st.macd(data)
-
-        if rsi > 30:
-            return False
-        if macd['MACDSignal'].iloc[-3] < macd['MACDSignal'].iloc[-2] or macd['MACDSignal'].iloc[-2] > macd['MACDSignal'].iloc[-1]:
-            return False
-
-        return True
-
-
-    def check_sell(data):
-        macd = st.macd(data)
-
-        if macd['MACDDiff'].iloc[-2] > 0 > macd['MACDDiff'].iloc[-1]:
-            return True
-
-        return False
-
-
-    rsi = st.rsi(test_data)
-    if hold_coin == 0 and check_buy(test_data):
-        print('BUY', test_data[0]['candle_date_time_kst'], "구매가:", test_data[0]['trade_price'], rsi)
-        hold_coin += (amount * (1 - fee)) / test_data[0]['trade_price']
+    if hold_coin == 0 and check_buy(test_data, strategy_params):
+        print('BUY', test_data[0]['candle_date_time_kst'], "구매가:", current_price)
+        hold_coin += (amount * (1 - fee)) / current_price
         amount = 0
-        is_buy = True
-    elif hold_coin > 0 and check_sell(test_data):
-        amount += hold_coin * test_data[0]['trade_price'] * (1 - fee)
+    elif hold_coin > 0 and check_sell(test_data, avg_buy_price=current_price, params=strategy_params):
+        amount += hold_coin * current_price * (1 - fee)
         hold_coin = 0
-        print('SELL', test_data[0]['candle_date_time_kst'], "판매가:", test_data[0]['trade_price'], rsi)
+        print('SELL', test_data[0]['candle_date_time_kst'], "판매가:", current_price)
 
 percent = (((amount + (hold_coin * raw_data[0]['trade_price'])) - init_amount) / init_amount) * 100
 print("수익률 :", str(round(percent, 2)) + '%')
