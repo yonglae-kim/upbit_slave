@@ -57,23 +57,58 @@ def check_buy(data):
     return True
 
 
+def to_safe_float(value):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def handle_krw_account(item):
+    balance = to_safe_float(item.get("balance", 0))
+    locked = to_safe_float(item.get("locked", 0))
+    tradable_balance = balance + locked
+
+    if tradable_balance <= 0:
+        return None
+
+    return balance
+
+
+def handle_coin_account(item, my_coins, has_coin):
+    balance = to_safe_float(item.get("balance", 0))
+    locked = to_safe_float(item.get("locked", 0))
+    tradable_balance = balance + locked
+
+    if tradable_balance <= 0:
+        return
+    if item['currency'] in slave_constants.DO_NOT_TRADING:
+        return
+
+    item['balance'] = balance
+    item['locked'] = locked
+    item['tradable_balance'] = tradable_balance
+    my_coins.append(item)
+    has_coin.append("KRW-" + item['currency'])
+
+
 while 1:
     try:
         accounts = apis.get_accounts()
         my_coins = []
         has_coin = []
+        avail_krw = 0.0
         for item in accounts:
             if item['unit_currency'] != 'KRW':
                 continue
-            if item['balance'] == 0:
-                continue
-            if item['currency'] in slave_constants.DO_NOT_TRADING:
-                continue
+
             if item['currency'] == "KRW":
-                avail_krw = float(item['balance'])
+                account_krw = handle_krw_account(item)
+                if account_krw is not None:
+                    avail_krw = account_krw
                 continue
-            my_coins.append(item)
-            has_coin.append("KRW-" + item['currency'])
+
+            handle_coin_account(item, my_coins, has_coin)
 
         print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), '보유코인 :', has_coin)
         for account in my_coins:
@@ -81,8 +116,8 @@ while 1:
 
             if check_sell(data, float(account['avg_buy_price'])) or float(data[0]['trade_price']) < float(
                     account['avg_buy_price']) * 0.975:
-                apis.ask_market("KRW-" + account['currency'], float(account['balance']))
-                print("SELL", "KRW-" + account['currency'], account['balance'] + account['currency'],
+                apis.ask_market("KRW-" + account['currency'], account['balance'])
+                print("SELL", "KRW-" + account['currency'], str(account['balance']) + account['currency'],
                       data[0]['trade_price'])
                 tele.sendMessage("SELL " + "KRW-" + account['currency'] + " " + str(data[0]['trade_price']) + " "
                                  + str(((float(data[0]['trade_price']) - float(account['avg_buy_price'])) / float(
