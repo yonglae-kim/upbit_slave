@@ -87,21 +87,27 @@
 
 ## 이번 사이클 결과 (현황/갭/우선순위)
 ### A. JWT/nonce/Remaining-Req
-- **현황**: `apis.py`에 인증 헤더 생성 공통화(`_auth_headers`), nonce 생성기(`NonceGenerator`), `Remaining-Req` 파싱/보관이 구현됨.
-- **갭**: 프로세스 간 공유 nonce 저장소는 아직 없음(현재는 프로세스/시간/카운터 조합으로 충돌 위험 완화).
-- **우선순위**: 높음(실거래 안전성 직결) — 현재 수준으로 운영 가능, 멀티프로세스 운영 시 외부 저장소 검토.
+- **현황**: `apis.py`에 인증 헤더 생성 공통화(`_auth_headers`), 프로세스/시간/카운터 기반 nonce 생성기(`NonceGenerator`), `Remaining-Req` 파싱(`parse_remaining_req`), 그룹별 초당 제한(`GroupThrottle`), 429/418 지수 백오프+`Retry-After` 반영 재시도가 구현됨.
+- **갭**: nonce는 단일 프로세스 내 충돌 방지 중심이며, 다중 프로세스 간 전역 단조 증가 보장 저장소는 없음.
+- **우선순위**: 중간 — 현재 단일 프로세스 운영 전제에서는 즉시 리스크가 낮고, 멀티프로세스 전환 시 보강 필요.
 
 ### B. WebSocket 연결 수명
-- **현황**: `infra/upbit_ws_client.py`에 연결/주기 ping/idle timeout(120초)/재연결/재구독 로직이 구현됨.
-- **갭**: `myOrder`/`myAsset` 등 개인 채널 인증 구독 및 장애 상황별 세부 메트릭 노출은 추가 필요.
-- **우선순위**: 높음 — 기본 생존성은 확보됐고 개인 채널 확장과 운영 관측성 보강이 다음 과제.
+- **현황**: `infra/upbit_ws_client.py`에 주기 ping, 120초 idle timeout 감지 후 소켓 종료, 연결 루프 기반 재연결, 저장된 구독 payload 복원(`_restore_subscriptions`)이 구현됨. 기본 포맷은 `SIMPLE`이며 구독 시 포맷 오버라이드가 가능해 `SIMPLE_LIST` 적용 점검 경로도 확보됨.
+- **갭**: 장애/재연결 카운트 및 ping 실패율 같은 운영 메트릭은 아직 코드 내 표준화되어 있지 않음.
+- **우선순위**: 중간 — 생존성 핵심은 충족, 운영 관측성 보강이 다음 과제.
 
 ### C. 주문 상태(`myOrder`) 중심 재정렬
-- **현황**: 현재 주문은 REST 응답을 즉시 체결처럼 취급하는 구조(`core/engine.py`에서 주문 후 상태 동기화 없음).
-- **갭**: 접수/부분체결/완전체결 상태 머신, identifier 정책, `myOrder` 이벤트 기반 리컨실리에이션 미구현.
-- **우선순위**: 매우 높음 — 체결 불일치/중복 주문 리스크가 큼.
+- **현황**: `core/engine.py`에서 주문 API 응답은 `_record_accepted_order`로 `ACCEPTED` 상태만 기록하고, `_route_ws_message`가 `myOrder`를 `apply_my_order_event`로 라우팅해 상태 머신을 갱신한다. `myAsset`은 `portfolio_snapshot` 갱신으로 분리되어 있으며, `reconcile_orders`는 타임아웃/부분체결 보정 루프를 수행한다. `orders_by_identifier`와 `_next_order_identifier`로 주문 추적 및 유일 identifier를 유지한다.
+- **갭**: timeout 이후 amend/cancel 정책(`_on_order_timeout`)은 아직 훅만 존재한다.
+- **우선순위**: 중간 — 주문 동기화의 골격은 충족, 후속 집행 정책 고도화 필요.
 
 ### 다음 커밋 구현 착수 제안
-1. WebSocket 인프라(연결 생명주기 + 재구독) 기본 골격 추가
-2. 주문 응답을 "접수" 상태로 분리하고 로컬 주문 상태 저장소 도입
-3. `myOrder`/`myAsset` 이벤트 핸들러 및 리컨실리에이션 루프 추가
+1. `_on_order_timeout`의 amend/cancel/알림 정책 구현
+2. WebSocket 장애 메트릭(재연결 횟수, ping 실패, idle timeout 발생 수) 노출
+3. nonce 멀티프로세스 전략(외부 저장소 또는 중앙 발급기) 필요성 검토
+
+## 검증 기준
+- `core/engine.py`의 `orders_by_identifier`, `_record_accepted_order`, `_route_ws_message`, `reconcile_orders`, `infra/upbit_ws_client.py`의 ping/idle timeout/reconnect/`_restore_subscriptions`, `apis.py`의 `NonceGenerator`/`parse_remaining_req`/`GroupThrottle`/429·418 재시도 로직을 직접 확인해 1-1~1-3 체크 상태를 유지/판정함.
+
+## 문서 운영 규칙 (다음 사이클부터 고정)
+- 코드 수정 커밋 직후 `docs/implementation_plan.md`에 동일 커밋의 작업내역을 즉시 반영한다(완료: 체크박스 `[x]` + 근거 함수, 진행: 현재 상태/남은 작업, 보류: 보류 사유/재개 조건 1줄).
