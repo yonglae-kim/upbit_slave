@@ -3,6 +3,14 @@
 ## 실행 환경
 - Python 3.10 권장 (최소 3.9 이상)
 - `pip` 최신 버전 권장
+- 권장: Python 3.10+/OpenSSL 1.1.1+ 환경으로 업그레이드
+- 레거시 OpenSSL 환경에서는 `urllib3<2` 제약을 유지해야 함
+
+### 재현/검증 포인트
+- 재현 키워드: `ImportError: urllib3 v2 only supports OpenSSL 1.1.1+`
+- 점검 파일
+  - `requirements.txt` (`urllib3`, `requests` 버전 범위)
+  - `README.md` (실행 환경/OpenSSL 안내)
 
 ## 설치 가이드
 1. 가상환경 생성 및 활성화
