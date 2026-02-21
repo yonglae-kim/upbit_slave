@@ -12,3 +12,4 @@ urllib3>=2.2.2,<3.0
 
 openpyxl~=3.0.7
 python-telegram-bot~=13.5
+websocket-client>=1.8.0,<2.0

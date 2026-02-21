@@ -19,6 +19,7 @@ class TradingConfig:
     buy_rsi_threshold: int = 35
     sell_profit_threshold: float = 1.01
     stop_loss_threshold: float = 0.975
+    ws_data_format: str = "SIMPLE"
     krw_markets: list[str] = field(default_factory=list)
 
     def to_strategy_params(self):
