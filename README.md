@@ -17,9 +17,39 @@
    ```
 
 ## 실행 방법
+권장 실행 순서는 아래와 같습니다.
+
+1. **첫 실행은 `paper` 또는 `dry_run` 모드**로 진행해 전략/환경 설정을 먼저 검증합니다.
+2. 동작 확인 후 필요한 리스크 설정과 모니터링 체계를 갖춘 다음 `live` 모드로 전환합니다.
+
+모드별 실행 예시:
+
 ```bash
-python main.py
+TRADING_MODE=paper python main.py
+TRADING_MODE=dry_run python main.py
 ```
+
+라이브 실행(마지막 단계):
+
+```bash
+TRADING_MODE=live python main.py
+```
+
+라이브 실행 전 체크리스트:
+
+- [ ] 업비트 자격 증명(API Key/Secret) 및 권한이 올바르게 설정되어 있는지 확인
+- [ ] 허용 손실 범위, 포지션/보유 수 제한 등 리스크 설정을 점검
+- [ ] 실행 중 상태를 확인할 모니터링(로그/알림) 경로를 준비
+
+로그/알림 확인 포인트:
+
+- 콘솔 출력에서 모드(`TRADING_MODE`)와 주요 이벤트(신호/주문 시도/에러) 확인
+- notifier가 정상 동작하는지(알림 채널 전송 여부) 확인
+
+실패 시 우선 확인할 파일:
+
+- `main.py`
+- `core/config_loader.py`
 
 ## 설정 (Configuration)
 
