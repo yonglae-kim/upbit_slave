@@ -67,19 +67,9 @@ class TradingEngine:
 
         for account in portfolio.my_coins:
             market = "KRW-" + account["currency"]
-            data = preprocess_candles(
-                self.candle_buffer.get_candles(
-                    market,
-                    self.config.candle_interval,
-                    lambda selected_market, selected_interval: self.broker.get_candles(
-                        selected_market,
-                        interval=selected_interval,
-                    ),
-                ),
-                source_order="newest",
-            )
+            data = self._get_strategy_candles(market)
             avg_buy_price = float(account["avg_buy_price"])
-            current_price = float(data[0]["trade_price"])
+            current_price = float(data["1m"][0]["trade_price"])
 
             if check_sell(data, avg_buy_price, strategy_params) or current_price < avg_buy_price * strategy_params.stop_loss_threshold:
                 requested_volume = float(account["balance"])
@@ -101,20 +91,10 @@ class TradingEngine:
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
         watch_markets = self.universe.select_watch_markets(tickers)
 
-        candles_by_market = {
-            market: self.candle_buffer.get_candles(
-                market,
-                self.config.candle_interval,
-                lambda selected_market, selected_interval: self.broker.get_candles(
-                    selected_market,
-                    interval=selected_interval,
-                ),
-            )
-            for market in watch_markets
-        }
+        candles_by_market = {market: self._get_strategy_candles(market) for market in watch_markets}
         watch_markets = filter_by_missing_rate(
             watch_markets,
-            candles_by_market,
+            {market: candles["1m"] for market, candles in candles_by_market.items()},
             max_missing_rate=self.config.max_candle_missing_rate,
         )
 
@@ -122,7 +102,7 @@ class TradingEngine:
             if market in held_markets:
                 continue
 
-            data = preprocess_candles(candles_by_market[market], source_order="newest")
+            data = candles_by_market[market]
             if not check_buy(data, strategy_params):
                 continue
 
@@ -135,9 +115,24 @@ class TradingEngine:
             identifier = self._next_order_identifier(market, "bid")
             response = self.broker.buy_market(market, order_krw, identifier=identifier)
             self._record_accepted_order(response, identifier, market, "bid", order_krw)
-            print("BUY_ACCEPTED", market, str(int(order_krw)) + "원", data[0]["trade_price"])
-            self.notifier.send(f"BUY_ACCEPTED {market} {data[0]['trade_price']}")
+            print("BUY_ACCEPTED", market, str(int(order_krw)) + "원", data["1m"][0]["trade_price"])
+            self.notifier.send(f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']}")
             break
+
+    def _get_strategy_candles(self, market: str) -> dict[str, list[dict]]:
+        intervals = {1: "1m", 5: "5m", 15: "15m"}
+        result: dict[str, list[dict]] = {}
+        for interval, key in intervals.items():
+            raw = self.candle_buffer.get_candles(
+                market,
+                interval,
+                lambda selected_market, selected_interval: self.broker.get_candles(
+                    selected_market,
+                    interval=selected_interval,
+                ),
+            )
+            result[key] = preprocess_candles(raw, source_order="newest")
+        return result
 
     def _next_order_identifier(self, market: str, side: str) -> str:
         self._order_sequence += 1

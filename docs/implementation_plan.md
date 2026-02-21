@@ -42,18 +42,18 @@
 
 ## 3단계: 전략 엔진
 ### 3-1. SR
-- [ ] 피벗 탐지 + 밴드 클러스터링 구현
+- [x] 피벗 탐지 + 밴드 클러스터링 구현 (`core/strategy.py`: `detect_sr_pivots`, `cluster_sr_levels`)
 - [ ] 터치 횟수/최근성/거래대금 기반 SR 스코어링
 
 ### 3-2. OB/FVG
-- [ ] FVG 3캔들 불균형 탐지
-- [ ] FVG 폭(ATR/틱) 및 변위 필터
-- [ ] OB(마지막 반대 캔들 + 변위 조건) 구현
-- [ ] 존 무효화/만료 규칙 반영
+- [x] FVG 3캔들 불균형 탐지 (`core/strategy.py`: `detect_fvg_zones`)
+- [x] FVG 폭(ATR/틱) 및 변위 필터 (`core/config.py` 파라미터 + `detect_fvg_zones`)
+- [x] OB(마지막 반대 캔들 + 변위 조건) 구현 (`core/strategy.py`: `detect_ob_zones`)
+- [x] 존 무효화/만료 규칙 반영 (`core/strategy.py`: `filter_active_zones`)
 
 ### 3-3. 시그널 결합
-- [ ] 15m SR(컨텍스트) + 5m OB/FVG(셋업) + 1m(트리거)
-- [ ] 존 충돌 우선순위(OB∩FVG∩SR > 단일) 적용
+- [x] 15m SR(컨텍스트) + 5m OB/FVG(셋업) + 1m(트리거) (`check_buy`/`check_sell` 교체)
+- [x] 존 충돌 우선순위(OB∩FVG∩SR > 단일) 적용 (`pick_best_zone`)
 - [ ] 신호-주문 전 검증(틱 라운딩/최소 주문금액)
 
 ## 4단계: 리스크·집행
@@ -111,3 +111,8 @@
 
 ## 문서 운영 규칙 (다음 사이클부터 고정)
 - 코드 수정 커밋 직후 `docs/implementation_plan.md`에 동일 커밋의 작업내역을 즉시 반영한다(완료: 체크박스 `[x]` + 근거 함수, 진행: 현재 상태/남은 작업, 보류: 보류 사유/재개 조건 1줄).
+
+
+### 전략 보조 지표 정리
+- `strategy/strategy.py`는 보조 계산 전용으로 축소하고 `rsi`, `macd`, `atr`만 유지함.
+- `stoch_rsi`, `bollinger_bands`, `ichimoku_cloud`는 현재 전략 경로에서 제거했으며 필요 시 별도 분석 모듈로 복구/이관 예정.

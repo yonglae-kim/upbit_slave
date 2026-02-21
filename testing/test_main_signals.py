@@ -1,114 +1,81 @@
-import importlib
-import sys
-import types
 import unittest
-from unittest.mock import patch
 
 from core.config import TradingConfig
+from core.strategy import (
+    check_buy,
+    check_sell,
+    cluster_sr_levels,
+    detect_fvg_zones,
+    detect_ob_zones,
+    detect_sr_pivots,
+    filter_active_zones,
+    pick_best_zone,
+)
 
 
-class FakeWindow:
-    def __init__(self, values):
-        self._values = list(values)
-
-    def isna(self):
-        return FakeBoolWindow([value != value for value in self._values])
-
-    @property
-    def iloc(self):
-        return self
-
-    def __getitem__(self, index):
-        return self._values[index]
-
-
-class FakeBoolWindow:
-    def __init__(self, values):
-        self._values = values
-
-    def any(self):
-        return any(self._values)
-
-
-class FakeSeries:
-    def __init__(self, values):
-        self._values = list(values)
-
-    def __len__(self):
-        return len(self._values)
-
-    @property
-    def iloc(self):
-        return self
-
-    def __getitem__(self, key):
-        if isinstance(key, slice):
-            return FakeWindow(self._values[key])
-        return self._values[key]
-
-
-class FakeMacdFrame:
-    def __init__(self, macd_values, macd_diff_values):
-        self._map = {
-            "MACD": FakeSeries(macd_values),
-            "MACDDiff": FakeSeries(macd_diff_values),
-        }
-
-    def __getitem__(self, key):
-        return self._map[key]
+def make_candle(price: float, spread: float = 1.0, bull: bool = True):
+    open_price = price - 0.3 if bull else price + 0.3
+    close_price = price + 0.3 if bull else price - 0.3
+    return {
+        "opening_price": open_price,
+        "trade_price": close_price,
+        "high_price": price + spread,
+        "low_price": price - spread,
+    }
 
 
 class MainSignalValidationTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        fake_strategy_pkg = types.ModuleType("strategy")
-        fake_strategy_module = types.SimpleNamespace(rsi=lambda _data: 20, macd=lambda _data, **_kwargs: None)
-        fake_strategy_pkg.strategy = fake_strategy_module
-        sys.modules["strategy"] = fake_strategy_pkg
-        sys.modules["strategy.strategy"] = fake_strategy_module
-        cls.signal = importlib.import_module("core.strategy")
-        cls.config = TradingConfig(do_not_trading=[])
+    def setUp(self):
+        self.config = TradingConfig(do_not_trading=[])
+        self.params = self.config.to_strategy_params()
 
-    @classmethod
-    def tearDownClass(cls):
-        for module_name in ["core.strategy", "strategy", "strategy.strategy"]:
-            sys.modules.pop(module_name, None)
+    def _tf(self, c1, c5, c15):
+        return {"1m": c1, "5m": c5, "15m": c15}
 
-    @staticmethod
-    def _build_candles(length, trade_price=100.0):
-        return [{"trade_price": float(trade_price)} for _ in range(length)]
+    def test_sr_only_does_not_trigger_entry(self):
+        c15 = [make_candle(100 + (i % 6) - 3, spread=1.5) for i in range(140)]
+        c5 = [make_candle(120 + i * 0.01) for i in range(140)]
+        c1 = [make_candle(121 + i * 0.01) for i in range(120)]
+        self.assertFalse(check_buy(self._tf(c1, c5, c15), self.params))
 
-    def test_check_buy_returns_false_for_boundary_lengths(self):
-        for length in [0, 1, 2]:
-            with self.subTest(length=length):
-                self.assertFalse(self.signal.should_buy(self._build_candles(length), self.config))
+    def test_obfvg_only_does_not_trigger_without_sr_context(self):
+        c15 = [make_candle(200 + i * 0.5, spread=0.2) for i in range(140)]
+        c5 = [make_candle(100 + (i % 4), spread=2.0, bull=(i % 2 == 0)) for i in range(140)]
+        c1 = [make_candle(102 + (i % 3), spread=1.2, bull=(i % 2 == 1)) for i in range(120)]
+        self.assertFalse(check_buy(self._tf(c1, c5, c15), self.params))
 
-    def test_check_sell_returns_false_for_boundary_lengths(self):
-        for length in [0, 1, 2]:
-            with self.subTest(length=length):
-                self.assertFalse(self.signal.should_sell(self._build_candles(length), avg_buy_price=100.0, config=self.config))
+    def test_intersection_priority_picks_overlap_zone(self):
+        sr_levels = [{"bias": "support", "lower": 99.0, "upper": 101.0, "mid": 100.0, "touches": 3, "last_index": 10}]
+        setup_zones = [
+            {"type": "ob", "bias": "bullish", "lower": 95.0, "upper": 96.0, "created_index": 50},
+            {"type": "fvg", "bias": "bullish", "lower": 99.5, "upper": 100.5, "created_index": 51},
+        ]
+        best = pick_best_zone(sr_levels, setup_zones, side="buy", params=self.params)
+        self.assertIsNotNone(best)
+        self.assertEqual(best["lower"], 99.5)
 
-    def test_check_buy_returns_false_when_latest_macd_or_macd_diff_is_nan(self):
-        candles = self._build_candles(40, trade_price=100.0)
-        macd_with_nan = FakeMacdFrame(
-            macd_values=[0.1] * 37 + [0.2, 0.3, float("nan")],
-            macd_diff_values=[0.1] * 39 + [0.2],
-        )
+    def test_zone_invalidation_and_expiry(self):
+        zones = [
+            {"type": "ob", "bias": "bullish", "lower": 99.0, "upper": 101.0, "created_index": 1},
+            {"type": "fvg", "bias": "bullish", "lower": 100.0, "upper": 102.0, "created_index": 100},
+        ]
+        active = filter_active_zones(zones, current_price=95.0, current_index=160, params=self.params)
+        self.assertEqual(active, [])
 
-        with patch.object(self.signal.st, "rsi", return_value=20), patch.object(
-            self.signal.st, "macd", return_value=macd_with_nan
-        ):
-            self.assertFalse(self.signal.should_buy(candles, self.config))
+    def test_sell_requires_signal_and_profit_threshold(self):
+        c15 = [make_candle(100 + (i % 5) - 2, spread=2.0) for i in range(160)]
+        c5 = [make_candle(100 + (i % 5), spread=2.0, bull=(i % 2 == 0)) for i in range(160)]
+        c1 = [make_candle(100 + (i % 3), spread=1.3, bull=(i % 2 == 0)) for i in range(140)]
+        self.assertFalse(check_sell(self._tf(c1, c5, c15), avg_buy_price=300.0, params=self.params))
 
-    def test_check_sell_returns_false_when_latest_macd_diff_is_nan(self):
-        candles = self._build_candles(40, trade_price=102.0)
-        macd_with_nan = FakeMacdFrame(
-            macd_values=[0.1] * 40,
-            macd_diff_values=[0.2] * 37 + [0.1, 0.05, float("nan")],
-        )
+    def test_sr_pivot_and_zone_detectors_execute(self):
+        c15 = [make_candle(100 + (i % 7) - 3, spread=2.0) for i in range(150)]
+        pivots = detect_sr_pivots(c15, self.params.sr_pivot_left, self.params.sr_pivot_right)
+        _ = cluster_sr_levels(pivots, self.params.sr_cluster_band_pct, self.params.sr_min_touches)
 
-        with patch.object(self.signal.st, "macd", return_value=macd_with_nan):
-            self.assertFalse(self.signal.should_sell(candles, avg_buy_price=100.0, config=self.config))
+        c5 = [make_candle(100 + (i % 7), spread=2.0, bull=(i % 2 == 0)) for i in range(150)]
+        _ = detect_fvg_zones(c5, self.params)
+        _ = detect_ob_zones(c5, self.params)
 
 
 if __name__ == "__main__":
