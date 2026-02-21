@@ -8,8 +8,11 @@ from core.reconciliation import apply_my_asset_event, apply_my_order_event
 
 
 class DummyNotifier:
-    def send(self, _message):
-        pass
+    def __init__(self):
+        self.messages = []
+
+    def send(self, message):
+        self.messages.append(message)
 
 
 class BrokerWithOpenOrders:
@@ -30,10 +33,14 @@ class BrokerWithOpenOrders:
                 "market": "KRW-BTC",
                 "side": "bid",
                 "state": "wait",
-                "volume": "2",
-                "executed_volume": "0.5",
+                "volume": "20000",
+                "executed_volume": "5000",
             }
         ]
+
+    def get_ticker(self, markets):
+        _ = markets
+        return [{"trade_price": 1000.0}]
 
     def buy_market(self, market, price, identifier=None):
         self.buy_calls.append((market, price, identifier))
@@ -129,8 +136,8 @@ class TradingEngineReconciliationTest(unittest.TestCase):
             identifier="p-1",
             market="KRW-BTC",
             side="bid",
-            requested_qty=10000,
-            filled_qty=4000,
+            requested_qty=100000,
+            filled_qty=40000,
             state=OrderStatus.PARTIALLY_FILLED,
             updated_at=datetime.now(timezone.utc) - timedelta(seconds=engine.order_timeout_seconds + 1),
         )
@@ -140,7 +147,32 @@ class TradingEngineReconciliationTest(unittest.TestCase):
         self.assertEqual(broker.cancel_calls, ["p-u-1"])
         self.assertEqual(len(broker.buy_calls), 1)
         _market, retry_qty, _identifier = broker.buy_calls[0]
-        self.assertEqual(retry_qty, 3000)
+        self.assertEqual(retry_qty, 30000)
+
+
+    def test_timeout_retry_identifier_lineage_and_cooldown(self):
+        broker = BrokerWithOpenOrders()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], max_order_retries=1, timeout_retry_cooldown_seconds=30)
+        engine = TradingEngine(broker, notifier, config)
+        engine.bootstrap_open_orders()
+
+        stale = engine.orders_by_identifier["boot-1"]
+        stale.updated_at = datetime.now(timezone.utc) - timedelta(seconds=engine.order_timeout_seconds + 1)
+        stale.state = OrderStatus.ACCEPTED
+
+        engine.reconcile_orders()
+        self.assertEqual(len(broker.buy_calls), 1)
+        retry_identifier = broker.buy_calls[0][2]
+        self.assertIn(":root=boot-1", retry_identifier)
+        self.assertEqual(engine.order_identifier_parent[retry_identifier], "boot-1")
+
+        retried = engine.orders_by_identifier[retry_identifier]
+        retried.updated_at = datetime.now(timezone.utc) - timedelta(seconds=engine.order_timeout_seconds + 1)
+        engine.reconcile_orders()
+
+        self.assertEqual(len(broker.buy_calls), 1)
+        self.assertEqual(notifier.messages, [])
 
     def test_ws_router_uses_myorder_and_myasset_roles(self):
         engine = TradingEngine(BrokerWithOpenOrders(), DummyNotifier(), TradingConfig(do_not_trading=[]))

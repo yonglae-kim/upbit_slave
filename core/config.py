@@ -19,6 +19,7 @@ class TradingConfig:
     max_order_retries: int = 2
     partial_fill_timeout_scale: float = 0.5
     partial_fill_reduce_ratio: float = 0.5
+    timeout_retry_cooldown_seconds: float = 5.0
     candle_interval: int = 3
     macd_n_fast: int = 12
     macd_n_slow: int = 26
