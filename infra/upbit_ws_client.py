@@ -5,13 +5,13 @@ import queue
 import threading
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Dict
 
 if TYPE_CHECKING:
     import websocket
 
 
-MessageHandler = Callable[[dict[str, Any]], None]
+MessageHandler = Callable[[Dict[str, Any]], None]
 
 
 class UpbitWebSocketClient:
