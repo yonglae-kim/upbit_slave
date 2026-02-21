@@ -31,6 +31,26 @@ _ENV_KEY_MAP = {
     "universe_watch_n2": "TRADING_UNIVERSE_WATCH_N2",
     "max_relative_spread": "TRADING_MAX_RELATIVE_SPREAD",
     "max_candle_missing_rate": "TRADING_MAX_CANDLE_MISSING_RATE",
+    "sr_pivot_left": "TRADING_SR_PIVOT_LEFT",
+    "sr_pivot_right": "TRADING_SR_PIVOT_RIGHT",
+    "sr_cluster_band_pct": "TRADING_SR_CLUSTER_BAND_PCT",
+    "sr_min_touches": "TRADING_SR_MIN_TOUCHES",
+    "sr_lookback_bars": "TRADING_SR_LOOKBACK_BARS",
+    "zone_priority_mode": "TRADING_ZONE_PRIORITY_MODE",
+    "fvg_atr_period": "TRADING_FVG_ATR_PERIOD",
+    "fvg_min_width_atr_mult": "TRADING_FVG_MIN_WIDTH_ATR_MULT",
+    "fvg_min_width_ticks": "TRADING_FVG_MIN_WIDTH_TICKS",
+    "displacement_min_body_ratio": "TRADING_DISPLACEMENT_MIN_BODY_RATIO",
+    "displacement_min_atr_mult": "TRADING_DISPLACEMENT_MIN_ATR_MULT",
+    "ob_lookback_bars": "TRADING_OB_LOOKBACK_BARS",
+    "ob_max_base_bars": "TRADING_OB_MAX_BASE_BARS",
+    "zone_expiry_bars_5m": "TRADING_ZONE_EXPIRY_BARS_5M",
+    "zone_reentry_buffer_pct": "TRADING_ZONE_REENTRY_BUFFER_PCT",
+    "trigger_rejection_wick_ratio": "TRADING_TRIGGER_REJECTION_WICK_RATIO",
+    "trigger_breakout_lookback": "TRADING_TRIGGER_BREAKOUT_LOOKBACK",
+    "min_candles_1m": "TRADING_MIN_CANDLES_1M",
+    "min_candles_5m": "TRADING_MIN_CANDLES_5M",
+    "min_candles_15m": "TRADING_MIN_CANDLES_15M",
 }
 
 
@@ -72,9 +92,22 @@ def _parse_env_value(key: str, value: str):
         "buy_rsi_threshold",
         "universe_top_n1",
         "universe_watch_n2",
+        "sr_pivot_left",
+        "sr_pivot_right",
+        "sr_min_touches",
+        "sr_lookback_bars",
+        "fvg_atr_period",
+        "fvg_min_width_ticks",
+        "ob_lookback_bars",
+        "ob_max_base_bars",
+        "zone_expiry_bars_5m",
+        "trigger_breakout_lookback",
+        "min_candles_1m",
+        "min_candles_5m",
+        "min_candles_15m",
     }:
         return int(value)
-    if key in {"fee_rate", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate"}:
+    if key in {"fee_rate", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio"}:
         return float(value)
     return value
 
@@ -111,6 +144,26 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "universe_watch_n2": int,
         "max_relative_spread": (int, float),
         "max_candle_missing_rate": (int, float),
+        "sr_pivot_left": int,
+        "sr_pivot_right": int,
+        "sr_cluster_band_pct": (int, float),
+        "sr_min_touches": int,
+        "sr_lookback_bars": int,
+        "zone_priority_mode": str,
+        "fvg_atr_period": int,
+        "fvg_min_width_atr_mult": (int, float),
+        "fvg_min_width_ticks": int,
+        "displacement_min_body_ratio": (int, float),
+        "displacement_min_atr_mult": (int, float),
+        "ob_lookback_bars": int,
+        "ob_max_base_bars": int,
+        "zone_expiry_bars_5m": int,
+        "zone_reentry_buffer_pct": (int, float),
+        "trigger_rejection_wick_ratio": (int, float),
+        "trigger_breakout_lookback": int,
+        "min_candles_1m": int,
+        "min_candles_5m": int,
+        "min_candles_15m": int,
     }
 
     for key, expected in required_types.items():
@@ -134,6 +187,19 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "macd_n_signal",
         "universe_top_n1",
         "universe_watch_n2",
+        "sr_pivot_left",
+        "sr_pivot_right",
+        "sr_min_touches",
+        "sr_lookback_bars",
+        "fvg_atr_period",
+        "fvg_min_width_ticks",
+        "ob_lookback_bars",
+        "ob_max_base_bars",
+        "zone_expiry_bars_5m",
+        "trigger_breakout_lookback",
+        "min_candles_1m",
+        "min_candles_5m",
+        "min_candles_15m",
     ]
     for key in positive_keys:
         if config[key] <= 0:
@@ -153,6 +219,25 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("max_relative_spread must be >= 0")
     if not 0 <= config["max_candle_missing_rate"] <= 1:
         raise ConfigValidationError("max_candle_missing_rate must be in [0, 1]")
+
+    if config["sr_pivot_left"] <= 0 or config["sr_pivot_right"] <= 0:
+        raise ConfigValidationError("sr_pivot_left and sr_pivot_right must be > 0")
+    if config["sr_min_touches"] <= 0:
+        raise ConfigValidationError("sr_min_touches must be > 0")
+    if config["sr_cluster_band_pct"] < 0:
+        raise ConfigValidationError("sr_cluster_band_pct must be >= 0")
+    if config["zone_priority_mode"] not in {"intersection", "setup_only"}:
+        raise ConfigValidationError("zone_priority_mode must be one of: intersection, setup_only")
+    if config["fvg_min_width_atr_mult"] < 0:
+        raise ConfigValidationError("fvg_min_width_atr_mult must be >= 0")
+    if config["displacement_min_body_ratio"] <= 0:
+        raise ConfigValidationError("displacement_min_body_ratio must be > 0")
+    if config["displacement_min_atr_mult"] <= 0:
+        raise ConfigValidationError("displacement_min_atr_mult must be > 0")
+    if config["zone_reentry_buffer_pct"] < 0:
+        raise ConfigValidationError("zone_reentry_buffer_pct must be >= 0")
+    if config["trigger_rejection_wick_ratio"] <= 0:
+        raise ConfigValidationError("trigger_rejection_wick_ratio must be > 0")
 
 
 def load_trading_config() -> TradingConfig:
