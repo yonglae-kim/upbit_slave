@@ -37,3 +37,6 @@ python main.py
 3. Git 히스토리 정리 도구(`git filter-repo`, BFG 등)로 민감정보 제거
 4. 원격 저장소 강제 푸시 후, 협업자 로컬 저장소 히스토리 동기화 안내
 5. 보안 스캔/로그 점검으로 재노출 여부 확인
+
+## 구현 계획 문서
+- 순차 실행 계획: `docs/implementation_plan.md`
