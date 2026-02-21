@@ -21,3 +21,6 @@ class Broker(Protocol):
 
     def sell_market(self, market: str, volume: float, identifier: str | None = None) -> Any:
         ...
+
+    def get_open_orders(self, market: str | None = None, states: tuple[str, ...] = ("wait", "watch")) -> list[dict[str, Any]]:
+        ...

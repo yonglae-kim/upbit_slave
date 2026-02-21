@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 
 from core.config import TradingConfig
 from core.interfaces import Broker
-from core.order_state import OrderRecord
+from core.order_state import OrderRecord, OrderStatus
+from core.reconciliation import apply_my_asset_event, apply_my_order_event
 from core.portfolio import normalize_accounts
 from core.strategy import check_buy, check_sell, preprocess_candles
 from infra.upbit_ws_client import UpbitWebSocketClient
@@ -25,12 +26,18 @@ class TradingEngine:
         self.ws_client = ws_client
         self._order_sequence = 0
         self.orders_by_identifier: dict[str, OrderRecord] = {}
+        self.portfolio_snapshot: dict[str, dict[str, float]] = {}
+        self.order_timeout_seconds = 120
+
+        if self.ws_client:
+            self.ws_client.on_message = self._route_ws_message
 
     def start(self) -> None:
         if not self.ws_client:
             return
 
         self.initialize_markets()
+        self.bootstrap_open_orders()
         self.ws_client.connect()
         self.ws_client.subscribe("ticker", self.config.krw_markets, data_format=self.config.ws_data_format)
 
@@ -52,6 +59,7 @@ class TradingEngine:
 
     def run_once(self) -> None:
         self.initialize_markets()
+        self.reconcile_orders()
         strategy_params = self.config.to_strategy_params()
 
         accounts = self.broker.get_accounts()
@@ -116,6 +124,46 @@ class TradingEngine:
         self._order_sequence += 1
         timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
         return f"{market}:{side}:{timestamp}:{self._order_sequence}"
+
+
+    def _route_ws_message(self, message: dict) -> None:
+        message_type = message.get("type") or message.get("ty")
+        if message_type == "myOrder":
+            apply_my_order_event(message, self.orders_by_identifier)
+            return
+
+        if message_type == "myAsset":
+            apply_my_asset_event(message, self.portfolio_snapshot)
+
+    def reconcile_orders(self) -> None:
+        now = datetime.now(timezone.utc)
+        for order in list(self.orders_by_identifier.values()):
+            if order.state in {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}:
+                continue
+
+            age_seconds = (now - order.updated_at).total_seconds()
+            if age_seconds >= self.order_timeout_seconds:
+                self._on_order_timeout(order)
+
+            if 0 < order.filled_qty < order.requested_qty and order.state == OrderStatus.ACCEPTED:
+                order.state = OrderStatus.PARTIALLY_FILLED
+
+    def _on_order_timeout(self, order: OrderRecord) -> None:
+        """Policy hook for amend/cancel decisions when open orders become stale."""
+        _ = order
+
+    def bootstrap_open_orders(self) -> None:
+        if not hasattr(self.broker, "get_open_orders"):
+            return
+
+        open_orders = self.broker.get_open_orders()
+        if not isinstance(open_orders, list):
+            return
+
+        for event in open_orders:
+            if not isinstance(event, dict):
+                continue
+            apply_my_order_event(event, self.orders_by_identifier)
 
     def _record_accepted_order(
         self,
