@@ -8,6 +8,7 @@ from core.interfaces import Broker
 from core.order_state import OrderRecord, OrderStatus
 from core.portfolio import normalize_accounts
 from core.reconciliation import apply_my_asset_event, apply_my_order_event
+from core.risk import RiskManager
 from core.strategy import check_buy, check_sell, preprocess_candles
 from core.universe import UniverseBuilder, filter_by_missing_rate
 from infra.upbit_ws_client import UpbitWebSocketClient
@@ -30,8 +31,20 @@ class TradingEngine:
         self.orders_by_identifier: dict[str, OrderRecord] = {}
         self.portfolio_snapshot: dict[str, dict[str, float]] = {}
         self.order_timeout_seconds = 120
+        self.max_order_retries = max(0, int(config.max_order_retries))
+        self.partial_fill_timeout_scale = max(0.1, float(config.partial_fill_timeout_scale))
+        self.partial_fill_reduce_ratio = min(1.0, max(0.1, float(config.partial_fill_reduce_ratio)))
+        self.trailing_stop_pct = max(0.0, float(config.trailing_stop_pct))
         self.universe = UniverseBuilder(config)
         self.candle_buffer = CandleBuffer(maxlen_by_interval={1: 300, 5: 300, 15: 300, config.candle_interval: 300})
+        self.risk = RiskManager(
+            risk_per_trade_pct=config.risk_per_trade_pct,
+            max_daily_loss_pct=config.max_daily_loss_pct,
+            max_consecutive_losses=config.max_consecutive_losses,
+            max_concurrent_positions=config.max_concurrent_positions,
+            min_order_krw=config.min_order_krw,
+        )
+        self._high_watermarks: dict[str, float] = {}
 
         if self.ws_client:
             self.ws_client.on_message = self._route_ws_message
@@ -63,21 +76,26 @@ class TradingEngine:
 
         accounts = self.broker.get_accounts()
         portfolio = normalize_accounts(accounts, self.config.do_not_trading)
+        self.risk.set_baseline_equity(portfolio.available_krw)
         print("보유코인 :", portfolio.held_markets)
 
         for account in portfolio.my_coins:
             market = "KRW-" + account["currency"]
             data = self._get_strategy_candles(market)
             avg_buy_price = float(account["avg_buy_price"])
+            if avg_buy_price <= 0:
+                continue
             current_price = float(data["1m"][0]["trade_price"])
 
-            if check_sell(data, avg_buy_price, strategy_params) or current_price < avg_buy_price * strategy_params.stop_loss_threshold:
+            if self._should_exit_position(market, data, avg_buy_price, current_price, strategy_params):
                 requested_volume = float(account["balance"])
                 identifier = self._next_order_identifier(market, "ask")
                 response = self.broker.sell_market(market, requested_volume, identifier=identifier)
                 self._record_accepted_order(response, identifier, market, "ask", requested_volume)
                 print("SELL_ACCEPTED", market, str(account["balance"]) + account["currency"], current_price)
                 delta = ((current_price - avg_buy_price) / avg_buy_price) * 100
+                self.risk.record_trade_result((current_price - avg_buy_price) * requested_volume)
+                self._high_watermarks.pop(market, None)
                 self.notifier.send(f"SELL_ACCEPTED {market} {current_price} {delta}%")
 
         self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
@@ -106,7 +124,14 @@ class TradingEngine:
             if not check_buy(data, strategy_params):
                 continue
 
-            order_krw = (available_krw / self.config.buy_divisor) * (1 - self.config.fee_rate)
+            risk_decision = self.risk.allow_entry(available_krw=available_krw, held_markets=held_markets)
+            if not risk_decision.allowed:
+                continue
+
+            order_krw = min(
+                (available_krw / self.config.buy_divisor) * (1 - self.config.fee_rate),
+                risk_decision.order_krw,
+            )
             if order_krw < self.config.min_order_krw:
                 continue
             if available_krw - order_krw < self.config.min_order_krw:
@@ -155,16 +180,63 @@ class TradingEngine:
             if order.state in {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}:
                 continue
 
+            timeout_limit = self.order_timeout_seconds
+            if order.state == OrderStatus.PARTIALLY_FILLED:
+                timeout_limit *= self.partial_fill_timeout_scale
+
             age_seconds = (now - order.updated_at).total_seconds()
-            if age_seconds >= self.order_timeout_seconds:
+            if age_seconds >= timeout_limit:
                 self._on_order_timeout(order)
 
             if 0 < order.filled_qty < order.requested_qty and order.state == OrderStatus.ACCEPTED:
                 order.state = OrderStatus.PARTIALLY_FILLED
 
     def _on_order_timeout(self, order: OrderRecord) -> None:
-        """Policy hook for amend/cancel decisions when open orders become stale."""
-        _ = order
+        if order.state == OrderStatus.PARTIALLY_FILLED:
+            self._cancel_open_order(order)
+            remaining_qty = max(0.0, order.requested_qty - order.filled_qty)
+            retry_qty = remaining_qty * self.partial_fill_reduce_ratio
+            if retry_qty >= 1e-12 and order.retry_count < self.max_order_retries:
+                self._retry_order(order, retry_qty)
+            return
+
+        if order.state == OrderStatus.ACCEPTED:
+            self._cancel_open_order(order)
+            if order.retry_count < self.max_order_retries:
+                self._retry_order(order, order.requested_qty)
+
+    def _cancel_open_order(self, order: OrderRecord) -> None:
+        if not hasattr(self.broker, "cancel_order"):
+            return
+        if not order.uuid:
+            return
+        self.broker.cancel_order(order.uuid)
+        order.state = OrderStatus.CANCELED
+        order.updated_at = datetime.now(timezone.utc)
+
+    def _retry_order(self, origin: OrderRecord, qty: float) -> None:
+        identifier = self._next_order_identifier(origin.market, origin.side)
+        if origin.side == "bid":
+            response = self.broker.buy_market(origin.market, qty, identifier=identifier)
+        else:
+            response = self.broker.sell_market(origin.market, qty, identifier=identifier)
+
+        retried = self._record_accepted_order(response, identifier, origin.market, origin.side, qty)
+        retried.retry_count = origin.retry_count + 1
+
+    def _should_exit_position(self, market: str, data: dict[str, list[dict]], avg_buy_price: float, current_price: float, strategy_params) -> bool:
+        trailing_stop = self._trailing_stop_triggered(market, current_price)
+        take_profit_or_signal = check_sell(data, avg_buy_price, strategy_params)
+        hard_stop = current_price < avg_buy_price * strategy_params.stop_loss_threshold
+        return trailing_stop or take_profit_or_signal or hard_stop
+
+    def _trailing_stop_triggered(self, market: str, current_price: float) -> bool:
+        peak = self._high_watermarks.get(market, current_price)
+        peak = max(peak, current_price)
+        self._high_watermarks[market] = peak
+        if self.trailing_stop_pct <= 0:
+            return False
+        return current_price <= peak * (1 - self.trailing_stop_pct)
 
     def bootstrap_open_orders(self) -> None:
         if not hasattr(self.broker, "get_open_orders"):
@@ -186,13 +258,15 @@ class TradingEngine:
         market: str,
         side: str,
         requested_qty: float,
-    ) -> None:
+    ) -> OrderRecord:
         response_data = response if isinstance(response, dict) else {}
         order_uuid = response_data.get("uuid")
-        self.orders_by_identifier[identifier] = OrderRecord.accepted(
+        record = OrderRecord.accepted(
             uuid=order_uuid,
             identifier=identifier,
             market=market,
             side=side,
             requested_qty=requested_qty,
         )
+        self.orders_by_identifier[identifier] = record
+        return record

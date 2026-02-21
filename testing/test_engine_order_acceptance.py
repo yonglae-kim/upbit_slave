@@ -68,6 +68,20 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
         self.assertEqual(order.filled_qty, 0.0)
         self.assertEqual(order.uuid, "order-uuid-1")
 
+    @patch("core.engine.check_buy", return_value=True)
+    def test_risk_gate_blocks_buy_on_loss_streak(self, _mock_check_buy):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], max_consecutive_losses=2)
+        engine = TradingEngine(broker, notifier, config)
+        engine.risk.record_trade_result(-1000)
+        engine.risk.record_trade_result(-1000)
+
+        engine.run_once()
+
+        self.assertEqual(len(broker.buy_calls), 0)
+        self.assertEqual(engine.orders_by_identifier, {})
+
 
 if __name__ == "__main__":
     unittest.main()

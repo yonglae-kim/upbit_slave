@@ -13,6 +13,11 @@ class DummyNotifier:
 
 
 class BrokerWithOpenOrders:
+    def __init__(self):
+        self.buy_calls = []
+        self.sell_calls = []
+        self.cancel_calls = []
+
     def get_markets(self):
         return [{"market": "KRW-BTC"}]
 
@@ -29,6 +34,18 @@ class BrokerWithOpenOrders:
                 "executed_volume": "0.5",
             }
         ]
+
+    def buy_market(self, market, price, identifier=None):
+        self.buy_calls.append((market, price, identifier))
+        return {"uuid": f"buy-{len(self.buy_calls)}"}
+
+    def sell_market(self, market, volume, identifier=None):
+        self.sell_calls.append((market, volume, identifier))
+        return {"uuid": f"sell-{len(self.sell_calls)}"}
+
+    def cancel_order(self, uuid):
+        self.cancel_calls.append(uuid)
+        return {"uuid": uuid, "state": "cancel"}
 
 
 class TradingEngineReconciliationTest(unittest.TestCase):
@@ -85,6 +102,45 @@ class TradingEngineReconciliationTest(unittest.TestCase):
 
         self.assertIn("boot-1", engine.timeout_called)
         self.assertEqual(stale.state, OrderStatus.PARTIALLY_FILLED)
+
+    def test_timeout_policy_cancels_and_retries(self):
+        broker = BrokerWithOpenOrders()
+        config = TradingConfig(do_not_trading=[], max_order_retries=1)
+        engine = TradingEngine(broker, DummyNotifier(), config)
+        engine.bootstrap_open_orders()
+
+        stale = engine.orders_by_identifier["boot-1"]
+        stale.updated_at = datetime.now(timezone.utc) - timedelta(seconds=engine.order_timeout_seconds + 1)
+        stale.state = OrderStatus.ACCEPTED
+        stale.retry_count = 0
+
+        engine.reconcile_orders()
+
+        self.assertEqual(broker.cancel_calls, ["u-1"])
+        self.assertEqual(len(broker.buy_calls), 1)
+
+    def test_partial_fill_timeout_retries_with_reduced_size(self):
+        broker = BrokerWithOpenOrders()
+        config = TradingConfig(do_not_trading=[], max_order_retries=1, partial_fill_reduce_ratio=0.5)
+        engine = TradingEngine(broker, DummyNotifier(), config)
+
+        engine.orders_by_identifier["p-1"] = OrderRecord(
+            uuid="p-u-1",
+            identifier="p-1",
+            market="KRW-BTC",
+            side="bid",
+            requested_qty=10000,
+            filled_qty=4000,
+            state=OrderStatus.PARTIALLY_FILLED,
+            updated_at=datetime.now(timezone.utc) - timedelta(seconds=engine.order_timeout_seconds + 1),
+        )
+
+        engine.reconcile_orders()
+
+        self.assertEqual(broker.cancel_calls, ["p-u-1"])
+        self.assertEqual(len(broker.buy_calls), 1)
+        _market, retry_qty, _identifier = broker.buy_calls[0]
+        self.assertEqual(retry_qty, 3000)
 
     def test_ws_router_uses_myorder_and_myasset_roles(self):
         engine = TradingEngine(BrokerWithOpenOrders(), DummyNotifier(), TradingConfig(do_not_trading=[]))
