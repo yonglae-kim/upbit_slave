@@ -2,16 +2,36 @@ from __future__ import annotations
 
 from core.config import TradingConfig
 from core.interfaces import Broker
+from infra.upbit_ws_client import UpbitWebSocketClient
 from message.notifier import Notifier
 from core.portfolio import normalize_accounts
 from core.strategy import check_buy, check_sell, preprocess_candles
 
 
 class TradingEngine:
-    def __init__(self, broker: Broker, notifier: Notifier, config: TradingConfig):
+    def __init__(
+        self,
+        broker: Broker,
+        notifier: Notifier,
+        config: TradingConfig,
+        ws_client: UpbitWebSocketClient | None = None,
+    ):
         self.broker = broker
         self.notifier = notifier
         self.config = config
+        self.ws_client = ws_client
+
+    def start(self) -> None:
+        if not self.ws_client:
+            return
+
+        self.initialize_markets()
+        self.ws_client.connect()
+        self.ws_client.subscribe("ticker", self.config.krw_markets, data_format=self.config.ws_data_format)
+
+    def shutdown(self) -> None:
+        if self.ws_client:
+            self.ws_client.close()
 
     def initialize_markets(self) -> None:
         if self.config.krw_markets:
