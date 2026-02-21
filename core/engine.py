@@ -51,6 +51,7 @@ class TradingEngine:
             min_order_krw=config.min_order_krw,
         )
         self._high_watermarks: dict[str, float] = {}
+        self._last_processed_candle_at: dict[str, datetime] = {}
 
         if self.ws_client:
             self.ws_client.on_message = self._route_ws_message
@@ -88,6 +89,8 @@ class TradingEngine:
         for account in portfolio.my_coins:
             market = "KRW-" + account["currency"]
             data = self._get_strategy_candles(market)
+            if not self._should_run_strategy(market, data):
+                continue
             avg_buy_price = float(account["avg_buy_price"])
             if avg_buy_price <= 0:
                 continue
@@ -136,6 +139,8 @@ class TradingEngine:
                 continue
 
             data = candles_by_market[market]
+            if not self._should_run_strategy(market, data):
+                continue
             if not check_buy(data, strategy_params):
                 continue
 
@@ -189,6 +194,37 @@ class TradingEngine:
         self._order_sequence += 1
         timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
         return f"{market}:{side}:{timestamp}:{self._order_sequence}"
+
+    def _should_run_strategy(self, market: str, data: dict[str, list[dict]]) -> bool:
+        if not self._is_strategy_data_healthy(data):
+            return False
+
+        latest_candle = data.get("1m", [{}])[0]
+        latest_time = self.candle_buffer.parse_candle_time(latest_candle)
+        if latest_time is None:
+            return True
+
+        previous_time = self._last_processed_candle_at.get(market)
+        if previous_time is not None and latest_time <= previous_time:
+            return False
+
+        self._last_processed_candle_at[market] = latest_time
+        return True
+
+    def _is_strategy_data_healthy(self, data: dict[str, list[dict]]) -> bool:
+        max_missing_rate = max(0.0, float(self.config.max_candle_missing_rate))
+        for timeframe in ("1m", "5m", "15m"):
+            candles = data.get(timeframe, [])
+            if not candles:
+                return False
+            if bool(candles[0].get("missing")):
+                return False
+
+            missing_count = sum(1 for candle in candles if bool(candle.get("missing")))
+            missing_rate = missing_count / len(candles)
+            if missing_rate > max_missing_rate:
+                return False
+        return True
 
 
     def _route_ws_message(self, message: dict) -> None:

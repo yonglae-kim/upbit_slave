@@ -10,6 +10,8 @@ class CandleBuffer:
     def __init__(self, maxlen_by_interval: dict[int, int] | None = None):
         self.maxlen_by_interval = maxlen_by_interval or {1: 300, 5: 300, 15: 300}
         self._buffers: dict[str, dict[int, deque[dict[str, Any]]]] = defaultdict(dict)
+        self.missing_policy = "fill_with_synthetic"
+        self.contamination_stats: dict[str, int] = defaultdict(int)
 
     def get_candles(
         self,
@@ -33,6 +35,9 @@ class CandleBuffer:
         normalized = self._normalize_to_oldest(candles)
         for candle in normalized:
             self._append_with_alignment(buffer, interval, candle)
+
+    def parse_candle_time(self, candle: dict[str, Any]) -> datetime | None:
+        return self._parse_candle_time(candle)
 
     def snapshot(self, market: str, interval: int) -> list[dict[str, Any]]:
         buffer = self._buffers.get(market, {}).get(interval)
@@ -64,6 +69,13 @@ class CandleBuffer:
         current_time = self._parse_candle_time(candle)
 
         if prev_time is not None and current_time is not None:
+            if current_time < prev_time:
+                self.contamination_stats["out_of_order"] += 1
+                return
+            if current_time == prev_time:
+                self.contamination_stats["duplicate"] += 1
+                buffer[-1] = candle
+                return
             gap = current_time - prev_time
             while gap > expected_delta:
                 filler_time = prev_time + expected_delta

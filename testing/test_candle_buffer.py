@@ -37,6 +37,28 @@ class CandleBufferTest(unittest.TestCase):
         self.assertEqual(len(snapshot), 3)
         self.assertEqual(snapshot[0]["candle_date_time_utc"], "2024-01-01T00:03:00")
 
+    def test_out_of_order_candle_is_rejected(self):
+        buffer = CandleBuffer(maxlen_by_interval={1: 10, 5: 10, 15: 10})
+
+        buffer.update("KRW-BTC", 1, [{"candle_date_time_utc": "2024-01-01T00:02:00", "trade_price": 102}])
+        buffer.update("KRW-BTC", 1, [{"candle_date_time_utc": "2024-01-01T00:01:00", "trade_price": 101}])
+
+        snapshot = buffer.snapshot("KRW-BTC", 1)
+        self.assertEqual(len(snapshot), 1)
+        self.assertEqual(snapshot[0]["candle_date_time_utc"], "2024-01-01T00:02:00")
+        self.assertEqual(buffer.contamination_stats["out_of_order"], 1)
+
+    def test_duplicate_candle_overwrites_latest(self):
+        buffer = CandleBuffer(maxlen_by_interval={1: 10, 5: 10, 15: 10})
+
+        buffer.update("KRW-BTC", 1, [{"candle_date_time_utc": "2024-01-01T00:02:00", "trade_price": 100}])
+        buffer.update("KRW-BTC", 1, [{"candle_date_time_utc": "2024-01-01T00:02:00", "trade_price": 105}])
+
+        snapshot = buffer.snapshot("KRW-BTC", 1)
+        self.assertEqual(len(snapshot), 1)
+        self.assertEqual(snapshot[0]["trade_price"], 105)
+        self.assertEqual(buffer.contamination_stats["duplicate"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
