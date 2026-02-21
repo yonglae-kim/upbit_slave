@@ -1,40 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
-
 from core.config import TradingConfig
+from core.interfaces import Broker
+from message.notifier import Notifier
 from core.portfolio import normalize_accounts
 from core.strategy import check_buy, check_sell, preprocess_candles
 
 
-class TradeExecutor(Protocol):
-    def get_markets(self) -> list[dict[str, Any]]:
-        ...
-
-    def get_accounts(self) -> list[dict[str, Any]]:
-        ...
-
-    def get_ticker(self, markets: str) -> list[dict[str, Any]]:
-        ...
-
-    def get_candles_minutes(self, market: str, interval: int, count: int = 200) -> list[dict[str, Any]]:
-        ...
-
-    def ask_market(self, market: str, volume: float) -> Any:
-        ...
-
-    def bid_price(self, market: str, price: float) -> Any:
-        ...
-
-
-class Notifier(Protocol):
-    def send(self, message: str) -> None:
-        ...
-
-
 class TradingEngine:
-    def __init__(self, executor: TradeExecutor, notifier: Notifier, config: TradingConfig):
-        self.executor = executor
+    def __init__(self, broker: Broker, notifier: Notifier, config: TradingConfig):
+        self.broker = broker
         self.notifier = notifier
         self.config = config
 
@@ -42,7 +17,7 @@ class TradingEngine:
         if self.config.krw_markets:
             return
 
-        markets = self.executor.get_markets()
+        markets = self.broker.get_markets()
         self.config.krw_markets = [
             item["market"]
             for item in markets
@@ -54,21 +29,21 @@ class TradingEngine:
         self.initialize_markets()
         strategy_params = self.config.to_strategy_params()
 
-        accounts = self.executor.get_accounts()
+        accounts = self.broker.get_accounts()
         portfolio = normalize_accounts(accounts, self.config.do_not_trading)
         print("보유코인 :", portfolio.held_markets)
 
         for account in portfolio.my_coins:
             market = "KRW-" + account["currency"]
             data = preprocess_candles(
-                self.executor.get_candles_minutes(market, interval=self.config.candle_interval),
+                self.broker.get_candles(market, interval=self.config.candle_interval),
                 source_order="newest",
             )
             avg_buy_price = float(account["avg_buy_price"])
             current_price = float(data[0]["trade_price"])
 
             if check_sell(data, avg_buy_price, strategy_params) or current_price < avg_buy_price * strategy_params.stop_loss_threshold:
-                self.executor.ask_market(market, account["balance"])
+                self.broker.sell_market(market, account["balance"])
                 print("SELL", market, str(account["balance"]) + account["currency"], current_price)
                 delta = ((current_price - avg_buy_price) / avg_buy_price) * 100
                 self.notifier.send(f"SELL {market} {current_price} {delta}%")
@@ -81,7 +56,7 @@ class TradingEngine:
         if len(held_markets) >= self.config.max_holdings:
             return
 
-        tickers = self.executor.get_ticker(", ".join(self.config.krw_markets))
+        tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
         tickers.sort(key=lambda x: float(x["trade_volume"]), reverse=True)
 
         for ticker in tickers:
@@ -90,7 +65,7 @@ class TradingEngine:
                 continue
 
             data = preprocess_candles(
-                self.executor.get_candles_minutes(market, interval=self.config.candle_interval),
+                self.broker.get_candles(market, interval=self.config.candle_interval),
                 source_order="newest",
             )
             if not check_buy(data, strategy_params):
@@ -102,7 +77,7 @@ class TradingEngine:
             if available_krw - order_krw < self.config.min_order_krw:
                 continue
 
-            self.executor.bid_price(market, order_krw)
+            self.broker.buy_market(market, order_krw)
             print("BUY", market, str(int(order_krw)) + "원", data[0]["trade_price"])
             self.notifier.send(f"BUY {market} {data[0]['trade_price']}")
             break

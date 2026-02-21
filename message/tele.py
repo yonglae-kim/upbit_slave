@@ -2,6 +2,8 @@ import os
 
 import telegram
 
+from message.notifier import Notifier
+
 
 def _get_required_env(name: str) -> str:
     value = os.getenv(name)
@@ -13,11 +15,11 @@ def _get_required_env(name: str) -> str:
     return value
 
 
-telgm_token = _get_required_env("TELEGRAM_BOT_TOKEN")
-chat_id = _get_required_env("TELEGRAM_CHAT_ID")
+class TelegramNotifier(Notifier):
+    def __init__(self, token: str | None = None, chat_id: str | None = None):
+        self.token = token or _get_required_env("TELEGRAM_BOT_TOKEN")
+        self.chat_id = chat_id or _get_required_env("TELEGRAM_CHAT_ID")
+        self.bot = telegram.Bot(token=self.token)
 
-bot = telegram.Bot(token=telgm_token)
-
-
-def sendMessage(msg):
-    bot.sendMessage(chat_id=chat_id, text=msg)
+    def send(self, message: str) -> None:
+        self.bot.sendMessage(chat_id=self.chat_id, text=message)

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 @dataclass
 class TradingConfig:
     do_not_trading: list[str]
+    mode: str = "live"
+    paper_initial_krw: float = 1_000_000
     fee_rate: float = 0.0005
     min_order_krw: int = 5000
     max_holdings: int = 4
