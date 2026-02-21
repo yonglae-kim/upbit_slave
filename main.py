@@ -3,8 +3,8 @@ import os
 import sys
 import time
 
-import slave_constants
 from core.config import TradingConfig
+from core.config_loader import load_trading_config
 from core.engine import TradingEngine
 from infra.paper_broker import PaperBroker
 from infra.upbit_broker import UpbitBroker
@@ -29,12 +29,11 @@ def create_notifier(config: TradingConfig):
     return TelegramNotifier()
 
 
+APP_CONFIG = load_trading_config()
+
+
 def create_engine(broker=None, notifier=None, config=None):
-    trading_config = config or TradingConfig(
-        do_not_trading=slave_constants.DO_NOT_TRADING,
-        mode=getattr(slave_constants, "MODE", "live"),
-        paper_initial_krw=getattr(slave_constants, "PAPER_INITIAL_KRW", 1_000_000),
-    )
+    trading_config = config or APP_CONFIG
     trade_broker = broker or create_broker(trading_config)
     trade_notifier = notifier or create_notifier(trading_config)
     return TradingEngine(trade_broker, trade_notifier, trading_config)
