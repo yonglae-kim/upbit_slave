@@ -8,6 +8,9 @@ import message.tele as tele
 import slave_constants
 import strategy.strategy as st
 
+UPBIT_FEE_RATE = 0.0005
+MIN_ORDER_KRW = 5000
+
 list_krw_market = []
 list_btc_market = []
 list_usdt_market = []
@@ -134,10 +137,18 @@ while 1:
                     continue
                 data = apis.get_candles_minutes(ticker['market'], interval=3)
                 if check_buy(data):
-                    apis.bid_price(ticker['market'], avail_krw / 2)
-                    print("BUY", ticker['market'], str(avail_krw // 5) + "원", data[0]['trade_price'])
+                    order_krw = (avail_krw / 5) * (1 - UPBIT_FEE_RATE)
+                    if order_krw < MIN_ORDER_KRW:
+                        print("SKIP", ticker['market'], "주문 가능 금액 부족", str(int(order_krw)) + "원")
+                        continue
+                    if avail_krw - order_krw < MIN_ORDER_KRW:
+                        print("SKIP", ticker['market'], "주문 후 잔액 최소금액 미만", str(int(avail_krw - order_krw)) + "원")
+                        continue
+
+                    apis.bid_price(ticker['market'], order_krw)
+                    print("BUY", ticker['market'], str(int(order_krw)) + "원", data[0]['trade_price'])
                     tele.sendMessage("BUY " + ticker['market'] + " " + str(data[0]['trade_price']))
-                    avail_krw -= avail_krw // 5
+                    avail_krw -= order_krw
                     break
                 time.sleep(1)
     except KeyboardInterrupt:
