@@ -15,7 +15,12 @@ class TradingConfig:
     max_daily_loss_pct: float = 0.05
     max_consecutive_losses: int = 3
     max_concurrent_positions: int = 4
+    max_correlated_positions: int = 2
+    correlation_groups: dict[str, str] = field(default_factory=dict)
     trailing_stop_pct: float = 0.01
+    partial_take_profit_threshold: float = 1.02
+    partial_take_profit_ratio: float = 0.5
+    partial_stop_loss_ratio: float = 1.0
     max_order_retries: int = 2
     partial_fill_timeout_scale: float = 0.5
     partial_fill_reduce_ratio: float = 0.5
