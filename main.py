@@ -10,7 +10,6 @@ from infra.paper_broker import PaperBroker
 from infra.upbit_broker import UpbitBroker
 from infra.upbit_ws_client import UpbitWebSocketClient
 from message.notifier import Notifier
-from message.tele import TelegramNotifier
 
 
 class NoopNotifier(Notifier):
@@ -25,9 +24,7 @@ def create_broker(config: TradingConfig):
 
 
 def create_notifier(config: TradingConfig):
-    if config.mode in {"paper", "dry_run"}:
-        return NoopNotifier()
-    return TelegramNotifier()
+    return NoopNotifier()
 
 
 APP_CONFIG = load_trading_config()
