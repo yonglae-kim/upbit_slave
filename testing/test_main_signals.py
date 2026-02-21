@@ -4,6 +4,8 @@ import types
 import unittest
 from unittest.mock import patch
 
+from core.config import TradingConfig
+
 
 class FakeWindow:
     def __init__(self, values):
@@ -62,31 +64,14 @@ class MainSignalValidationTest(unittest.TestCase):
         fake_strategy_pkg = types.ModuleType("strategy")
         fake_strategy_module = types.SimpleNamespace(rsi=lambda _data: 20, macd=lambda _data, **_kwargs: None)
         fake_strategy_pkg.strategy = fake_strategy_module
-
-        fake_message_pkg = types.ModuleType("message")
-        fake_tele_module = types.SimpleNamespace(sendMessage=lambda *_args, **_kwargs: None)
-        fake_message_pkg.tele = fake_tele_module
-
-        sys.modules["apis"] = types.SimpleNamespace()
-        sys.modules["message"] = fake_message_pkg
-        sys.modules["message.tele"] = fake_tele_module
-        sys.modules["slave_constants"] = types.SimpleNamespace(DO_NOT_TRADING=[])
         sys.modules["strategy"] = fake_strategy_pkg
         sys.modules["strategy.strategy"] = fake_strategy_module
-
-        cls.main = importlib.import_module("main")
+        cls.signal = importlib.import_module("core.strategy")
+        cls.config = TradingConfig(do_not_trading=[])
 
     @classmethod
     def tearDownClass(cls):
-        for module_name in [
-            "main",
-            "apis",
-            "message",
-            "message.tele",
-            "slave_constants",
-            "strategy",
-            "strategy.strategy",
-        ]:
+        for module_name in ["core.strategy", "strategy", "strategy.strategy"]:
             sys.modules.pop(module_name, None)
 
     @staticmethod
@@ -96,12 +81,12 @@ class MainSignalValidationTest(unittest.TestCase):
     def test_check_buy_returns_false_for_boundary_lengths(self):
         for length in [0, 1, 2]:
             with self.subTest(length=length):
-                self.assertFalse(self.main.check_buy(self._build_candles(length)))
+                self.assertFalse(self.signal.should_buy(self._build_candles(length), self.config))
 
     def test_check_sell_returns_false_for_boundary_lengths(self):
         for length in [0, 1, 2]:
             with self.subTest(length=length):
-                self.assertFalse(self.main.check_sell(self._build_candles(length), avg_buy_price=100.0))
+                self.assertFalse(self.signal.should_sell(self._build_candles(length), avg_buy_price=100.0, config=self.config))
 
     def test_check_buy_returns_false_when_latest_macd_or_macd_diff_is_nan(self):
         candles = self._build_candles(40, trade_price=100.0)
@@ -110,10 +95,10 @@ class MainSignalValidationTest(unittest.TestCase):
             macd_diff_values=[0.1] * 39 + [0.2],
         )
 
-        with patch.object(self.main.st, "rsi", return_value=20), patch.object(
-            self.main.st, "macd", return_value=macd_with_nan
+        with patch.object(self.signal.st, "rsi", return_value=20), patch.object(
+            self.signal.st, "macd", return_value=macd_with_nan
         ):
-            self.assertFalse(self.main.check_buy(candles))
+            self.assertFalse(self.signal.should_buy(candles, self.config))
 
     def test_check_sell_returns_false_when_latest_macd_diff_is_nan(self):
         candles = self._build_candles(40, trade_price=102.0)
@@ -122,8 +107,8 @@ class MainSignalValidationTest(unittest.TestCase):
             macd_diff_values=[0.2] * 37 + [0.1, 0.05, float("nan")],
         )
 
-        with patch.object(self.main.st, "macd", return_value=macd_with_nan):
-            self.assertFalse(self.main.check_sell(candles, avg_buy_price=100.0))
+        with patch.object(self.signal.st, "macd", return_value=macd_with_nan):
+            self.assertFalse(self.signal.should_sell(candles, avg_buy_price=100.0, config=self.config))
 
 
 if __name__ == "__main__":
