@@ -12,7 +12,7 @@ from core.portfolio import normalize_accounts
 from core.reconciliation import apply_my_asset_event, apply_my_order_event
 from core.risk import RiskManager
 from core.strategy import check_buy, check_sell, preprocess_candles
-from core.universe import UniverseBuilder, filter_by_missing_rate
+from core.universe import UniverseBuilder
 from infra.upbit_ws_client import UpbitWebSocketClient
 from message.notifier import Notifier
 
@@ -42,6 +42,7 @@ class TradingEngine:
         self.trailing_stop_pct = max(0.0, float(config.trailing_stop_pct))
         self.universe = UniverseBuilder(config)
         self.candle_buffer = CandleBuffer(maxlen_by_interval={1: 300, 5: 300, 15: 300, config.candle_interval: 300})
+        self.last_universe_selection_result = None
         self.risk = RiskManager(
             risk_per_trade_pct=config.risk_per_trade_pct,
             max_daily_loss_pct=config.max_daily_loss_pct,
@@ -121,14 +122,14 @@ class TradingEngine:
             return
 
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
-        watch_markets = self.universe.select_watch_markets(tickers)
-
-        candles_by_market = {market: self._get_strategy_candles(market) for market in watch_markets}
-        watch_markets = filter_by_missing_rate(
-            watch_markets,
-            {market: candles["1m"] for market, candles in candles_by_market.items()},
-            max_missing_rate=self.config.max_candle_missing_rate,
+        top_and_spread_result = self.universe.select_watch_markets_with_report(tickers)
+        candles_by_market = {market: self._get_strategy_candles(market) for market in top_and_spread_result.watch_markets}
+        universe_result = self.universe.select_watch_markets_with_report(
+            tickers,
+            candles_by_market={market: candles["1m"] for market, candles in candles_by_market.items()},
         )
+        watch_markets = universe_result.watch_markets
+        self.last_universe_selection_result = universe_result
 
         for market in watch_markets:
             if market in held_markets:

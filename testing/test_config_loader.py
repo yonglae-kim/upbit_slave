@@ -31,6 +31,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'krw_markets': [],\n"
                 "    'universe_top_n1': 30,\n"
                 "    'universe_watch_n2': 10,\n"
+                "    'low_spec_watch_cap_n2': 10,\n"
                 "    'max_relative_spread': 0.003,\n"
                 "    'max_candle_missing_rate': 0.1,\n"
                 "    'sr_pivot_left': 2,\n"
