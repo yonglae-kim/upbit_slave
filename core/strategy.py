@@ -18,6 +18,9 @@ class StrategyParams:
     sr_cluster_band_pct: float = 0.0025
     sr_min_touches: int = 2
     sr_lookback_bars: int = 120
+    sr_touch_weight: float = 0.5
+    sr_recency_weight: float = 0.3
+    sr_volume_weight: float = 0.2
     zone_priority_mode: str = "intersection"
     fvg_atr_period: int = 14
     fvg_min_width_atr_mult: float = 0.2
@@ -70,14 +73,16 @@ def detect_sr_pivots(candles_newest: Sequence[dict[str, Any]], left: int, right:
     candles = list(reversed(candles_newest))
     pivots: list[dict[str, Any]] = []
     for i in range(left, len(candles) - right):
-        high = _price(candles[i], "high_price")
-        low = _price(candles[i], "low_price")
+        candle = candles[i]
+        high = _price(candle, "high_price")
+        low = _price(candle, "low_price")
         left_slice = candles[i - left : i]
         right_slice = candles[i + 1 : i + 1 + right]
+        turnover = float(candle.get("candle_acc_trade_price", candle.get("trade_volume", 0.0)))
         if all(high >= _price(c, "high_price") for c in left_slice + right_slice):
-            pivots.append({"type": "resistance", "price": high, "index": i})
+            pivots.append({"type": "resistance", "price": high, "index": i, "turnover": turnover})
         if all(low <= _price(c, "low_price") for c in left_slice + right_slice):
-            pivots.append({"type": "support", "price": low, "index": i})
+            pivots.append({"type": "support", "price": low, "index": i, "turnover": turnover})
     return pivots
 
 
@@ -94,6 +99,7 @@ def cluster_sr_levels(pivots: Sequence[dict[str, Any]], band_pct: float, min_tou
                 cluster["touches"] += 1
                 cluster["last_index"] = max(cluster["last_index"], pivot["index"])
                 cluster["mid"] = sum(cluster["prices"]) / len(cluster["prices"])
+                cluster["turnover_sum"] += float(pivot.get("turnover", 0.0))
                 matched = True
                 break
         if not matched:
@@ -104,6 +110,7 @@ def cluster_sr_levels(pivots: Sequence[dict[str, Any]], band_pct: float, min_tou
                     "touches": 1,
                     "last_index": pivot["index"],
                     "mid": pivot["price"],
+                    "turnover_sum": float(pivot.get("turnover", 0.0)),
                 }
             )
 
@@ -115,10 +122,40 @@ def cluster_sr_levels(pivots: Sequence[dict[str, Any]], band_pct: float, min_tou
             "mid": cluster["mid"],
             "touches": cluster["touches"],
             "last_index": cluster["last_index"],
+            "turnover": cluster["turnover_sum"],
         }
         for cluster in clusters
         if cluster["touches"] >= min_touches
     ]
+
+
+def score_sr_levels(sr_levels: Sequence[dict[str, Any]], total_bars: int, params: StrategyParams) -> list[dict[str, Any]]:
+    if not sr_levels:
+        return []
+
+    max_turnover = max(float(level.get("turnover", 0.0)) for level in sr_levels)
+    scored: list[dict[str, Any]] = []
+    for level in sr_levels:
+        touches = int(level.get("touches", 0))
+        touch_score = min(1.0, touches / max(params.sr_min_touches, 1))
+
+        age = max(0, total_bars - int(level.get("last_index", 0)))
+        recency_score = 1.0 - min(1.0, age / max(total_bars, 1))
+
+        turnover = float(level.get("turnover", 0.0))
+        volume_score = turnover / max_turnover if max_turnover > 0 else 0.0
+
+        score = (
+            params.sr_touch_weight * touch_score
+            + params.sr_recency_weight * recency_score
+            + params.sr_volume_weight * volume_score
+        )
+
+        enriched = dict(level)
+        enriched["score"] = score
+        scored.append(enriched)
+
+    return sorted(scored, key=lambda item: item["score"], reverse=True)
 
 
 def detect_fvg_zones(candles_newest: Sequence[dict[str, Any]], params: StrategyParams) -> list[dict[str, Any]]:
@@ -210,7 +247,7 @@ def pick_best_zone(sr_levels: Sequence[dict[str, Any]], setup_zones: Sequence[di
         for sr in sr_side:
             sr_band = {"lower": sr["lower"], "upper": sr["upper"]}
             if _intersects(zone, sr_band):
-                score += 2
+                score += 2 + float(sr.get("score", 0.0))
                 break
         if score > best_score:
             best_score = score
@@ -271,6 +308,7 @@ def _check_entry(data: Any, params: StrategyParams, side: str, source_order: str
 
     pivots = detect_sr_pivots(c15[: params.sr_lookback_bars], params.sr_pivot_left, params.sr_pivot_right)
     sr_levels = cluster_sr_levels(pivots, params.sr_cluster_band_pct, params.sr_min_touches)
+    sr_levels = score_sr_levels(sr_levels, total_bars=len(c15[: params.sr_lookback_bars]), params=params)
 
     zones = detect_fvg_zones(c5[: params.ob_lookback_bars], params) + detect_ob_zones(c5[: params.ob_lookback_bars], params)
     current_price_5m = _price(c5[0], "trade_price")

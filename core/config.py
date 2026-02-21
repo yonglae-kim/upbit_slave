@@ -45,6 +45,9 @@ class TradingConfig:
     sr_cluster_band_pct: float = 0.0025
     sr_min_touches: int = 2
     sr_lookback_bars: int = 120
+    sr_touch_weight: float = 0.5
+    sr_recency_weight: float = 0.3
+    sr_volume_weight: float = 0.2
     zone_priority_mode: str = "intersection"
     fvg_atr_period: int = 14
     fvg_min_width_atr_mult: float = 0.2
@@ -77,6 +80,9 @@ class TradingConfig:
             sr_cluster_band_pct=self.sr_cluster_band_pct,
             sr_min_touches=self.sr_min_touches,
             sr_lookback_bars=self.sr_lookback_bars,
+            sr_touch_weight=self.sr_touch_weight,
+            sr_recency_weight=self.sr_recency_weight,
+            sr_volume_weight=self.sr_volume_weight,
             zone_priority_mode=self.zone_priority_mode,
             fvg_atr_period=self.fvg_atr_period,
             fvg_min_width_atr_mult=self.fvg_min_width_atr_mult,
