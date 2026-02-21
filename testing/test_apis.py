@@ -1,7 +1,9 @@
 import importlib
+import hashlib
 import sys
 import types
 import unittest
+from collections import OrderedDict
 from unittest.mock import patch
 
 
@@ -49,6 +51,50 @@ class ApiJwtNonceTest(unittest.TestCase):
         second_header = mock_post.call_args_list[1].kwargs["headers"]["Authorization"]
 
         self.assertNotEqual(first_header, second_header)
+
+    def test_build_query_string_with_list_values(self):
+        params = OrderedDict([
+            ("market", "KRW-BTC"),
+            ("states[]", ["wait", "watch"]),
+            ("limit", 10),
+        ])
+
+        query_string = self.apis.build_query_string(params)
+
+        self.assertEqual(query_string, "market=KRW-BTC&states[]=wait&states[]=watch&limit=10")
+
+    def test_build_query_string_with_repeated_keys_tuple_list(self):
+        params = [
+            ("pairs", "KRW-BTC"),
+            ("pairs", "KRW-ETH"),
+            ("cursor", "abc123"),
+        ]
+
+        query_string = self.apis.build_query_string(params)
+
+        self.assertEqual(query_string, "pairs=KRW-BTC&pairs=KRW-ETH&cursor=abc123")
+
+    def test_get_payload_query_hash_matches_fixed_vector(self):
+        query_string = "market=KRW-BTC&states[]=wait&states[]=watch&limit=10"
+
+        payload = self.apis.get_payload(query_string)
+
+        self.assertEqual(
+            payload["query_hash"],
+            "e3cfc649139c595e1c26a8aa2b3c8504f4b15011fc2b819081451e5e845172bd5dbbb5110ec5d7a3d1d32ff71f46a78323a040e8bedf8672021fd2206190a3a8",
+        )
+        self.assertEqual(payload["query_hash_alg"], "SHA512")
+
+    @patch("apis.requests.post", return_value=DummyResponse())
+    @patch("apis.jwt.encode", side_effect=_fake_encode)
+    def test_orders_hash_input_uses_build_query_string(self, mock_encode, _mock_post):
+        self.apis.orders(market="KRW-BTC", side="bid", volume=0.1, price=1000, ord_type="limit")
+
+        payload_arg = mock_encode.call_args.args[0]
+        expected_query = "market=KRW-BTC&side=bid&ord_type=limit&volume=0.1&price=1000"
+        expected_hash = hashlib.sha512(expected_query.encode()).hexdigest()
+
+        self.assertEqual(payload_arg["query_hash"], expected_hash)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ import uuid
 import hashlib
 import slave_constants
 import pandas as pd
-from urllib.parse import urlencode
+from urllib.parse import urlencode, unquote
 
 import requests
 
@@ -16,6 +16,15 @@ access_key = slave_constants.ACCESS_KEY
 secret_key = slave_constants.SECRET_KEY
 server_url = slave_constants.SERVER_URL
 
+
+def build_query_string(params):
+    """
+    Build an Upbit-compatible query string.
+
+    If key order must be preserved, pass an OrderedDict or a list of tuples.
+    """
+    return unquote(urlencode(params, doseq=True))
+
 # query는 dict 타입
 def get_payload(query=None):
     payload = {
@@ -26,8 +35,10 @@ def get_payload(query=None):
     if not query:
         return payload
 
+    query_string = query if isinstance(query, str) else build_query_string(query)
+
     m = hashlib.sha512()
-    m.update(urlencode(query).encode())
+    m.update(query_string.encode())
     payload['query_hash'] = m.hexdigest()
     payload['query_hash_alg'] = 'SHA512'
     return payload
@@ -92,7 +103,9 @@ def orders(market="KRW-BTC", side="bid", volume=0.01, price=100.0, ord_type="lim
     if price > 0:
         query['price'] = str(price)
 
-    jwt_token = jwt.encode(get_payload(query), secret_key)
+    query_string = build_query_string(query)
+
+    jwt_token = jwt.encode(get_payload(query_string), secret_key)
     authorize_token = 'Bearer {}'.format(jwt_token)
     headers = {"Authorization": authorize_token}
 
