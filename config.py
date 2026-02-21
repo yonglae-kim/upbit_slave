@@ -18,6 +18,7 @@ TRADING_CONFIG = {
     "krw_markets": [],
     "universe_top_n1": 30,
     "universe_watch_n2": 10,
+    "low_spec_watch_cap_n2": 10,
     "max_relative_spread": 0.003,
     "max_candle_missing_rate": 0.1,
     "sr_pivot_left": 2,

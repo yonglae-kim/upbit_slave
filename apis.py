@@ -215,6 +215,13 @@ def get_ticker(markets):
     return _request("GET", "/v1/ticker", params=querystring)
 
 
+def load_default_krw_universe(excluded_keywords=None):
+    from core.universe import collect_krw_markets
+
+    markets = get_markets()
+    return collect_krw_markets(markets, excluded_keywords or [])
+
+
 def get_candles(market="KRW-BTC", count=200, candle_type="days", to=None):
     querystring = {"market": market, "count": str(count)}
     if to:

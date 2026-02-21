@@ -32,6 +32,7 @@ class TradingConfig:
     krw_markets: list[str] = field(default_factory=list)
     universe_top_n1: int = 30
     universe_watch_n2: int = 10
+    low_spec_watch_cap_n2: int = 10
     max_relative_spread: float = 0.003
     max_candle_missing_rate: float = 0.1
     sr_pivot_left: int = 2
