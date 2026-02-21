@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 
 from core.candle_buffer import CandleBuffer
 from core.config import TradingConfig
@@ -89,9 +90,18 @@ class TradingEngine:
 
             if self._should_exit_position(market, data, avg_buy_price, current_price, strategy_params):
                 requested_volume = float(account["balance"])
+                preflight = self._preflight_order(
+                    market=market,
+                    side="ask",
+                    requested_value=requested_volume,
+                    reference_price=current_price,
+                )
+                if not preflight["ok"]:
+                    self._notify_preflight_failure(preflight)
+                    continue
                 identifier = self._next_order_identifier(market, "ask")
-                response = self.broker.sell_market(market, requested_volume, identifier=identifier)
-                self._record_accepted_order(response, identifier, market, "ask", requested_volume)
+                response = self.broker.sell_market(market, preflight["order_value"], identifier=identifier)
+                self._record_accepted_order(response, identifier, market, "ask", preflight["order_value"])
                 print("SELL_ACCEPTED", market, str(account["balance"]) + account["currency"], current_price)
                 delta = ((current_price - avg_buy_price) / avg_buy_price) * 100
                 self.risk.record_trade_result((current_price - avg_buy_price) * requested_volume)
@@ -137,10 +147,21 @@ class TradingEngine:
             if available_krw - order_krw < self.config.min_order_krw:
                 continue
 
+            reference_price = float(data["1m"][0]["trade_price"])
+            preflight = self._preflight_order(
+                market=market,
+                side="bid",
+                requested_value=order_krw,
+                reference_price=reference_price,
+            )
+            if not preflight["ok"]:
+                self._notify_preflight_failure(preflight)
+                continue
+
             identifier = self._next_order_identifier(market, "bid")
-            response = self.broker.buy_market(market, order_krw, identifier=identifier)
-            self._record_accepted_order(response, identifier, market, "bid", order_krw)
-            print("BUY_ACCEPTED", market, str(int(order_krw)) + "원", data["1m"][0]["trade_price"])
+            response = self.broker.buy_market(market, preflight["order_value"], identifier=identifier)
+            self._record_accepted_order(response, identifier, market, "bid", preflight["order_value"])
+            print("BUY_ACCEPTED", market, str(int(preflight["order_value"])) + "원", data["1m"][0]["trade_price"])
             self.notifier.send(f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']}")
             break
 
@@ -215,14 +236,163 @@ class TradingEngine:
         order.updated_at = datetime.now(timezone.utc)
 
     def _retry_order(self, origin: OrderRecord, qty: float) -> None:
+        reference_price = self._get_market_trade_price(origin.market)
+        if reference_price <= 0:
+            self._notify_preflight_failure(
+                {
+                    "ok": False,
+                    "code": "PREFLIGHT_PRICE_UNAVAILABLE",
+                    "market": origin.market,
+                    "side": origin.side,
+                    "requested": qty,
+                    "rounded_price": 0.0,
+                    "order_value": qty,
+                    "notional": 0.0,
+                }
+            )
+            return
+        preflight = self._preflight_order(
+            market=origin.market,
+            side=origin.side,
+            requested_value=qty,
+            reference_price=reference_price,
+        )
+        if not preflight["ok"]:
+            self._notify_preflight_failure(preflight)
+            return
+
         identifier = self._next_order_identifier(origin.market, origin.side)
         if origin.side == "bid":
-            response = self.broker.buy_market(origin.market, qty, identifier=identifier)
+            response = self.broker.buy_market(origin.market, preflight["order_value"], identifier=identifier)
         else:
-            response = self.broker.sell_market(origin.market, qty, identifier=identifier)
+            response = self.broker.sell_market(origin.market, preflight["order_value"], identifier=identifier)
 
-        retried = self._record_accepted_order(response, identifier, origin.market, origin.side, qty)
+        retried = self._record_accepted_order(
+            response,
+            identifier,
+            origin.market,
+            origin.side,
+            preflight["order_value"],
+        )
         retried.retry_count = origin.retry_count + 1
+
+    def _get_market_trade_price(self, market: str) -> float:
+        tickers = self.broker.get_ticker(market)
+        if not isinstance(tickers, list) or not tickers:
+            return 0.0
+        return float(tickers[0].get("trade_price", 0.0) or 0.0)
+
+    def _krw_tick_size(self, price: float) -> float:
+        if price >= 2_000_000:
+            return 1000.0
+        if price >= 1_000_000:
+            return 500.0
+        if price >= 500_000:
+            return 100.0
+        if price >= 100_000:
+            return 50.0
+        if price >= 10_000:
+            return 10.0
+        if price >= 1_000:
+            return 1.0
+        if price >= 100:
+            return 0.1
+        if price >= 10:
+            return 0.01
+        if price >= 1:
+            return 0.001
+        if price >= 0.1:
+            return 0.0001
+        if price >= 0.01:
+            return 0.00001
+        if price >= 0.001:
+            return 0.000001
+        return 0.0000001
+
+    def _round_to_tick(self, value: float, tick: float) -> float:
+        return math.floor(value / tick) * tick
+
+    def _preflight_order(self, market: str, side: str, requested_value: float, reference_price: float) -> dict:
+        if requested_value <= 0 or reference_price <= 0:
+            return {
+                "ok": False,
+                "code": "PREFLIGHT_INVALID_INPUT",
+                "market": market,
+                "side": side,
+                "requested": requested_value,
+                "rounded_price": 0.0,
+                "order_value": 0.0,
+                "notional": 0.0,
+            }
+
+        tick = self._krw_tick_size(reference_price)
+        rounded_price = self._round_to_tick(reference_price, tick)
+        if rounded_price <= 0:
+            return {
+                "ok": False,
+                "code": "PREFLIGHT_PRICE_ROUNDING_FAILED",
+                "market": market,
+                "side": side,
+                "requested": requested_value,
+                "rounded_price": rounded_price,
+                "order_value": requested_value,
+                "notional": 0.0,
+            }
+
+        if side == "bid":
+            order_value = float(int(requested_value))
+            notional = order_value
+            rounded_qty = order_value / rounded_price
+        else:
+            rounded_qty = round(requested_value, 8)
+            order_value = rounded_qty
+            notional = rounded_qty * rounded_price
+
+        if notional < self.config.min_order_krw:
+            return {
+                "ok": False,
+                "code": "PREFLIGHT_MIN_NOTIONAL",
+                "market": market,
+                "side": side,
+                "requested": requested_value,
+                "rounded_price": rounded_price,
+                "order_value": order_value,
+                "notional": notional,
+            }
+
+        recomputed_notional = rounded_qty * rounded_price
+        if order_value <= 0 or rounded_qty <= 0 or recomputed_notional < self.config.min_order_krw:
+            return {
+                "ok": False,
+                "code": "PREFLIGHT_RECOMPUTE_INVALID",
+                "market": market,
+                "side": side,
+                "requested": requested_value,
+                "rounded_price": rounded_price,
+                "order_value": order_value,
+                "notional": recomputed_notional,
+            }
+
+        return {
+            "ok": True,
+            "code": "PREFLIGHT_OK",
+            "market": market,
+            "side": side,
+            "requested": requested_value,
+            "rounded_price": rounded_price,
+            "order_value": order_value,
+            "notional": recomputed_notional,
+        }
+
+    def _notify_preflight_failure(self, result: dict) -> None:
+        code = result.get("code", "PREFLIGHT_UNKNOWN")
+        market = result.get("market")
+        side = result.get("side")
+        requested = result.get("requested")
+        rounded_price = result.get("rounded_price")
+        notional = result.get("notional")
+        print("ORDER_PREFLIGHT_BLOCKED", code, market, side, requested, rounded_price, notional)
+        self.notifier.send(f"ORDER_PREFLIGHT_BLOCKED {code} {market} {side} req={requested} notional={notional}")
 
     def _should_exit_position(self, market: str, data: dict[str, list[dict]], avg_buy_price: float, current_price: float, strategy_params) -> bool:
         trailing_stop = self._trailing_stop_triggered(market, current_price)
