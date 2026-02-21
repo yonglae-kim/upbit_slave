@@ -103,7 +103,7 @@
 - **우선순위**: 중간 — 주문 동기화의 골격은 충족, 후속 집행 정책 고도화 필요.
 
 ### 다음 커밋 구현 착수 제안
-1. `_on_order_timeout`의 amend/cancel/알림 정책 구현
+1. `_on_order_timeout`의 amend/cancel/알림 정책 구현 **(진행중)**
 2. WebSocket 장애 메트릭(재연결 횟수, ping 실패, idle timeout 발생 수) 노출
 3. nonce 멀티프로세스 전략(외부 저장소 또는 중앙 발급기) 필요성 검토
 
@@ -117,3 +117,8 @@
 ### 전략 보조 지표 정리
 - `strategy/strategy.py`는 보조 계산 전용으로 축소하고 `rsi`, `macd`, `atr`만 유지함.
 - `stoch_rsi`, `bollinger_bands`, `ichimoku_cloud`는 현재 전략 경로에서 제거했으며 필요 시 별도 분석 모듈로 복구/이관 예정.
+
+
+### 다음 커밋 구현 착수 제안 1 진행 현황
+- `_on_order_timeout`에 상태별 분기(ACCEPTED/PARTIALLY_FILLED), retry 상한/쿨다운, identifier lineage 추적, 구조화 timeout 로그, 경고 알림 훅을 반영해 집행 정책 구현을 진행 중이다.
+- 남은 작업: 실거래 브로커의 amend 지원 시 해당 경로를 우선 사용하도록 API 확장 및 운영 임계치 튜닝.

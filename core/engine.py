@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import math
 
 from core.candle_buffer import CandleBuffer
@@ -30,9 +31,12 @@ class TradingEngine:
         self.ws_client = ws_client
         self._order_sequence = 0
         self.orders_by_identifier: dict[str, OrderRecord] = {}
+        self.order_identifier_parent: dict[str, str] = {}
+        self.order_last_timeout_action_at: dict[str, datetime] = {}
         self.portfolio_snapshot: dict[str, dict[str, float]] = {}
         self.order_timeout_seconds = 120
         self.max_order_retries = max(0, int(config.max_order_retries))
+        self.timeout_retry_cooldown_seconds = max(0.0, float(config.timeout_retry_cooldown_seconds))
         self.partial_fill_timeout_scale = max(0.1, float(config.partial_fill_timeout_scale))
         self.partial_fill_reduce_ratio = min(1.0, max(0.1, float(config.partial_fill_reduce_ratio)))
         self.trailing_stop_pct = max(0.0, float(config.trailing_stop_pct))
@@ -213,29 +217,65 @@ class TradingEngine:
                 order.state = OrderStatus.PARTIALLY_FILLED
 
     def _on_order_timeout(self, order: OrderRecord) -> None:
-        if order.state == OrderStatus.PARTIALLY_FILLED:
-            self._cancel_open_order(order)
+        action = "NO_ACTION"
+        result = "SKIPPED"
+        retry_target_qty = 0.0
+        timed_out_state = order.state
+
+        if timed_out_state not in {OrderStatus.ACCEPTED, OrderStatus.PARTIALLY_FILLED}:
+            self._log_timeout_policy_event(order, action=action, result=result)
+            return
+
+        if self._is_in_timeout_cooldown(order):
+            self._log_timeout_policy_event(order, action=action, result="COOLDOWN")
+            return
+
+        cancel_ok = self._cancel_open_order(order)
+        if not cancel_ok:
+            self._log_timeout_policy_event(order, action="CANCEL", result="FAILED")
+            self._notify_timeout_warning(order, "CANCEL_FAILED")
+            return
+
+        action = "CANCEL"
+        result = "SUCCESS"
+
+        if timed_out_state == OrderStatus.PARTIALLY_FILLED:
             remaining_qty = max(0.0, order.requested_qty - order.filled_qty)
-            retry_qty = remaining_qty * self.partial_fill_reduce_ratio
-            if retry_qty >= 1e-12 and order.retry_count < self.max_order_retries:
-                self._retry_order(order, retry_qty)
+            retry_target_qty = remaining_qty * self.partial_fill_reduce_ratio
+            action = "CANCEL_AND_AMEND"
+        elif timed_out_state == OrderStatus.ACCEPTED:
+            retry_target_qty = order.requested_qty
+            action = "CANCEL_AND_REORDER"
+
+        should_retry = retry_target_qty >= 1e-12 and order.retry_count < self.max_order_retries
+        if not should_retry:
+            if order.retry_count >= self.max_order_retries:
+                result = "MAX_RETRIES_REACHED"
+                self._notify_timeout_warning(order, result)
+            self._log_timeout_policy_event(order, action=action, result=result)
+            self._mark_timeout_action(order)
             return
 
-        if order.state == OrderStatus.ACCEPTED:
-            self._cancel_open_order(order)
-            if order.retry_count < self.max_order_retries:
-                self._retry_order(order, order.requested_qty)
+        retried = self._retry_order(order, retry_target_qty)
+        if retried:
+            result = "RETRY_ACCEPTED"
+        else:
+            result = "RETRY_FAILED"
+            self._notify_timeout_warning(order, result)
+        self._log_timeout_policy_event(order, action=action, result=result)
+        self._mark_timeout_action(order)
 
-    def _cancel_open_order(self, order: OrderRecord) -> None:
+    def _cancel_open_order(self, order: OrderRecord) -> bool:
         if not hasattr(self.broker, "cancel_order"):
-            return
+            return False
         if not order.uuid:
-            return
+            return False
         self.broker.cancel_order(order.uuid)
         order.state = OrderStatus.CANCELED
         order.updated_at = datetime.now(timezone.utc)
+        return True
 
-    def _retry_order(self, origin: OrderRecord, qty: float) -> None:
+    def _retry_order(self, origin: OrderRecord, qty: float) -> OrderRecord | None:
         reference_price = self._get_market_trade_price(origin.market)
         if reference_price <= 0:
             self._notify_preflight_failure(
@@ -250,7 +290,7 @@ class TradingEngine:
                     "notional": 0.0,
                 }
             )
-            return
+            return None
         preflight = self._preflight_order(
             market=origin.market,
             side=origin.side,
@@ -259,9 +299,9 @@ class TradingEngine:
         )
         if not preflight["ok"]:
             self._notify_preflight_failure(preflight)
-            return
+            return None
 
-        identifier = self._next_order_identifier(origin.market, origin.side)
+        identifier = self._next_retry_identifier(origin)
         if origin.side == "bid":
             response = self.broker.buy_market(origin.market, preflight["order_value"], identifier=identifier)
         else:
@@ -273,8 +313,53 @@ class TradingEngine:
             origin.market,
             origin.side,
             preflight["order_value"],
+            parent_identifier=origin.identifier,
         )
         retried.retry_count = origin.retry_count + 1
+        return retried
+
+    def _root_identifier(self, identifier: str) -> str:
+        parent = self.order_identifier_parent.get(identifier)
+        while parent and parent != identifier:
+            identifier = parent
+            parent = self.order_identifier_parent.get(identifier)
+        return identifier
+
+    def _next_retry_identifier(self, origin: OrderRecord) -> str:
+        root = self._root_identifier(origin.identifier)
+        return self._next_order_identifier(origin.market, origin.side) + f":r{origin.retry_count + 1}:root={root}"
+
+    def _is_in_timeout_cooldown(self, order: OrderRecord) -> bool:
+        root = self._root_identifier(order.identifier)
+        last_action_at = self.order_last_timeout_action_at.get(root)
+        if not last_action_at:
+            return False
+        elapsed = (datetime.now(timezone.utc) - last_action_at).total_seconds()
+        return elapsed < self.timeout_retry_cooldown_seconds
+
+    def _mark_timeout_action(self, order: OrderRecord) -> None:
+        root = self._root_identifier(order.identifier)
+        self.order_last_timeout_action_at[root] = datetime.now(timezone.utc)
+
+    def _notify_timeout_warning(self, order: OrderRecord, reason: str) -> None:
+        self.notifier.send(
+            f"ORDER_TIMEOUT_WARNING reason={reason} root={self._root_identifier(order.identifier)} "
+            f"identifier={order.identifier} retries={order.retry_count}/{self.max_order_retries}"
+        )
+
+    def _log_timeout_policy_event(self, order: OrderRecord, action: str, result: str) -> None:
+        event = {
+            "type": "ORDER_TIMEOUT_POLICY",
+            "order_id": order.uuid,
+            "identifier": order.identifier,
+            "root_identifier": self._root_identifier(order.identifier),
+            "action": action,
+            "result": result,
+            "retry_count": order.retry_count,
+            "max_order_retries": self.max_order_retries,
+            "state": order.state.value,
+        }
+        print(json.dumps(event, ensure_ascii=False, sort_keys=True))
 
     def _get_market_trade_price(self, market: str) -> float:
         tickers = self.broker.get_ticker(market)
@@ -428,6 +513,7 @@ class TradingEngine:
         market: str,
         side: str,
         requested_qty: float,
+        parent_identifier: str | None = None,
     ) -> OrderRecord:
         response_data = response if isinstance(response, dict) else {}
         order_uuid = response_data.get("uuid")
@@ -439,4 +525,5 @@ class TradingEngine:
             requested_qty=requested_qty,
         )
         self.orders_by_identifier[identifier] = record
+        self.order_identifier_parent[identifier] = parent_identifier or identifier
         return record
