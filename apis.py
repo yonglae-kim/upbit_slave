@@ -1,11 +1,14 @@
-import jwt
-import uuid
 import hashlib
-import slave_constants
-import pandas as pd
+import os
+import threading
+import time
+import uuid
 from urllib.parse import urlencode, unquote
 
+import jwt
 import requests
+
+import slave_constants
 
 # need to slave_constants.py
 # ex) slave_constants.py
@@ -22,6 +25,15 @@ TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
 _session = requests.Session()
 _last_remaining_req = None
 
+API_GROUP_ORDER = "order"
+API_GROUP_DEFAULT = "default"
+GROUP_SECOND_LIMITS = {
+    API_GROUP_ORDER: 7,
+    API_GROUP_DEFAULT: 25,
+}
+MAX_RATE_LIMIT_RETRIES = 3
+DEFAULT_BACKOFF_SECONDS = 1
+
 
 class ApiRequestError(Exception):
     def __init__(self, status_code, payload, remaining_req=None):
@@ -29,6 +41,54 @@ class ApiRequestError(Exception):
         self.status_code = status_code
         self.payload = payload
         self.remaining_req = remaining_req
+
+
+class NonceGenerator:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._process_prefix = f"{os.getpid()}-{uuid.uuid4().hex}"
+        self._counter = 0
+
+    def next(self):
+        with self._lock:
+            self._counter += 1
+            return f"{self._process_prefix}-{int(time.time_ns())}-{self._counter}"
+
+
+class GroupThrottle:
+    def __init__(self, second_limits):
+        self._second_limits = dict(second_limits)
+        self._lock = threading.Lock()
+        self._window_start = {}
+        self._count_in_window = {}
+
+    def wait(self, group):
+        second_limit = self._second_limits.get(group)
+        if not second_limit:
+            return
+
+        while True:
+            sleep_seconds = 0
+            now = time.monotonic()
+            with self._lock:
+                current_window = int(now)
+                if self._window_start.get(group) != current_window:
+                    self._window_start[group] = current_window
+                    self._count_in_window[group] = 0
+
+                used = self._count_in_window[group]
+                if used < second_limit:
+                    self._count_in_window[group] = used + 1
+                    return
+
+                sleep_seconds = (current_window + 1) - now
+
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
+
+_nonce_generator = NonceGenerator()
+_group_throttle = GroupThrottle(GROUP_SECOND_LIMITS)
 
 
 def parse_remaining_req(remaining_req_header):
@@ -61,34 +121,56 @@ def _build_rate_limit_signal(status_code, payload, remaining_req, retry_after=No
     return signal
 
 
-def _request(method, path, *, params=None, headers=None, timeout=TIMEOUT):
+def _auth_headers(query=None):
+    jwt_token = jwt.encode(get_payload(query), secret_key)
+    return {"Authorization": f"Bearer {jwt_token}"}
+
+
+def _request(
+    method,
+    path,
+    *,
+    params=None,
+    headers=None,
+    timeout=TIMEOUT,
+    group=API_GROUP_DEFAULT,
+    max_retries=MAX_RATE_LIMIT_RETRIES,
+):
     global _last_remaining_req
 
-    response = _session.request(
-        method=method,
-        url=server_url + path,
-        params=params,
-        headers=headers,
-        timeout=timeout,
-    )
+    merged_headers = dict(headers or {})
 
-    remaining_req = parse_remaining_req(response.headers.get("Remaining-Req"))
-    _last_remaining_req = remaining_req
+    for attempt in range(max_retries + 1):
+        _group_throttle.wait(group)
+        response = _session.request(
+            method=method,
+            url=server_url + path,
+            params=params,
+            headers=merged_headers,
+            timeout=timeout,
+        )
 
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {"message": response.text}
+        remaining_req = parse_remaining_req(response.headers.get("Remaining-Req"))
+        _last_remaining_req = remaining_req
 
-    if response.status_code in (429, 418):
-        retry_after_header = response.headers.get("Retry-After")
-        retry_after = int(retry_after_header) if retry_after_header and retry_after_header.isdigit() else None
-        return _build_rate_limit_signal(response.status_code, payload, remaining_req, retry_after)
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"message": response.text}
 
-    if not 200 <= response.status_code < 300:
-        raise ApiRequestError(response.status_code, payload, remaining_req)
+        if response.status_code in (429, 418):
+            retry_after_header = response.headers.get("Retry-After")
+            retry_after = int(retry_after_header) if retry_after_header and retry_after_header.isdigit() else None
+            if attempt < max_retries:
+                backoff_seconds = retry_after if retry_after is not None else DEFAULT_BACKOFF_SECONDS * (2 ** attempt)
+                time.sleep(backoff_seconds)
+                continue
+            return _build_rate_limit_signal(response.status_code, payload, remaining_req, retry_after)
 
-    return payload
+        if not 200 <= response.status_code < 300:
+            raise ApiRequestError(response.status_code, payload, remaining_req)
+
+        return payload
 
 
 def build_query_string(params):
@@ -99,11 +181,12 @@ def build_query_string(params):
     """
     return unquote(urlencode(params, doseq=True))
 
+
 # query는 dict 타입
 def get_payload(query=None):
     payload = {
         'access_key': access_key,
-        'nonce': str(uuid.uuid4()),
+        'nonce': _nonce_generator.next(),
     }
 
     if not query:
@@ -119,11 +202,7 @@ def get_payload(query=None):
 
 
 def get_accounts():
-    jwt_token = jwt.encode(get_payload(), secret_key)
-    authorize_token = 'Bearer {}'.format(jwt_token)
-    headers = {"Authorization": authorize_token}
-
-    return _request("GET", "/v1/accounts", headers=headers)
+    return _request("GET", "/v1/accounts", headers=_auth_headers())
 
 
 def get_markets():
@@ -175,11 +254,13 @@ def orders(market="KRW-BTC", side="bid", volume=0.01, price=100.0, ord_type="lim
 
     query_string = build_query_string(query)
 
-    jwt_token = jwt.encode(get_payload(query_string), secret_key)
-    authorize_token = 'Bearer {}'.format(jwt_token)
-    headers = {"Authorization": authorize_token}
-
-    return _request("POST", "/v1/orders", params=query, headers=headers)
+    return _request(
+        "POST",
+        "/v1/orders",
+        params=query,
+        headers=_auth_headers(query_string),
+        group=API_GROUP_ORDER,
+    )
 
 
 # 시장가 매수
