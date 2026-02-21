@@ -24,6 +24,7 @@ class OrderRecord:
     filled_qty: float
     state: OrderStatus
     updated_at: datetime
+    retry_count: int = 0
 
     @classmethod
     def accepted(
@@ -44,4 +45,5 @@ class OrderRecord:
             filled_qty=0.0,
             state=OrderStatus.ACCEPTED,
             updated_at=datetime.now(timezone.utc),
+            retry_count=0,
         )

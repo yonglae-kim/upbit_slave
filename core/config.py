@@ -11,6 +11,14 @@ class TradingConfig:
     max_holdings: int = 4
     buy_divisor: int = 5
     min_buyable_krw: int = 20000
+    risk_per_trade_pct: float = 0.1
+    max_daily_loss_pct: float = 0.05
+    max_consecutive_losses: int = 3
+    max_concurrent_positions: int = 4
+    trailing_stop_pct: float = 0.01
+    max_order_retries: int = 2
+    partial_fill_timeout_scale: float = 0.5
+    partial_fill_reduce_ratio: float = 0.5
     candle_interval: int = 3
     macd_n_fast: int = 12
     macd_n_slow: int = 26
