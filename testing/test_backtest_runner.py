@@ -188,13 +188,59 @@ class BacktestRunnerTest(unittest.TestCase):
     def test_fill_rate_uses_candidate_entries(self):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
 
-        total_return, cagr, mdd, sharpe, fill_rate = runner._calc_metrics([1_000_000, 1_000_000], trades=2, candidate_entries=4)
+        total_return, cagr, mdd, sharpe, fill_rate = runner._calc_metrics(
+            [1_000_000, 1_000_000],
+            trades=2,
+            attempted_entries=10,
+            candidate_entries=4,
+            triggered_entries=3,
+        )
 
         self.assertIsInstance(total_return, float)
         self.assertIsInstance(cagr, float)
         self.assertIsInstance(mdd, float)
         self.assertIsInstance(sharpe, float)
         self.assertEqual(fill_rate, 0.5)
+
+    def test_segment_csv_keeps_entry_counter_columns_for_fill_rate_context(self):
+        runner = BacktestRunner(
+            buffer_cnt=3,
+            multiple_cnt=2,
+            path="/tmp/not_used_entry_metrics.xlsx",
+            segment_report_path="/tmp/segments_entry_metrics.csv",
+        )
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        candles = [self._candle(base - datetime.timedelta(minutes=i), 100 + i) for i in range(12)]
+
+        with patch.object(runner, "_load_or_create_data", return_value=(candles, 0)):
+            with patch.object(runner, "_run_segment") as run_segment:
+                from testing.backtest_runner import SegmentResult
+
+                run_segment.return_value = SegmentResult(
+                    segment_id=1,
+                    insample_start="a",
+                    insample_end="b",
+                    oos_start="c",
+                    oos_end="d",
+                    trades=2,
+                    attempted_entries=5,
+                    candidate_entries=4,
+                    triggered_entries=3,
+                    fill_rate=0.5,
+                    return_pct=1.0,
+                    cagr=1.0,
+                    mdd=1.0,
+                    sharpe=1.0,
+                    exit_reason_counts={},
+                    entry_fail_counts={},
+                )
+                runner.run()
+
+        df = pd.read_csv("/tmp/segments_entry_metrics.csv")
+        self.assertIn("attempted_entries", df.columns)
+        self.assertIn("candidate_entries", df.columns)
+        self.assertIn("triggered_entries", df.columns)
+        self.assertEqual(df.loc[0, "fill_rate"], 0.5)
 
     def test_segment_csv_includes_exit_reason_columns(self):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2, path="/tmp/not_used.xlsx", segment_report_path="/tmp/segments.csv")
