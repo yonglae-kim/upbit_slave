@@ -65,6 +65,12 @@ _ENV_KEY_MAP = {
     "min_candles_1m": "TRADING_MIN_CANDLES_1M",
     "min_candles_5m": "TRADING_MIN_CANDLES_5M",
     "min_candles_15m": "TRADING_MIN_CANDLES_15M",
+    "regime_filter_enabled": "TRADING_REGIME_FILTER_ENABLED",
+    "regime_ema_fast": "TRADING_REGIME_EMA_FAST",
+    "regime_ema_slow": "TRADING_REGIME_EMA_SLOW",
+    "regime_adx_period": "TRADING_REGIME_ADX_PERIOD",
+    "regime_adx_min": "TRADING_REGIME_ADX_MIN",
+    "regime_slope_lookback": "TRADING_REGIME_SLOPE_LOOKBACK",
     "zone_profile": "TRADING_ZONE_PROFILE",
 }
 
@@ -125,11 +131,15 @@ def _parse_env_value(key: str, value: str):
         "min_candles_1m",
         "min_candles_5m",
         "min_candles_15m",
+        "regime_ema_fast",
+        "regime_ema_slow",
+        "regime_adx_period",
+        "regime_slope_lookback",
     }:
         return int(value)
-    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio"}:
+    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min"}:
         return float(value)
-    if key == "sell_requires_profit":
+    if key in {"sell_requires_profit", "regime_filter_enabled"}:
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return value
 
@@ -201,6 +211,12 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "min_candles_1m": int,
         "min_candles_5m": int,
         "min_candles_15m": int,
+        "regime_filter_enabled": bool,
+        "regime_ema_fast": int,
+        "regime_ema_slow": int,
+        "regime_adx_period": int,
+        "regime_adx_min": (int, float),
+        "regime_slope_lookback": int,
     }
 
     for key, expected in required_types.items():
@@ -242,6 +258,10 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "min_candles_1m",
         "min_candles_5m",
         "min_candles_15m",
+        "regime_ema_fast",
+        "regime_ema_slow",
+        "regime_adx_period",
+        "regime_slope_lookback",
     ]
     for key in positive_keys:
         if config[key] <= 0:
@@ -301,6 +321,10 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("trigger_rejection_wick_ratio must be > 0")
     if config["trigger_mode"] not in {"strict", "balanced", "adaptive"}:
         raise ConfigValidationError("trigger_mode must be one of: strict, balanced, adaptive")
+    if config["regime_ema_fast"] >= config["regime_ema_slow"]:
+        raise ConfigValidationError("regime_ema_fast must be smaller than regime_ema_slow")
+    if config["regime_adx_min"] < 0:
+        raise ConfigValidationError("regime_adx_min must be >= 0")
 
 
 def load_trading_config() -> TradingConfig:

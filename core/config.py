@@ -89,6 +89,12 @@ class TradingConfig:
     min_candles_1m: int = 80
     min_candles_5m: int = 30
     min_candles_15m: int = 40
+    regime_filter_enabled: bool = False
+    regime_ema_fast: int = 20
+    regime_ema_slow: int = 50
+    regime_adx_period: int = 14
+    regime_adx_min: float = 20.0
+    regime_slope_lookback: int = 3
     zone_profile: str = "balanced"
 
     def to_strategy_params(
@@ -143,7 +149,13 @@ class TradingConfig:
             "min_candles_1m": self.min_candles_1m,
             "min_candles_5m": self.min_candles_5m,
             "min_candles_15m": self.min_candles_15m,
-        
+            "regime_filter_enabled": self.regime_filter_enabled,
+            "regime_ema_fast": self.regime_ema_fast,
+            "regime_ema_slow": self.regime_ema_slow,
+            "regime_adx_period": self.regime_adx_period,
+            "regime_adx_min": self.regime_adx_min,
+            "regime_slope_lookback": self.regime_slope_lookback,
+
         }
         base_params.update(profile_overrides)
         base_params.update(runtime_overrides)
