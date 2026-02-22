@@ -88,7 +88,7 @@ UPBIT_API_DEBUG=1 python main.py
 TRADING_MODE=paper
 TRADING_DO_NOT_TRADING=KRW-BTC,KRW-ETH
 TRADING_PAPER_INITIAL_KRW=1000000
-TRADING_MAX_HOLDINGS=4
+TRADING_MAX_HOLDINGS=1
 ```
 
 기본값은 `TradingConfig`를 따르며, 상세 키와 로딩/검증 규칙은 `core/config.py`, `core/config_loader.py`를 참고하세요.

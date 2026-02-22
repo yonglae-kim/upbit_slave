@@ -89,15 +89,31 @@ class TradingEngine:
         markets = self.broker.get_markets()
         self.config.krw_markets = self.universe.collect_krw_markets(markets)
 
+    def _print_runtime_status(self, *, stage: str, portfolio=None) -> None:
+        if portfolio is None:
+            print(f"[STATUS] stage={stage}")
+            return
+
+        print(
+            "[STATUS]"
+            f" stage={stage}"
+            f" available_krw={int(portfolio.available_krw)}"
+            f" total_equity_krw={int(portfolio.total_equity_krw)}"
+            f" holdings={len(portfolio.held_markets)}/{self.config.max_holdings}"
+            f" markets={portfolio.held_markets}"
+        )
+
     def run_once(self) -> None:
+        self._print_runtime_status(stage="initializing")
         self.initialize_markets()
+        self._print_runtime_status(stage="reconciling_orders")
         self.reconcile_orders()
         strategy_params = self.config.to_strategy_params()
 
         accounts = self.broker.get_accounts()
         portfolio = normalize_accounts(accounts, self.config.do_not_trading)
         self.risk.set_baseline_equity(portfolio.total_equity_krw)
-        print("보유코인 :", portfolio.held_markets)
+        self._print_runtime_status(stage="evaluating_positions", portfolio=portfolio)
 
         for account in portfolio.my_coins:
             market = "KRW-" + account["currency"]
@@ -134,7 +150,9 @@ class TradingEngine:
                     self._position_exit_states.pop(market, None)
                 self.notifier.send(f"SELL_ACCEPTED {market} {current_price} {delta}% reason={decision.reason}")
 
+        self._print_runtime_status(stage="evaluating_entries", portfolio=portfolio)
         self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
+        self._print_runtime_status(stage="cycle_complete", portfolio=portfolio)
 
     def _try_buy(self, available_krw: float, held_markets: list[str], strategy_params) -> None:
         if available_krw <= self.config.min_buyable_krw:
