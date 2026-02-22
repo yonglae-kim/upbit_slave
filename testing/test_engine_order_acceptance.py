@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from core.config import TradingConfig
@@ -25,7 +26,7 @@ class BuyOnlyBroker:
         ]
 
     def get_ticker(self, _markets):
-        return [{"market": "KRW-BTC", "trade_volume": 1000}]
+        return [{"market": "KRW-BTC", "trade_price": 100000.0, "trade_volume": 1000}]
 
     def get_candles(self, _market, interval, count=200):
         _ = interval, count
@@ -39,6 +40,18 @@ class BuyOnlyBroker:
         _ = market, volume, identifier
         return {}
 
+    def get_open_orders(self, market=None, states=("wait", "watch")):
+        _ = market, states
+        return []
+
+    def cancel_order(self, order_uuid):
+        _ = order_uuid
+        return {"state": "cancel"}
+
+    def get_order(self, order_uuid):
+        _ = order_uuid
+        return {"state": "wait"}
+
 
 class DummyNotifier:
     def __init__(self):
@@ -46,6 +59,35 @@ class DummyNotifier:
 
     def send(self, message):
         self.messages.append(message)
+
+
+class TimeoutFlowBroker(BuyOnlyBroker):
+    def __init__(self):
+        super().__init__()
+        self.cancel_calls = []
+        self.get_order_calls = []
+
+    def get_open_orders(self, market=None, states=("wait", "watch")):
+        _ = market, states
+        return [
+            {
+                "identifier": "open-1",
+                "uuid": "open-uuid-1",
+                "market": "KRW-BTC",
+                "side": "bid",
+                "state": "wait",
+                "volume": "20000",
+                "executed_volume": "0",
+            }
+        ]
+
+    def get_order(self, order_uuid):
+        self.get_order_calls.append(order_uuid)
+        return {"uuid": order_uuid, "state": "wait"}
+
+    def cancel_order(self, order_uuid):
+        self.cancel_calls.append(order_uuid)
+        return {"uuid": order_uuid, "state": "cancel"}
 
 
 class TradingEngineOrderAcceptanceTest(unittest.TestCase):
@@ -114,6 +156,24 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
 
         self.assertEqual(len(broker.buy_calls), 0)
         self.assertEqual(engine.orders_by_identifier, {})
+
+    def test_timeout_cancel_and_reorder_flow(self):
+        broker = TimeoutFlowBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], max_order_retries=1)
+        engine = TradingEngine(broker, notifier, config)
+        engine.bootstrap_open_orders()
+
+        stale = engine.orders_by_identifier["open-1"]
+        stale.state = OrderStatus.ACCEPTED
+        stale.updated_at = datetime.now(timezone.utc) - timedelta(seconds=engine.order_timeout_seconds + 1)
+
+        engine.reconcile_orders()
+
+        self.assertEqual(broker.get_order_calls, ["open-uuid-1"])
+        self.assertEqual(broker.cancel_calls, ["open-uuid-1"])
+        self.assertEqual(len(broker.buy_calls), 1)
+        self.assertIn(":root=open-1", broker.buy_calls[0][2])
 
 
 if __name__ == "__main__":

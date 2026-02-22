@@ -24,3 +24,9 @@ class Broker(Protocol):
 
     def get_open_orders(self, market: str | None = None, states: tuple[str, ...] = ("wait", "watch")) -> list[dict[str, Any]]:
         ...
+
+    def cancel_order(self, order_uuid: str) -> dict[str, Any]:
+        ...
+
+    def get_order(self, order_uuid: str) -> dict[str, Any]:
+        ...

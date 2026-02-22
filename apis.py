@@ -387,6 +387,31 @@ def ask_market(market="KRW-BTC", volumn=1.0, identifier=None):
     return orders(market, "ask", volumn, 0, "market", identifier=identifier)
 
 
+
+
+def cancel_order(order_uuid):
+    query = {"uuid": str(order_uuid)}
+    query_string = build_query_string(query)
+    return _request(
+        "DELETE",
+        "/v1/order",
+        params=query,
+        headers=_auth_headers(query_string),
+        group=API_GROUP_ORDER,
+    )
+
+
+def get_order(order_uuid):
+    query = {"uuid": str(order_uuid)}
+    query_string = build_query_string(query)
+    return _request(
+        "GET",
+        "/v1/order",
+        params=query,
+        headers=_auth_headers(query_string),
+        group=API_GROUP_ORDER,
+    )
+
 def get_open_orders(market=None, states=("wait", "watch")):
     query = {}
     if market:
