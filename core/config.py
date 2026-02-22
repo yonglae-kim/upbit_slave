@@ -10,13 +10,13 @@ class TradingConfig:
     paper_initial_krw: float = 1_000_000
     fee_rate: float = 0.0005
     min_order_krw: int = 5000
-    max_holdings: int = 4
+    max_holdings: int = 1
     buy_divisor: int = 5
     min_buyable_krw: int = 20000
     risk_per_trade_pct: float = 0.1
     max_daily_loss_pct: float = 0.05
     max_consecutive_losses: int = 3
-    max_concurrent_positions: int = 4
+    max_concurrent_positions: int = 1
     max_correlated_positions: int = 2
     correlation_groups: dict[str, str] = field(default_factory=dict)
     trailing_stop_pct: float = 0.01

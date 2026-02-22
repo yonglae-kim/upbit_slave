@@ -76,6 +76,12 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.mode, "paper")
         self.assertEqual(config.paper_initial_krw, 2_000_000)
 
+
+    def test_default_portfolio_limits_are_single_position(self):
+        config = load_trading_config()
+        self.assertEqual(config.max_holdings, 1)
+        self.assertEqual(config.max_concurrent_positions, 1)
+
     def test_env_override_and_validation(self):
         os.environ["TRADING_MODE"] = "dry_run"
         os.environ["TRADING_BUY_RSI_THRESHOLD"] = "45"
