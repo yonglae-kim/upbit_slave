@@ -63,8 +63,8 @@ class TradingConfig:
     trigger_rejection_wick_ratio: float = 0.35
     trigger_breakout_lookback: int = 3
     min_candles_1m: int = 80
-    min_candles_5m: int = 120
-    min_candles_15m: int = 120
+    min_candles_5m: int = 30
+    min_candles_15m: int = 40
 
     def to_strategy_params(self):
         from core.strategy import StrategyParams

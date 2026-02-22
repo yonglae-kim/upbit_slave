@@ -5,7 +5,7 @@ import math
 import os.path
 from argparse import ArgumentParser
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from statistics import pstdev
 
 import openpyxl  # noqa: F401
@@ -65,7 +65,8 @@ class BacktestRunner:
         self.buffer_cnt = buffer_cnt
         self.multiple_cnt = multiple_cnt
         self.config = load_trading_config()
-        self.strategy_params = self.config.to_strategy_params()
+        self.mtf_timeframes = self._resolve_mtf_timeframes()
+        self.strategy_params = self._build_effective_strategy_params()
         self.spread_rate = max(0.0, float(spread_rate))
         self.slippage_rate = max(0.0, float(slippage_rate))
         self.insample_windows = max(1, int(insample_windows))
@@ -87,6 +88,59 @@ class BacktestRunner:
         self.debug_report_path = debug_report_path
         if self.sell_decision_rule not in {"or", "and"}:
             raise ValueError("sell_decision_rule must be 'or' or 'and'")
+        self._validate_mtf_capacity(raise_on_failure=False)
+
+    def _resolve_mtf_timeframes(self) -> dict[str, int]:
+        base_interval = max(1, int(self.config.candle_interval))
+
+        def align(target: int) -> int:
+            if target <= base_interval:
+                return base_interval
+            return int(math.ceil(target / base_interval) * base_interval)
+
+        return {
+            "1m": align(1),
+            "5m": align(5),
+            "15m": align(15),
+        }
+
+    def _build_effective_strategy_params(self):
+        raw_params = self.config.to_strategy_params()
+
+        def scaled_min(target_tf: int, target_min: int, actual_tf: int) -> int:
+            target_duration = max(1, int(target_min)) * target_tf
+            return max(1, int(math.ceil(target_duration / max(1, actual_tf))))
+
+        return replace(
+            raw_params,
+            min_candles_1m=scaled_min(1, raw_params.min_candles_1m, self.mtf_timeframes["1m"]),
+            min_candles_5m=scaled_min(5, raw_params.min_candles_5m, self.mtf_timeframes["5m"]),
+            min_candles_15m=scaled_min(15, raw_params.min_candles_15m, self.mtf_timeframes["15m"]),
+        )
+
+    def _validate_mtf_capacity(self, raise_on_failure: bool = False) -> dict[str, int]:
+        base_interval = max(1, int(self.config.candle_interval))
+        available: dict[str, int] = {}
+        for key, minutes in self.mtf_timeframes.items():
+            ratio = max(1, int(math.ceil(minutes / base_interval)))
+            available[key] = max(1, int(math.ceil(self.buffer_cnt / ratio)))
+        required = {
+            "1m": int(self.strategy_params.min_candles_1m),
+            "5m": int(self.strategy_params.min_candles_5m),
+            "15m": int(self.strategy_params.min_candles_15m),
+        }
+        insufficient = {key: (available[key], required[key]) for key in required if available[key] < required[key]}
+        if insufficient:
+            detail = ", ".join(f"{k}: available={v[0]} < required={v[1]}" for k, v in insufficient.items())
+            message = (
+                "insufficient MTF candle capacity for backtest buffer_cnt="
+                f"{self.buffer_cnt} (base={self.config.candle_interval}m, tf={self.mtf_timeframes}): {detail}. "
+                "Increase buffer_cnt or lower min_candles thresholds."
+            )
+            if raise_on_failure:
+                raise ValueError(message)
+            print(f"[WARN] {message}")
+        return available
 
     def _resolve_exit_decision(self, *, state: BacktestPositionState, current_price: float, signal_exit: bool) -> ExitDecision:
         policy_decision = self.order_policy.evaluate(
@@ -264,9 +318,9 @@ class BacktestRunner:
     def _build_mtf_candles(self, candles_newest: list[dict]) -> dict[str, list[dict]]:
         base = [dict(candle) for candle in candles_newest]
         return {
-            "1m": base,
-            "5m": self._resample_candles(base, timeframe_minutes=5),
-            "15m": self._resample_candles(base, timeframe_minutes=15),
+            "1m": self._resample_candles(base, timeframe_minutes=self.mtf_timeframes["1m"]),
+            "5m": self._resample_candles(base, timeframe_minutes=self.mtf_timeframes["5m"]),
+            "15m": self._resample_candles(base, timeframe_minutes=self.mtf_timeframes["15m"]),
         }
 
     def _calc_metrics(self, equity_curve: list[float], trades: int, attempted_entries: int) -> tuple[float, float, float, float]:
