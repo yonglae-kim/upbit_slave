@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from core.config import TradingConfig
 from core.strategy import (
@@ -80,6 +81,47 @@ class MainSignalValidationTest(unittest.TestCase):
 
         self.assertGreater(scored[0]["score"], scored[1]["score"])
         self.assertEqual(scored[0]["mid"], 98.5)
+
+
+
+    def _make_fvg_candles(self, base_price: float, gap: float) -> list[dict[str, float]]:
+        oldest = [
+            {
+                "opening_price": base_price - 0.2,
+                "trade_price": base_price,
+                "high_price": base_price,
+                "low_price": base_price - 1.0,
+            },
+            {
+                "opening_price": base_price,
+                "trade_price": base_price + 6.0,
+                "high_price": base_price + 7.0,
+                "low_price": base_price - 1.0,
+            },
+            {
+                "opening_price": base_price + gap + 0.2,
+                "trade_price": base_price + gap + 0.5,
+                "high_price": base_price + gap + 1.0,
+                "low_price": base_price + gap,
+            },
+        ]
+        return list(reversed(oldest))
+
+    def test_fvg_min_width_uses_krw_tick_boundaries(self):
+        params = replace(self.params, fvg_min_width_atr_mult=0.0, displacement_min_atr_mult=0.0, fvg_min_width_ticks=2)
+
+        boundary_cases = [
+            (1000.0, 1.0),
+            (10000.0, 10.0),
+            (100000.0, 50.0),
+        ]
+
+        for base_price, tick in boundary_cases:
+            almost = detect_fvg_zones(self._make_fvg_candles(base_price, (tick * 2) - (tick * 0.1)), params)
+            enough = detect_fvg_zones(self._make_fvg_candles(base_price, tick * 2), params)
+
+            self.assertEqual(almost, [])
+            self.assertEqual(len(enough), 1)
 
     def test_sr_pivot_and_zone_detectors_execute(self):
         c15 = [make_candle(100 + (i % 7) - 3, spread=2.0) for i in range(150)]

@@ -157,6 +157,29 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
         self.assertEqual(len(broker.buy_calls), 0)
         self.assertEqual(engine.orders_by_identifier, {})
 
+
+    def test_preflight_rounds_price_with_same_krw_tick_boundaries(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], min_order_krw=5000)
+        engine = TradingEngine(broker, notifier, config)
+
+        boundary_cases = [
+            (1000.4, 1000.0),
+            (10000.9, 10000.0),
+            (100049.9, 100000.0),
+        ]
+
+        for reference_price, expected in boundary_cases:
+            result = engine._preflight_order(
+                market="KRW-BTC",
+                side="bid",
+                requested_value=10000,
+                reference_price=reference_price,
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["rounded_price"], expected)
+
     def test_timeout_cancel_and_reorder_flow(self):
         broker = TimeoutFlowBroker()
         notifier = DummyNotifier()

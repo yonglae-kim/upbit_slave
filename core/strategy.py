@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from core.price_rules import min_krw_tick_from_candles
 from typing import Any, Sequence
 
 
@@ -161,7 +163,7 @@ def score_sr_levels(sr_levels: Sequence[dict[str, Any]], total_bars: int, params
 def detect_fvg_zones(candles_newest: Sequence[dict[str, Any]], params: StrategyParams) -> list[dict[str, Any]]:
     candles = list(reversed(candles_newest))
     atr = _atr(candles_newest, params.fvg_atr_period)
-    tick = max(1e-8, min((c["trade_price"] for c in candles_newest if "trade_price" in c), default=1.0) * 0.0001)
+    tick = min_krw_tick_from_candles(candles_newest)
     min_width = max(atr * params.fvg_min_width_atr_mult, tick * params.fvg_min_width_ticks)
     zones: list[dict[str, Any]] = []
 
