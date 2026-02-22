@@ -135,5 +135,50 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertEqual(trailing.qty_ratio, 1.0)
 
 
+    def test_position_policy_fixed_pct_vs_atr_mode(self):
+        fixed_policy = PositionOrderPolicy(
+            stop_loss_threshold=0.97,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            exit_mode="fixed_pct",
+        )
+        atr_policy = PositionOrderPolicy(
+            stop_loss_threshold=0.97,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            exit_mode="atr",
+            atr_stop_mult=2.0,
+            atr_trailing_mult=0.0,
+        )
+
+        fixed_state = PositionExitState(peak_price=100.0)
+        atr_state = PositionExitState(peak_price=100.0, entry_atr=5.0, entry_swing_low=90.0)
+
+        fixed_decision = fixed_policy.evaluate(
+            state=fixed_state,
+            avg_buy_price=100.0,
+            current_price=92.0,
+            signal_exit=False,
+            current_atr=5.0,
+            swing_low=90.0,
+        )
+        atr_decision = atr_policy.evaluate(
+            state=atr_state,
+            avg_buy_price=100.0,
+            current_price=92.0,
+            signal_exit=False,
+            current_atr=5.0,
+            swing_low=90.0,
+        )
+
+        self.assertTrue(fixed_decision.should_exit)
+        self.assertEqual(fixed_decision.reason, "stop_loss")
+        self.assertFalse(atr_decision.should_exit)
+
+
 if __name__ == "__main__":
     unittest.main()

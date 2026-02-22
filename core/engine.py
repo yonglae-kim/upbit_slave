@@ -58,6 +58,11 @@ class TradingEngine:
             partial_take_profit_threshold=config.partial_take_profit_threshold,
             partial_take_profit_ratio=config.partial_take_profit_ratio,
             partial_stop_loss_ratio=config.partial_stop_loss_ratio,
+            exit_mode=config.exit_mode,
+            atr_period=config.atr_period,
+            atr_stop_mult=config.atr_stop_mult,
+            atr_trailing_mult=config.atr_trailing_mult,
+            swing_lookback=config.swing_lookback,
         )
         self._position_exit_states: dict[str, PositionExitState] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
@@ -217,7 +222,13 @@ class TradingEngine:
             identifier = self._next_order_identifier(market, "bid")
             response = self.broker.buy_market(market, preflight["order_value"], identifier=identifier)
             self._record_accepted_order(response, identifier, market, "bid", preflight["order_value"])
-            self._position_exit_states[market] = PositionExitState(peak_price=reference_price)
+            entry_atr = self._latest_atr(data["1m"], self.config.atr_period)
+            entry_swing_low = self._latest_swing_low(data["1m"], self.config.swing_lookback)
+            self._position_exit_states[market] = PositionExitState(
+                peak_price=reference_price,
+                entry_atr=entry_atr,
+                entry_swing_low=entry_swing_low,
+            )
             print("BUY_ACCEPTED", market, str(int(preflight["order_value"])) + "원", data["1m"][0]["trade_price"])
             self.notifier.send(f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']}")
             break
@@ -587,14 +598,49 @@ class TradingEngine:
         self.notifier.send(f"ORDER_PREFLIGHT_BLOCKED {code} {market} {side} req={requested} notional={notional}")
 
     def _should_exit_position(self, market: str, data: dict[str, list[dict]], avg_buy_price: float, current_price: float, strategy_params):
-        state = self._position_exit_states.setdefault(market, PositionExitState(peak_price=current_price))
+        current_atr = self._latest_atr(data["1m"], self.config.atr_period)
+        swing_low = self._latest_swing_low(data["1m"], self.config.swing_lookback)
+        state = self._position_exit_states.setdefault(
+            market,
+            PositionExitState(
+                peak_price=current_price,
+                entry_atr=current_atr,
+                entry_swing_low=swing_low,
+            ),
+        )
         signal_exit = check_sell(data, avg_buy_price, strategy_params)
         return self.order_policy.evaluate(
             state=state,
             avg_buy_price=avg_buy_price,
             current_price=current_price,
             signal_exit=signal_exit,
+            current_atr=current_atr,
+            swing_low=swing_low,
         )
+
+    def _latest_atr(self, candles_newest: list[dict], period: int) -> float:
+        if period <= 0:
+            return 0.0
+        candles = list(reversed(candles_newest))
+        if len(candles) < 2:
+            return 0.0
+        trs: list[float] = []
+        for i in range(1, len(candles)):
+            cur, prev = candles[i], candles[i - 1]
+            high = float(cur.get("high_price", cur.get("trade_price", 0.0)))
+            low = float(cur.get("low_price", cur.get("trade_price", 0.0)))
+            prev_close = float(prev.get("trade_price", 0.0))
+            trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        if not trs:
+            return 0.0
+        window = trs[-min(period, len(trs)) :]
+        return sum(window) / len(window)
+
+    def _latest_swing_low(self, candles_newest: list[dict], lookback: int) -> float:
+        window = candles_newest[: max(1, lookback)]
+        if not window:
+            return 0.0
+        return min(float(candle.get("low_price", candle.get("trade_price", 0.0))) for candle in window)
 
     def bootstrap_open_orders(self) -> None:
         if not hasattr(self.broker, "get_open_orders"):

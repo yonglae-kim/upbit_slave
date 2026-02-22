@@ -27,6 +27,11 @@ _ENV_KEY_MAP = {
     "partial_take_profit_threshold": "TRADING_PARTIAL_TAKE_PROFIT_THRESHOLD",
     "partial_take_profit_ratio": "TRADING_PARTIAL_TAKE_PROFIT_RATIO",
     "partial_stop_loss_ratio": "TRADING_PARTIAL_STOP_LOSS_RATIO",
+    "exit_mode": "TRADING_EXIT_MODE",
+    "atr_period": "TRADING_ATR_PERIOD",
+    "atr_stop_mult": "TRADING_ATR_STOP_MULT",
+    "atr_trailing_mult": "TRADING_ATR_TRAILING_MULT",
+    "swing_lookback": "TRADING_SWING_LOOKBACK",
     "candle_interval": "TRADING_CANDLE_INTERVAL",
     "macd_n_fast": "TRADING_MACD_N_FAST",
     "macd_n_slow": "TRADING_MACD_N_SLOW",
@@ -107,6 +112,8 @@ def _parse_env_value(key: str, value: str):
         "min_buyable_krw",
         "max_concurrent_positions",
         "max_correlated_positions",
+        "atr_period",
+        "swing_lookback",
         "candle_interval",
         "macd_n_fast",
         "macd_n_slow",
@@ -137,7 +144,7 @@ def _parse_env_value(key: str, value: str):
         "regime_slope_lookback",
     }:
         return int(value)
-    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min"}:
+    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min"}:
         return float(value)
     if key in {"sell_requires_profit", "regime_filter_enabled"}:
         return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -173,6 +180,11 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "partial_take_profit_threshold": (int, float),
         "partial_take_profit_ratio": (int, float),
         "partial_stop_loss_ratio": (int, float),
+        "exit_mode": str,
+        "atr_period": int,
+        "atr_stop_mult": (int, float),
+        "atr_trailing_mult": (int, float),
+        "swing_lookback": int,
         "candle_interval": int,
         "macd_n_fast": int,
         "macd_n_slow": int,
@@ -236,6 +248,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "min_buyable_krw",
         "max_concurrent_positions",
         "max_correlated_positions",
+        "atr_period",
+        "swing_lookback",
         "candle_interval",
         "macd_n_fast",
         "macd_n_slow",
@@ -283,6 +297,12 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("partial_take_profit_ratio must be in [0, 1]")
     if not 0 <= config["partial_stop_loss_ratio"] <= 1:
         raise ConfigValidationError("partial_stop_loss_ratio must be in [0, 1]")
+    if config["exit_mode"] not in {"fixed_pct", "atr"}:
+        raise ConfigValidationError("exit_mode must be one of: fixed_pct, atr")
+    if config["atr_stop_mult"] <= 0:
+        raise ConfigValidationError("atr_stop_mult must be > 0")
+    if config["atr_trailing_mult"] < 0:
+        raise ConfigValidationError("atr_trailing_mult must be >= 0")
     if config.get("correlation_groups") is None:
         config["correlation_groups"] = {}
     if not isinstance(config.get("correlation_groups"), dict):
