@@ -28,13 +28,17 @@ class SegmentResult:
     attempted_entries: int
     candidate_entries: int
     triggered_entries: int
-    avg_zones_total: float
-    avg_zones_active: float
-    fill_rate: float
-    return_pct: float
-    cagr: float
-    mdd: float
-    sharpe: float
+    avg_zones_total: float = 0.0
+    avg_zones_active: float = 0.0
+    fill_rate: float = 0.0
+    return_pct: float = 0.0
+    period_return: float = 0.0
+    return_per_trade: float = 0.0
+    cagr: float = 0.0
+    cagr_valid: bool = True
+    observed_days: float = 0.0
+    mdd: float = 0.0
+    sharpe: float = 0.0
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
     entry_fail_counts: dict[str, int] = field(default_factory=dict)
 
@@ -47,6 +51,8 @@ class BacktestPositionState:
 
 class BacktestRunner:
     MAX_CANDLE_LIMIT = 200
+    MIN_CAGR_OBSERVATION_DAYS = 90
+    ABNORMAL_CAGR_THRESHOLD_PCT = 500
 
     def __init__(
         self,
@@ -344,16 +350,22 @@ class BacktestRunner:
         attempted_entries: int,
         candidate_entries: int,
         triggered_entries: int,
-    ) -> tuple[float, float, float, float, float]:
+    ) -> tuple[float, float, float, float, float, float, bool, float]:
         if not equity_curve:
-            return 0.0, 0.0, 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, 0.0
         start = equity_curve[0]
         end = equity_curve[-1]
         total_return = (end / start) - 1 if start > 0 else 0.0
+        period_return = total_return * 100
+        return_per_trade = period_return / trades if trades > 0 else 0.0
 
         periods_per_year = (60 * 24 * 365) / self.config.candle_interval
+        observed_days = max(len(equity_curve) - 1, 0) * self.config.candle_interval / (60 * 24)
         years = max(len(equity_curve) / periods_per_year, 1e-9)
-        cagr = ((end / start) ** (1 / years) - 1) if start > 0 and end > 0 else -1.0
+        cagr_valid = observed_days >= self.MIN_CAGR_OBSERVATION_DAYS
+        cagr = float("nan")
+        if cagr_valid and start > 0 and end > 0:
+            cagr = ((end / start) ** (1 / years) - 1) * 100
 
         peak = equity_curve[0]
         mdd = 0.0
@@ -382,7 +394,7 @@ class BacktestRunner:
         _ = attempted_entries
         _ = triggered_entries
         fill_rate = trades / candidate_entries if candidate_entries > 0 else 0.0
-        return total_return * 100, cagr * 100, abs(mdd) * 100, sharpe, fill_rate
+        return period_return, return_per_trade, cagr, abs(mdd) * 100, sharpe, fill_rate, cagr_valid, observed_days
 
     def _build_fail_summary(self, fail_counts: dict[str, int]) -> dict[str, int | str]:
         counters = Counter(fail_counts)
@@ -467,7 +479,7 @@ class BacktestRunner:
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
 
-        total_return, cagr, mdd, sharpe, fill_rate = self._calc_metrics(
+        total_return, return_per_trade, cagr, mdd, sharpe, fill_rate, cagr_valid, observed_days = self._calc_metrics(
             equity_curve,
             trades,
             attempted_entries,
@@ -492,7 +504,11 @@ class BacktestRunner:
             avg_zones_active=avg_zones_active,
             fill_rate=fill_rate,
             return_pct=total_return,
+            period_return=total_return,
+            return_per_trade=return_per_trade,
             cagr=cagr,
+            cagr_valid=cagr_valid,
+            observed_days=observed_days,
             mdd=mdd,
             sharpe=sharpe,
             exit_reason_counts=dict(exit_reason_counts),
@@ -530,7 +546,11 @@ class BacktestRunner:
                 avg_zones_active=segment.avg_zones_active,
                 fill_rate=segment.fill_rate,
                 return_pct=segment.return_pct,
+                period_return=segment.period_return,
+                return_per_trade=segment.return_per_trade,
                 cagr=segment.cagr,
+                cagr_valid=segment.cagr_valid,
+                observed_days=segment.observed_days,
                 mdd=segment.mdd,
                 sharpe=segment.sharpe,
                 exit_reason_counts=segment.exit_reason_counts,
@@ -586,11 +606,26 @@ class BacktestRunner:
             )
             debug_df.to_csv(self.debug_report_path, index=False)
 
-        summary = df[["return_pct", "cagr", "mdd", "sharpe", "fill_rate"]].mean().to_dict() if not df.empty else {}
+        summary = (
+            df[["period_return", "return_per_trade", "return_pct", "cagr", "mdd", "sharpe", "fill_rate"]].mean(
+                numeric_only=True
+            ).to_dict()
+            if not df.empty
+            else {}
+        )
+        abnormal_cagr_rows = (
+            df[df["cagr_valid"] & df["cagr"].abs().gt(self.ABNORMAL_CAGR_THRESHOLD_PCT)] if not df.empty else pd.DataFrame()
+        )
         print(f"synthetic shortage candles applied: {shortage_count}")
         print(f"walk-forward segments saved: {self.segment_report_path}")
         if self.debug_mode:
             print(f"entry failure debug saved: {self.debug_report_path}")
+        if not abnormal_cagr_rows.empty:
+            ids = ", ".join(str(int(v)) for v in abnormal_cagr_rows["segment_id"].tolist())
+            print(
+                "[WARN] abnormal CAGR detected in segments "
+                f"({ids}) with threshold ±{self.ABNORMAL_CAGR_THRESHOLD_PCT}%"
+            )
         print("평균 성과:", {k: round(v, 4) for k, v in summary.items()})
         return summary
 
