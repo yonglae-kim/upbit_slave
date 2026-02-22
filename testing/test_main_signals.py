@@ -113,11 +113,13 @@ class MainSignalValidationTest(unittest.TestCase):
 
         self.assertFalse(debug["final_pass"])
         self.assertEqual(debug["fail_code"], "regime_filter_fail")
+        self.assertIn("regime_filter_reason", debug)
+        self.assertEqual(debug["regime_filter_reason"], "ema_trend_fail")
     def test_debug_entry_exposes_trigger_fail_code_details(self):
         c15 = [make_candle(100 + (i % 6) - 3, spread=1.5) for i in range(160)]
         c5 = [make_candle(120 + i * 0.01) for i in range(160)]
         c1 = [make_candle(121 + i * 0.01) for i in range(120)]
-        params = replace(self.params, trigger_mode="strict")
+        params = replace(self.params, trigger_mode="strict", regime_filter_enabled=False)
 
         with patch("core.strategy.detect_fvg_zones", return_value=[]), patch(
             "core.strategy.detect_ob_zones",
@@ -159,7 +161,7 @@ class MainSignalValidationTest(unittest.TestCase):
             "core.strategy.detect_ob_zones",
             return_value=[{"type": "ob", "bias": "bullish", "lower": 110.0, "upper": 130.0, "created_index": 1}],
         ), patch("core.strategy.filter_active_zones", return_value=[]) as active_mock:
-            check_buy(self._tf(c1, c5, c15), self.params)
+            check_buy(self._tf(c1, c5, c15), replace(self.params, regime_filter_enabled=False))
 
         self.assertEqual(active_mock.call_args.kwargs["current_index"], self.params.ob_lookback_bars)
 

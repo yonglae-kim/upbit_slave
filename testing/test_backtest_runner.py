@@ -350,7 +350,7 @@ class BacktestRunnerTest(unittest.TestCase):
                     mdd=0.0,
                     sharpe=0.0,
                     exit_reason_counts={},
-                    entry_fail_counts={"no_selected_zone": 2, "trigger_fail": 1, "regime_filter_fail": 1},
+                    entry_fail_counts={"no_selected_zone": 2, "trigger_fail": 1, "regime_filter_fail:ema_trend_fail": 1},
                 )
                 runner.run()
 
