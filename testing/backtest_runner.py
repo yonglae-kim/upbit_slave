@@ -14,7 +14,7 @@ import pandas as pd
 import apis
 from core.config_loader import load_trading_config
 from core.position_policy import ExitDecision, PositionExitState, PositionOrderPolicy
-from core.strategy import check_buy, check_sell, debug_entry, preprocess_candles
+from core.strategy import check_buy, check_sell, debug_entry, preprocess_candles, zone_debug_metrics
 
 
 @dataclass
@@ -28,6 +28,8 @@ class SegmentResult:
     attempted_entries: int
     candidate_entries: int
     triggered_entries: int
+    avg_zones_total: float
+    avg_zones_active: float
     fill_rate: float
     return_pct: float
     cagr: float
@@ -61,6 +63,10 @@ class BacktestRunner:
         sell_decision_rule: str = "or",
         debug_mode: bool = False,
         debug_report_path: str = "backtest_entry_failures.csv",
+        zone_profile: str | None = None,
+        zone_expiry_bars_5m: int | None = None,
+        fvg_min_width_atr_mult: float | None = None,
+        displacement_min_atr_mult: float | None = None,
     ):
         self.market = market
         self.path = path
@@ -68,6 +74,12 @@ class BacktestRunner:
         self.multiple_cnt = multiple_cnt
         self.config = load_trading_config()
         self.mtf_timeframes = self._resolve_mtf_timeframes()
+        self.zone_profile = zone_profile
+        self.zone_overrides = {
+            "zone_expiry_bars_5m": zone_expiry_bars_5m,
+            "fvg_min_width_atr_mult": fvg_min_width_atr_mult,
+            "displacement_min_atr_mult": displacement_min_atr_mult,
+        }
         self.strategy_params = self._build_effective_strategy_params()
         self.spread_rate = max(0.0, float(spread_rate))
         self.slippage_rate = max(0.0, float(slippage_rate))
@@ -107,7 +119,7 @@ class BacktestRunner:
         }
 
     def _build_effective_strategy_params(self):
-        raw_params = self.config.to_strategy_params()
+        raw_params = self.config.to_strategy_params(zone_profile=self.zone_profile, zone_overrides=self.zone_overrides)
 
         def scaled_min(target_tf: int, target_min: int, actual_tf: int) -> int:
             target_duration = max(1, int(target_min)) * target_tf
@@ -388,6 +400,9 @@ class BacktestRunner:
         attempted_entries = 0
         candidate_entries = 0
         triggered_entries = 0
+        zone_debug_samples = 0
+        zones_total_sum = 0
+        zones_active_sum = 0
         trades = 0
         equity_curve = [init_amount]
         position_state = BacktestPositionState()
@@ -403,11 +418,15 @@ class BacktestRunner:
 
             if hold_coin == 0:
                 debug = debug_entry(mtf_data, self.strategy_params, side="buy")
-                selected_zone = debug.get("selected_zone") if debug else None
-                has_candidate_entry = selected_zone is not None
+                zones_total, zones_active, has_candidate_entry = zone_debug_metrics(debug)
                 if has_candidate_entry:
                     candidate_entries += 1
                     attempted_entries += 1
+
+                if debug:
+                    zone_debug_samples += 1
+                    zones_total_sum += zones_total
+                    zones_active_sum += zones_active
 
                 if self.debug_mode:
                     buy_signal = bool(debug.get("final_pass", False))
@@ -457,6 +476,8 @@ class BacktestRunner:
         )
         oldest = data_newest[-1]["candle_date_time_kst"]
         newest = data_newest[0]["candle_date_time_kst"]
+        avg_zones_total = zones_total_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
+        avg_zones_active = zones_active_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
         return SegmentResult(
             segment_id=segment_id,
             insample_start=oldest,
@@ -467,6 +488,8 @@ class BacktestRunner:
             attempted_entries=attempted_entries,
             candidate_entries=candidate_entries,
             triggered_entries=triggered_entries,
+            avg_zones_total=avg_zones_total,
+            avg_zones_active=avg_zones_active,
             fill_rate=fill_rate,
             return_pct=total_return,
             cagr=cagr,
@@ -503,6 +526,8 @@ class BacktestRunner:
                 attempted_entries=segment.attempted_entries,
                 candidate_entries=segment.candidate_entries,
                 triggered_entries=segment.triggered_entries,
+                avg_zones_total=segment.avg_zones_total,
+                avg_zones_active=segment.avg_zones_active,
                 fill_rate=segment.fill_rate,
                 return_pct=segment.return_pct,
                 cagr=segment.cagr,
@@ -583,6 +608,15 @@ if __name__ == "__main__":
     parser.add_argument("--sell-decision-rule", choices=["or", "and"], default="or")
     parser.add_argument("--debug-mode", action="store_true")
     parser.add_argument("--debug-report-path", default="backtest_entry_failures.csv")
+    parser.add_argument(
+        "--zone-profile",
+        choices=["conservative", "balanced", "aggressive", "krw_eth_relaxed"],
+        default=None,
+        help="Zone tuning profile override. krw_eth_relaxed is a reproducible KRW-ETH example.",
+    )
+    parser.add_argument("--zone-expiry-bars-5m", type=int, default=None)
+    parser.add_argument("--fvg-min-width-atr-mult", type=float, default=None)
+    parser.add_argument("--displacement-min-atr-mult", type=float, default=None)
     args = parser.parse_args()
 
     BacktestRunner(
@@ -597,4 +631,8 @@ if __name__ == "__main__":
         sell_decision_rule=args.sell_decision_rule,
         debug_mode=args.debug_mode,
         debug_report_path=args.debug_report_path,
+        zone_profile=args.zone_profile,
+        zone_expiry_bars_5m=args.zone_expiry_bars_5m,
+        fvg_min_width_atr_mult=args.fvg_min_width_atr_mult,
+        displacement_min_atr_mult=args.displacement_min_atr_mult,
     ).run()
