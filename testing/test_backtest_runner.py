@@ -322,13 +322,14 @@ class BacktestRunnerTest(unittest.TestCase):
                     mdd=0.0,
                     sharpe=0.0,
                     exit_reason_counts={},
-                    entry_fail_counts={"no_selected_zone": 2, "trigger_fail": 1},
+                    entry_fail_counts={"no_selected_zone": 2, "trigger_fail": 1, "regime_filter_fail": 1},
                 )
                 runner.run()
 
         df = pd.read_csv("/tmp/segments_fail.csv")
         self.assertIn("dominant_fail_code", df.columns)
         self.assertIn("fail_no_selected_zone", df.columns)
+        self.assertIn("fail_regime_filter_fail", df.columns)
         self.assertEqual(df.loc[0, "dominant_fail_code"], "no_selected_zone")
         self.assertGreater(df.loc[0, "fail_no_selected_zone"], 0)
 

@@ -17,6 +17,7 @@ from core.strategy import (
     pick_best_zone,
     score_sr_levels,
     check_trigger_1m,
+    passes_regime_filter,
 )
 
 
@@ -95,6 +96,23 @@ class MainSignalValidationTest(unittest.TestCase):
 
     def test_default_trigger_mode_is_adaptive(self):
         self.assertEqual(self.params.trigger_mode, "adaptive")
+
+
+    def test_regime_filter_passes_when_conditions_are_met(self):
+        params = replace(self.params, regime_filter_enabled=True, regime_ema_fast=5, regime_ema_slow=10, regime_adx_period=5, regime_adx_min=10.0, regime_slope_lookback=2)
+        c15 = [make_candle(200 - (i * 0.7), spread=1.5, bull=True) for i in range(80)]
+        self.assertTrue(passes_regime_filter(c15, params))
+
+    def test_debug_entry_returns_regime_filter_fail_code(self):
+        c15 = [make_candle(120 + (i * 0.3), spread=1.0, bull=False) for i in range(160)]
+        c5 = [make_candle(120 + i * 0.01) for i in range(160)]
+        c1 = [make_candle(121 + i * 0.01) for i in range(120)]
+        params = replace(self.params, regime_filter_enabled=True, regime_ema_fast=5, regime_ema_slow=20, regime_adx_period=5, regime_adx_min=10.0, regime_slope_lookback=2)
+
+        debug = debug_entry(self._tf(c1, c5, c15), params, side="buy")
+
+        self.assertFalse(debug["final_pass"])
+        self.assertEqual(debug["fail_code"], "regime_filter_fail")
     def test_debug_entry_exposes_trigger_fail_code_details(self):
         c15 = [make_candle(100 + (i % 6) - 3, spread=1.5) for i in range(160)]
         c5 = [make_candle(120 + i * 0.01) for i in range(160)]

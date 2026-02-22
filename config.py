@@ -55,4 +55,10 @@ TRADING_CONFIG = {
     "min_candles_1m": 80,
     "min_candles_5m": 30,
     "min_candles_15m": 40,
+    "regime_filter_enabled": False,
+    "regime_ema_fast": 20,
+    "regime_ema_slow": 50,
+    "regime_adx_period": 14,
+    "regime_adx_min": 20.0,
+    "regime_slope_lookback": 3,
 }

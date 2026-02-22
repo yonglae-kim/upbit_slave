@@ -67,7 +67,13 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'trigger_mode': 'strict',\n"
                 "    'min_candles_1m': 80,\n"
                 "    'min_candles_5m': 120,\n"
-                "    'min_candles_15m': 120\n"
+                "    'min_candles_15m': 120,\n"
+                "    'regime_filter_enabled': False,\n"
+                "    'regime_ema_fast': 20,\n"
+                "    'regime_ema_slow': 50,\n"
+                "    'regime_adx_period': 14,\n"
+                "    'regime_adx_min': 20.0,\n"
+                "    'regime_slope_lookback': 3\n"
                 "}\n",
                 encoding="utf-8",
             )

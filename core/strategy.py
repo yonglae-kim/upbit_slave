@@ -44,6 +44,12 @@ class StrategyParams:
     min_candles_1m: int = 80
     min_candles_5m: int = 120
     min_candles_15m: int = 120
+    regime_filter_enabled: bool = False
+    regime_ema_fast: int = 20
+    regime_ema_slow: int = 50
+    regime_adx_period: int = 14
+    regime_adx_min: float = 20.0
+    regime_slope_lookback: int = 3
 
 
 def preprocess_candles(data: Sequence[dict[str, Any]], source_order: str = "newest") -> list[dict[str, Any]]:
@@ -75,6 +81,89 @@ def _atr(candles_newest: Sequence[dict[str, Any]], period: int) -> float:
         return 0.0
     window = trs[-min(period, len(trs)) :]
     return sum(window) / len(window)
+
+
+def _ema_values(candles_newest: Sequence[dict[str, Any]], period: int) -> list[float]:
+    closes = [_price(candle, "trade_price") for candle in reversed(candles_newest)]
+    if not closes:
+        return []
+    alpha = 2.0 / (period + 1)
+    ema_values: list[float] = []
+    ema = closes[0]
+    for close in closes:
+        ema = (close * alpha) + (ema * (1 - alpha))
+        ema_values.append(ema)
+    return ema_values
+
+
+def _adx(candles_newest: Sequence[dict[str, Any]], period: int) -> float:
+    candles = list(reversed(candles_newest))
+    if len(candles) < period + 1:
+        return 0.0
+
+    tr_list: list[float] = []
+    plus_dm_list: list[float] = []
+    minus_dm_list: list[float] = []
+    for idx in range(1, len(candles)):
+        cur = candles[idx]
+        prev = candles[idx - 1]
+        up_move = _price(cur, "high_price") - _price(prev, "high_price")
+        down_move = _price(prev, "low_price") - _price(cur, "low_price")
+        plus_dm = up_move if up_move > down_move and up_move > 0 else 0.0
+        minus_dm = down_move if down_move > up_move and down_move > 0 else 0.0
+
+        high = _price(cur, "high_price")
+        low = _price(cur, "low_price")
+        prev_close = _price(prev, "trade_price")
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+
+        tr_list.append(tr)
+        plus_dm_list.append(plus_dm)
+        minus_dm_list.append(minus_dm)
+
+    window = min(period, len(tr_list))
+    if window <= 0:
+        return 0.0
+
+    dx_values: list[float] = []
+    for start in range(0, len(tr_list) - window + 1):
+        tr_sum = sum(tr_list[start : start + window])
+        if tr_sum <= 0:
+            dx_values.append(0.0)
+            continue
+        plus_di = 100.0 * (sum(plus_dm_list[start : start + window]) / tr_sum)
+        minus_di = 100.0 * (sum(minus_dm_list[start : start + window]) / tr_sum)
+        denom = plus_di + minus_di
+        if denom <= 0:
+            dx_values.append(0.0)
+            continue
+        dx_values.append(100.0 * abs(plus_di - minus_di) / denom)
+
+    if not dx_values:
+        return 0.0
+    return sum(dx_values[-window:]) / len(dx_values[-window:])
+
+
+def passes_regime_filter(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> bool:
+    if not params.regime_filter_enabled:
+        return True
+
+    need = max(params.regime_ema_slow, params.regime_adx_period + 1, params.regime_slope_lookback + 1)
+    if len(c15_newest) < need:
+        return False
+
+    fast_ema = _ema_values(c15_newest, params.regime_ema_fast)
+    slow_ema = _ema_values(c15_newest, params.regime_ema_slow)
+    if len(fast_ema) <= params.regime_slope_lookback or not slow_ema:
+        return False
+
+    fast_now = fast_ema[-1]
+    slow_now = slow_ema[-1]
+    fast_prev = fast_ema[-1 - params.regime_slope_lookback]
+    fast_slope = fast_now - fast_prev
+    adx = _adx(c15_newest, params.regime_adx_period)
+
+    return fast_now > slow_now and fast_slope > 0 and adx >= params.regime_adx_min
 
 
 def detect_sr_pivots(candles_newest: Sequence[dict[str, Any]], left: int, right: int) -> list[dict[str, Any]]:
@@ -421,6 +510,10 @@ def debug_entry(data: Any, params: StrategyParams, side: str, source_order: str 
     }
 
     if len(c1) < params.min_candles_1m or len(c5) < params.min_candles_5m or len(c15) < params.min_candles_15m:
+        return debug
+
+    if not passes_regime_filter(c15, params):
+        debug["fail_code"] = "regime_filter_fail"
         return debug
 
     pivots = detect_sr_pivots(c15[: params.sr_lookback_bars], params.sr_pivot_left, params.sr_pivot_right)

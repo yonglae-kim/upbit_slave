@@ -403,6 +403,7 @@ class BacktestRunner:
             "fail_no_selected_zone": int(counters.get("no_selected_zone", 0)),
             "fail_trigger_fail": int(counters.get("trigger_fail", 0)),
             "fail_invalid_timeframe": int(counters.get("invalid_timeframe", 0)),
+            "fail_regime_filter_fail": int(counters.get("regime_filter_fail", 0)),
             "dominant_fail_code": max(counters, key=counters.get) if counters else "none",
         }
 
