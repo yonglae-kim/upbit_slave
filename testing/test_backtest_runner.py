@@ -142,6 +142,39 @@ class BacktestRunnerTest(unittest.TestCase):
 
         self.assertEqual(result.exit_reason_counts.get("signal_exit", 0), 0)
 
+    @patch("testing.backtest_runner.debug_entry")
+    def test_debug_mode_exports_dominant_entry_fail_code_when_signal_zero(self, debug_entry_mock):
+        runner = BacktestRunner(
+            buffer_cnt=3,
+            multiple_cnt=2,
+            path="/tmp/not_used_debug.xlsx",
+            segment_report_path="/tmp/segments_debug.csv",
+            debug_mode=True,
+            debug_report_path="/tmp/entry_debug.csv",
+        )
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        candles = [self._candle(base - datetime.timedelta(minutes=i), 100 + i) for i in range(12)]
+
+        debug_entry_mock.return_value = {
+            "len_c1": 120,
+            "len_c5": 120,
+            "len_c15": 120,
+            "zones_total": 1,
+            "zones_active": 1,
+            "selected_zone": None,
+            "trigger_pass": False,
+            "final_pass": False,
+            "fail_code": "no_selected_zone",
+        }
+
+        with patch.object(runner, "_load_or_create_data", return_value=(candles, 0)):
+            runner.run()
+
+        debug_df = pd.read_csv("/tmp/entry_debug.csv")
+        self.assertTrue((debug_df["signal_zero"] == True).all())
+        self.assertTrue((debug_df["dominant_fail_code"] == "no_selected_zone").all())
+        self.assertGreater(debug_df["fail_no_selected_zone"].sum(), 0)
+
     def test_segment_csv_includes_exit_reason_columns(self):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2, path="/tmp/not_used.xlsx", segment_report_path="/tmp/segments.csv")
         base = datetime.datetime(2024, 1, 1, 0, 0, 0)

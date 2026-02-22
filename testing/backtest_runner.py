@@ -14,7 +14,7 @@ import pandas as pd
 import apis
 from core.config_loader import load_trading_config
 from core.position_policy import ExitDecision, PositionExitState, PositionOrderPolicy
-from core.strategy import check_buy, check_sell, preprocess_candles
+from core.strategy import check_buy, check_sell, debug_entry, preprocess_candles
 
 
 @dataclass
@@ -32,6 +32,7 @@ class SegmentResult:
     mdd: float
     sharpe: float
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
+    entry_fail_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -56,6 +57,8 @@ class BacktestRunner:
         segment_report_path: str = "backtest_walkforward_segments.csv",
         lookback_days: int | None = None,
         sell_decision_rule: str = "or",
+        debug_mode: bool = False,
+        debug_report_path: str = "backtest_entry_failures.csv",
     ):
         self.market = market
         self.path = path
@@ -80,6 +83,8 @@ class BacktestRunner:
             partial_stop_loss_ratio=self.config.partial_stop_loss_ratio,
         )
         self.sell_decision_rule = str(sell_decision_rule).lower().strip()
+        self.debug_mode = bool(debug_mode)
+        self.debug_report_path = debug_report_path
         if self.sell_decision_rule not in {"or", "and"}:
             raise ValueError("sell_decision_rule must be 'or' or 'and'")
 
@@ -308,6 +313,7 @@ class BacktestRunner:
         equity_curve = [init_amount]
         position_state = BacktestPositionState()
         exit_reason_counts: Counter[str] = Counter()
+        entry_fail_counts: Counter[str] = Counter()
 
         for i in range(len(data_newest), self.buffer_cnt - 1, -1):
             end = i
@@ -318,7 +324,15 @@ class BacktestRunner:
 
             if hold_coin == 0:
                 attempted_entries += 1
-                if check_buy(mtf_data, self.strategy_params):
+                if self.debug_mode:
+                    debug = debug_entry(mtf_data, self.strategy_params, side="buy")
+                    buy_signal = bool(debug.get("final_pass", False))
+                    if not buy_signal:
+                        entry_fail_counts[str(debug.get("fail_code", "unknown"))] += 1
+                else:
+                    buy_signal = check_buy(mtf_data, self.strategy_params)
+
+                if buy_signal:
                     trades += 1
                     entry_price = current_price * (1 + (self.spread_rate / 2) + self.slippage_rate)
                     hold_coin += (amount * (1 - self.config.fee_rate)) / entry_price
@@ -365,6 +379,7 @@ class BacktestRunner:
             mdd=mdd,
             sharpe=sharpe,
             exit_reason_counts=dict(exit_reason_counts),
+            entry_fail_counts=dict(entry_fail_counts),
         )
 
     def run(self):
@@ -398,6 +413,7 @@ class BacktestRunner:
                 mdd=segment.mdd,
                 sharpe=segment.sharpe,
                 exit_reason_counts=segment.exit_reason_counts,
+                entry_fail_counts=segment.entry_fail_counts,
             )
             results.append(segment)
             segment_id += 1
@@ -419,12 +435,35 @@ class BacktestRunner:
             ]
         )
         if not reason_df.empty:
-            df = pd.concat([df.drop(columns=["exit_reason_counts"]), reason_df], axis=1)
+            df = pd.concat([df.drop(columns=["exit_reason_counts", "entry_fail_counts"], errors="ignore"), reason_df], axis=1)
         df.to_csv(self.segment_report_path, index=False)
+
+        if self.debug_mode and results:
+            debug_df = pd.DataFrame(
+                [
+                    {
+                        "segment_id": row.segment_id,
+                        "attempted_entries": row.attempted_entries,
+                        "trades": row.trades,
+                        "signal_zero": row.trades == 0,
+                        "fail_insufficient_candles": row.entry_fail_counts.get("insufficient_candles", 0),
+                        "fail_no_selected_zone": row.entry_fail_counts.get("no_selected_zone", 0),
+                        "fail_trigger_fail": row.entry_fail_counts.get("trigger_fail", 0),
+                        "fail_invalid_timeframe": row.entry_fail_counts.get("invalid_timeframe", 0),
+                        "dominant_fail_code": max(row.entry_fail_counts, key=row.entry_fail_counts.get)
+                        if row.entry_fail_counts
+                        else "none",
+                    }
+                    for row in results
+                ]
+            )
+            debug_df.to_csv(self.debug_report_path, index=False)
 
         summary = df[["return_pct", "cagr", "mdd", "sharpe", "fill_rate"]].mean().to_dict() if not df.empty else {}
         print(f"synthetic shortage candles applied: {shortage_count}")
         print(f"walk-forward segments saved: {self.segment_report_path}")
+        if self.debug_mode:
+            print(f"entry failure debug saved: {self.debug_report_path}")
         print("평균 성과:", {k: round(v, 4) for k, v in summary.items()})
         return summary
 
@@ -440,6 +479,8 @@ if __name__ == "__main__":
     parser.add_argument("--lookback-days", type=int, default=None)
     parser.add_argument("--segment-report-path", default="backtest_walkforward_segments.csv")
     parser.add_argument("--sell-decision-rule", choices=["or", "and"], default="or")
+    parser.add_argument("--debug-mode", action="store_true")
+    parser.add_argument("--debug-report-path", default="backtest_entry_failures.csv")
     args = parser.parse_args()
 
     BacktestRunner(
@@ -452,4 +493,6 @@ if __name__ == "__main__":
         lookback_days=args.lookback_days,
         segment_report_path=args.segment_report_path,
         sell_decision_rule=args.sell_decision_rule,
+        debug_mode=args.debug_mode,
+        debug_report_path=args.debug_report_path,
     ).run()

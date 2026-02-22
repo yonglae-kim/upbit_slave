@@ -306,29 +306,63 @@ def _normalize_timeframes(data: Any) -> dict[str, list[dict[str, Any]]] | None:
 
 
 def _check_entry(data: Any, params: StrategyParams, side: str, source_order: str = "newest") -> bool:
+    return bool(debug_entry(data, params, side=side, source_order=source_order).get("final_pass", False))
+
+
+def debug_entry(data: Any, params: StrategyParams, side: str, source_order: str = "newest") -> dict[str, Any]:
     tf = _normalize_timeframes(data)
     if tf is None:
-        return False
+        return {
+            "len_c1": 0,
+            "len_c5": 0,
+            "len_c15": 0,
+            "zones_total": 0,
+            "zones_active": 0,
+            "selected_zone": None,
+            "trigger_pass": False,
+            "final_pass": False,
+            "fail_code": "invalid_timeframe",
+        }
 
     c1 = preprocess_candles(tf["1m"], source_order=source_order)
     c5 = preprocess_candles(tf["5m"], source_order=source_order)
     c15 = preprocess_candles(tf["15m"], source_order=source_order)
 
+    debug: dict[str, Any] = {
+        "len_c1": len(c1),
+        "len_c5": len(c5),
+        "len_c15": len(c15),
+        "zones_total": 0,
+        "zones_active": 0,
+        "selected_zone": None,
+        "trigger_pass": False,
+        "final_pass": False,
+        "fail_code": "insufficient_candles",
+    }
+
     if len(c1) < params.min_candles_1m or len(c5) < params.min_candles_5m or len(c15) < params.min_candles_15m:
-        return False
+        return debug
 
     pivots = detect_sr_pivots(c15[: params.sr_lookback_bars], params.sr_pivot_left, params.sr_pivot_right)
     sr_levels = cluster_sr_levels(pivots, params.sr_cluster_band_pct, params.sr_min_touches)
     sr_levels = score_sr_levels(sr_levels, total_bars=len(c15[: params.sr_lookback_bars]), params=params)
 
     zones = detect_fvg_zones(c5[: params.ob_lookback_bars], params) + detect_ob_zones(c5[: params.ob_lookback_bars], params)
+    debug["zones_total"] = len(zones)
     current_price_5m = _price(c5[0], "trade_price")
     active = filter_active_zones(zones, current_price_5m, current_index=len(c5[: params.ob_lookback_bars]), params=params)
+    debug["zones_active"] = len(active)
     selected = pick_best_zone(sr_levels, active, side=side, params=params)
+    debug["selected_zone"] = selected
     if selected is None:
-        return False
+        debug["fail_code"] = "no_selected_zone"
+        return debug
 
-    return check_trigger_1m(c1, selected, side=side, params=params)
+    trigger_pass = check_trigger_1m(c1, selected, side=side, params=params)
+    debug["trigger_pass"] = trigger_pass
+    debug["final_pass"] = trigger_pass
+    debug["fail_code"] = "pass" if trigger_pass else "trigger_fail"
+    return debug
 
 
 def check_buy(data: Any, params: StrategyParams, source_order: str = "newest") -> bool:
