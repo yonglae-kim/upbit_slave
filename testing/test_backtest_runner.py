@@ -48,6 +48,10 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertLessEqual(len(filtered), len(candles))
         self.assertGreaterEqual(len(filtered), 7)
 
+    def test_oos_windows_is_clamped_to_two_or_more(self):
+        runner = BacktestRunner(buffer_cnt=4, multiple_cnt=2, oos_windows=1)
+        self.assertEqual(runner.oos_windows, 2)
+
 
     @patch("testing.backtest_runner.check_buy", return_value=False)
     def test_run_segment_when_len_equals_buffer_runs_once(self, _check_buy):
