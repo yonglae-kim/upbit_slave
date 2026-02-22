@@ -50,7 +50,7 @@ TRADING_CONFIG = {
     "trigger_breakout_lookback": 3,
     "trigger_zone_lookback": 5,
     "trigger_confirm_lookback": 3,
-    "trigger_mode": "strict",
+    "trigger_mode": "adaptive",
     "min_candles_1m": 80,
     "min_candles_5m": 30,
     "min_candles_15m": 40,

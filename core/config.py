@@ -84,7 +84,7 @@ class TradingConfig:
     trigger_breakout_lookback: int = 3
     trigger_zone_lookback: int = 5
     trigger_confirm_lookback: int = 3
-    trigger_mode: str = "strict"
+    trigger_mode: str = "adaptive"
     min_candles_1m: int = 80
     min_candles_5m: int = 30
     min_candles_15m: int = 40
