@@ -107,3 +107,15 @@ TRADING_MAX_HOLDINGS=1
 
 ## 구현 계획 문서
 - 순차 실행 계획: `docs/implementation_plan.md`
+
+## 백테스트 (최근 1주일)
+
+최근 1주일 구간만 대상으로 백테스트하려면 아래처럼 실행하세요.
+
+```bash
+python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
+```
+
+- `--lookback-days 7`: 최신 캔들 기준 최근 7일만 사용
+- 결과 리포트: 기본값 `backtest_walkforward_segments.csv`
+- 캔들 원본: 기본값 `backdata_candle_day.xlsx` (없으면 자동 생성)
