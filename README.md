@@ -59,6 +59,21 @@ TRADING_MODE=live python main.py
 - `main.py`
 - `core/config_loader.py`
 
+### API 디버그 로그 옵션
+
+API 호출 추적이 필요할 때 `UPBIT_API_DEBUG` 환경변수로 요청/응답 로그를 켤 수 있습니다.
+
+- 활성화 값: `1`, `true`, `yes`, `on` (대소문자/공백 무시)
+- 비활성화 시(기본값) 디버그 로그를 출력하지 않습니다.
+
+예시:
+
+```bash
+UPBIT_API_DEBUG=1 python main.py
+```
+
+디버그 로그는 `[UPBIT_API_DEBUG]` prefix로 출력되며, `Authorization` 헤더는 `Bearer ****<tail>` 형태로 마스킹되어 출력됩니다.
+
 ## 설정 (Configuration)
 
 `core/config_loader.py` 기준으로 `TRADING_MODE`는 아래 3가지를 지원합니다.
