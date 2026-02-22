@@ -43,7 +43,7 @@ class BacktestRunner:
         spread_rate: float = 0.0003,
         slippage_rate: float = 0.0002,
         insample_windows: int = 2,
-        oos_windows: int = 1,
+        oos_windows: int = 2,
         segment_report_path: str = "backtest_walkforward_segments.csv",
         lookback_days: int | None = None,
     ):
@@ -56,7 +56,8 @@ class BacktestRunner:
         self.spread_rate = max(0.0, float(spread_rate))
         self.slippage_rate = max(0.0, float(slippage_rate))
         self.insample_windows = max(1, int(insample_windows))
-        self.oos_windows = max(1, int(oos_windows))
+        # Ensure each OOS segment has more than one evaluation step.
+        self.oos_windows = max(2, int(oos_windows))
         self.segment_report_path = segment_report_path
         self.lookback_days = int(lookback_days) if lookback_days else None
         if self.lookback_days is not None and self.lookback_days <= 0:
@@ -311,6 +312,8 @@ if __name__ == "__main__":
     parser.add_argument("--path", default="backdata_candle_day.xlsx")
     parser.add_argument("--buffer-cnt", type=int, default=200)
     parser.add_argument("--multiple-cnt", type=int, default=6)
+    parser.add_argument("--insample-windows", type=int, default=2)
+    parser.add_argument("--oos-windows", type=int, default=2)
     parser.add_argument("--lookback-days", type=int, default=None)
     parser.add_argument("--segment-report-path", default="backtest_walkforward_segments.csv")
     args = parser.parse_args()
@@ -320,6 +323,8 @@ if __name__ == "__main__":
         path=args.path,
         buffer_cnt=args.buffer_cnt,
         multiple_cnt=args.multiple_cnt,
+        insample_windows=args.insample_windows,
+        oos_windows=args.oos_windows,
         lookback_days=args.lookback_days,
         segment_report_path=args.segment_report_path,
     ).run()
