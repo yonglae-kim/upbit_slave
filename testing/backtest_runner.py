@@ -137,6 +137,8 @@ class BacktestRunner:
         self.sell_decision_rule = str(sell_decision_rule).lower().strip()
         self.debug_mode = bool(debug_mode)
         self.debug_report_path = debug_report_path
+        self.required_base_bars_for_regime = self._required_base_bars_for_regime()
+        self.required_base_bars_for_mtf_minimums = self._required_base_bars_for_mtf_minimums()
         if self.sell_decision_rule not in {"or", "and"}:
             raise ValueError("sell_decision_rule must be 'or' or 'and'")
         self._validate_mtf_capacity(raise_on_failure=False)
@@ -192,6 +194,41 @@ class BacktestRunner:
                 raise ValueError(message)
             print(f"[WARN] {message}")
         return available
+
+    def _required_regime_15m_candles(self) -> int:
+        return max(
+            int(self.strategy_params.regime_ema_slow),
+            int(self.strategy_params.regime_adx_period) + 1,
+            int(self.strategy_params.regime_slope_lookback) + 1,
+        )
+
+    def _required_base_bars_for_target_tf(self, *, target_tf_minutes: int, target_tf_bars: int) -> int:
+        base_interval = max(1, int(self.config.candle_interval))
+        ratio = max(1, int(math.ceil(max(1, int(target_tf_minutes)) / base_interval)))
+        return max(1, int(target_tf_bars)) * ratio
+
+    def _required_base_bars_for_regime(self) -> int:
+        if not bool(self.strategy_params.regime_filter_enabled):
+            return 0
+        required_15m = self._required_regime_15m_candles()
+        return self._required_base_bars_for_target_tf(target_tf_minutes=self.mtf_timeframes["15m"], target_tf_bars=required_15m)
+
+    def _required_base_bars_for_mtf_minimums(self) -> int:
+        requirements = (
+            self._required_base_bars_for_target_tf(
+                target_tf_minutes=self.mtf_timeframes["1m"],
+                target_tf_bars=int(self.strategy_params.min_candles_1m),
+            ),
+            self._required_base_bars_for_target_tf(
+                target_tf_minutes=self.mtf_timeframes["5m"],
+                target_tf_bars=int(self.strategy_params.min_candles_5m),
+            ),
+            self._required_base_bars_for_target_tf(
+                target_tf_minutes=self.mtf_timeframes["15m"],
+                target_tf_bars=int(self.strategy_params.min_candles_15m),
+            ),
+        )
+        return max(requirements)
 
     def _resolve_exit_decision(
         self,
@@ -517,10 +554,18 @@ class BacktestRunner:
         entry_fail_counts: Counter[str] = Counter()
         trade_ledger: list[TradeLedgerEntry] = []
         active_trade: dict[str, float | str] | None = None
+        required_window_size = max(
+            int(self.buffer_cnt),
+            int(self.required_base_bars_for_regime),
+            int(self.required_base_bars_for_mtf_minimums),
+        )
+        # Keep warm-up history inside current segment only (no in-sample leakage).
+        segment_floor = 0
 
-        for bar_index, i in enumerate(range(len(data_newest), self.buffer_cnt - 1, -1)):
-            end = i
-            start = max(end - self.buffer_cnt, 0)
+        max_current_index = max(len(data_newest) - self.buffer_cnt, segment_floor)
+        for bar_index, current_index in enumerate(range(max_current_index, segment_floor - 1, -1)):
+            end = min(len(data_newest), current_index + required_window_size)
+            start = max(current_index, segment_floor)
             test_data = data_newest[start:end]
             current_price = float(test_data[0]["trade_price"])
             mtf_data = self._build_mtf_candles(test_data)
