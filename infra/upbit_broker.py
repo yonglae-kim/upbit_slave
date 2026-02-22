@@ -25,3 +25,9 @@ class UpbitBroker:
 
     def get_open_orders(self, market=None, states=("wait", "watch")):
         return apis.get_open_orders(market=market, states=states)
+
+    def cancel_order(self, order_uuid):
+        return apis.cancel_order(order_uuid)
+
+    def get_order(self, order_uuid):
+        return apis.get_order(order_uuid)

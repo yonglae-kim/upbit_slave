@@ -20,6 +20,7 @@ class BrokerWithOpenOrders:
         self.buy_calls = []
         self.sell_calls = []
         self.cancel_calls = []
+        self.get_order_calls = []
 
     def get_markets(self):
         return [{"market": "KRW-BTC"}]
@@ -53,6 +54,10 @@ class BrokerWithOpenOrders:
     def cancel_order(self, uuid):
         self.cancel_calls.append(uuid)
         return {"uuid": uuid, "state": "cancel"}
+
+    def get_order(self, order_uuid):
+        self.get_order_calls.append(order_uuid)
+        return {"uuid": order_uuid, "state": "wait"}
 
 
 class TradingEngineReconciliationTest(unittest.TestCase):
@@ -109,6 +114,22 @@ class TradingEngineReconciliationTest(unittest.TestCase):
 
         self.assertIn("boot-1", engine.timeout_called)
         self.assertEqual(stale.state, OrderStatus.PARTIALLY_FILLED)
+
+
+    def test_timeout_cancel_reorder_integration_uses_order_lookup(self):
+        broker = BrokerWithOpenOrders()
+        engine = TradingEngine(broker, DummyNotifier(), TradingConfig(do_not_trading=[], max_order_retries=1))
+        engine.bootstrap_open_orders()
+
+        stale = engine.orders_by_identifier["boot-1"]
+        stale.updated_at = datetime.now(timezone.utc) - timedelta(seconds=engine.order_timeout_seconds + 1)
+        stale.state = OrderStatus.ACCEPTED
+
+        engine.reconcile_orders()
+
+        self.assertEqual(broker.get_order_calls, ["u-1"])
+        self.assertEqual(broker.cancel_calls, ["u-1"])
+        self.assertEqual(len(broker.buy_calls), 1)
 
     def test_timeout_policy_cancels_and_retries(self):
         broker = BrokerWithOpenOrders()

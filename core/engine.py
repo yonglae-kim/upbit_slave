@@ -328,10 +328,14 @@ class TradingEngine:
         self._mark_timeout_action(order)
 
     def _cancel_open_order(self, order: OrderRecord) -> bool:
-        if not hasattr(self.broker, "cancel_order"):
-            return False
         if not order.uuid:
             return False
+
+        remote_order = self.broker.get_order(order.uuid)
+        remote_state = str(remote_order.get("state") or "").lower()
+        if remote_state and remote_state not in {"wait", "watch"}:
+            return False
+
         self.broker.cancel_order(order.uuid)
         order.state = OrderStatus.CANCELED
         order.updated_at = datetime.now(timezone.utc)
