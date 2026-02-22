@@ -130,6 +130,19 @@ def _build_rate_limit_signal(status_code, payload, remaining_req, retry_after=No
 
 
 def _auth_headers(query=None):
+    if UPBIT_API_DEBUG:
+        if query is None:
+            query_summary = None
+        elif len(str(query)) > 200:
+            query_summary = f"{str(query)[:200]}...(len={len(str(query))})"
+        else:
+            query_summary = str(query)
+
+        print(
+            f"[UPBIT_API_DEBUG] AUTH_HEADERS query={query_summary} "
+            f"query_hash_input_exists={query is not None}"
+        )
+
     jwt_token = jwt.encode(get_payload(query), secret_key)
     return {"Authorization": f"Bearer {jwt_token}"}
 
@@ -254,7 +267,17 @@ def get_payload(query=None):
         'nonce': _nonce_generator.next(),
     }
 
+    if UPBIT_API_DEBUG:
+        nonce = payload['nonce']
+        masked_nonce = f"{nonce[:18]}...{nonce[-8:]}" if len(nonce) > 32 else nonce
+        print(
+            f"[UPBIT_API_DEBUG] PAYLOAD_BASE nonce={masked_nonce} "
+            f"query_provided={query is not None}"
+        )
+
     if not query:
+        if UPBIT_API_DEBUG:
+            print("[UPBIT_API_DEBUG] PAYLOAD_HASH query_hash_present=False")
         return payload
 
     query_string = query if isinstance(query, str) else build_query_string(query)
@@ -263,6 +286,14 @@ def get_payload(query=None):
     m.update(query_string.encode())
     payload['query_hash'] = m.hexdigest()
     payload['query_hash_alg'] = 'SHA512'
+
+    if UPBIT_API_DEBUG:
+        query_summary = query_string if len(query_string) <= 200 else f"{query_string[:200]}...(len={len(query_string)})"
+        print(
+            f"[UPBIT_API_DEBUG] PAYLOAD_HASH query_hash_present=True "
+            f"query_string={query_summary} query_hash_prefix={payload['query_hash'][:16]}"
+        )
+
     return payload
 
 
@@ -356,6 +387,12 @@ def get_open_orders(market=None, states=("wait", "watch")):
         query["states[]"] = list(states)
 
     query_string = build_query_string(query) if query else None
+    if UPBIT_API_DEBUG:
+        print(
+            f"[UPBIT_API_DEBUG] OPEN_ORDERS query={query or None} "
+            f"query_string={query_string}"
+        )
+
     return _request(
         "GET",
         "/v1/orders/open",
