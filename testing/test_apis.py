@@ -1,5 +1,6 @@
 import importlib
 import hashlib
+import os
 import sys
 import types
 import unittest
@@ -31,7 +32,17 @@ class ApiJwtNonceTest(unittest.TestCase):
             SERVER_URL="https://example.com",
         )
         sys.modules["slave_constants"] = fake_constants
-        cls.apis = importlib.import_module("apis")
+        cls.apis = cls._reload_apis_module(debug_env="0")
+
+    @classmethod
+    def _reload_apis_module(cls, debug_env=None):
+        if debug_env is None:
+            os.environ.pop("UPBIT_API_DEBUG", None)
+        else:
+            os.environ["UPBIT_API_DEBUG"] = debug_env
+
+        sys.modules.pop("apis", None)
+        return importlib.import_module("apis")
 
     @staticmethod
     def _fake_encode(payload, _secret):
@@ -143,6 +154,38 @@ class ApiJwtNonceTest(unittest.TestCase):
     def test_request_raises_api_request_error_for_non_2xx(self, _mock_request):
         with self.assertRaises(self.apis.ApiRequestError) as context:
             self.apis.get_markets()
+
+        self.assertEqual(context.exception.status_code, 500)
+
+    @patch("builtins.print")
+    def test_request_debug_log_disabled_by_default(self, mock_print):
+        apis = self._reload_apis_module(debug_env="0")
+        with patch("apis._session.request", return_value=DummyResponse()):
+            response = apis.get_markets()
+
+        self.assertEqual(response, {"ok": True})
+        mock_print.assert_not_called()
+
+    @patch("builtins.print")
+    def test_request_debug_log_enabled_and_authorization_masked(self, mock_print):
+        apis = self._reload_apis_module(debug_env="yes")
+        with patch("apis.jwt.encode", return_value="abcdefghijklmnopqrstuvwxyz0123456789"):
+            with patch("apis._session.request", return_value=DummyResponse(headers={"Remaining-Req": "group=order; min=59; sec=8"})):
+                response = apis.get_accounts()
+
+        self.assertEqual(response, {"ok": True})
+        printed_messages = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn("[UPBIT_API_DEBUG] REQUEST", printed_messages)
+        self.assertIn("[UPBIT_API_DEBUG] RESPONSE", printed_messages)
+        self.assertIn("Authorization': 'Bearer ****23456789", printed_messages)
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyz0123456789", printed_messages)
+
+    def test_request_behavior_unchanged_when_debug_enabled(self):
+        apis = self._reload_apis_module(debug_env="true")
+
+        with patch("apis._session.request", return_value=DummyResponse(status_code=500, body={"error": "oops"})):
+            with self.assertRaises(apis.ApiRequestError) as context:
+                apis.get_markets()
 
         self.assertEqual(context.exception.status_code, 500)
 

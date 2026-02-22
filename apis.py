@@ -25,6 +25,14 @@ TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
 _session = requests.Session()
 _last_remaining_req = None
 
+
+def _parse_env_bool(value):
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
+
+
+UPBIT_API_DEBUG = _parse_env_bool(os.getenv("UPBIT_API_DEBUG"))
+
 API_GROUP_ORDER = "order"
 API_GROUP_DEFAULT = "default"
 GROUP_SECOND_LIMITS = {
@@ -126,6 +134,27 @@ def _auth_headers(query=None):
     return {"Authorization": f"Bearer {jwt_token}"}
 
 
+def _mask_bearer_token(token):
+    if not token:
+        return token
+
+    if not token.startswith("Bearer "):
+        return "****"
+
+    raw_token = token[7:]
+    if not raw_token:
+        return "Bearer ****"
+
+    return f"Bearer ****{raw_token[-8:]}"
+
+
+def _mask_headers_for_log(headers):
+    masked = dict(headers or {})
+    if "Authorization" in masked:
+        masked["Authorization"] = _mask_bearer_token(masked["Authorization"])
+    return masked
+
+
 def _request(
     method,
     path,
@@ -142,6 +171,12 @@ def _request(
 
     for attempt in range(max_retries + 1):
         _group_throttle.wait(group)
+        if UPBIT_API_DEBUG:
+            print(
+                f"[UPBIT_API_DEBUG] REQUEST method={method} path={path} url={server_url + path} "
+                f"params={params} group={group} attempt={attempt} headers={_mask_headers_for_log(merged_headers)}"
+            )
+
         response = _session.request(
             method=method,
             url=server_url + path,
@@ -152,6 +187,12 @@ def _request(
 
         remaining_req = parse_remaining_req(response.headers.get("Remaining-Req"))
         _last_remaining_req = remaining_req
+
+        if UPBIT_API_DEBUG:
+            print(
+                f"[UPBIT_API_DEBUG] RESPONSE method={method} path={path} status={response.status_code} "
+                f"remaining_req={remaining_req}"
+            )
 
         try:
             payload = response.json()
