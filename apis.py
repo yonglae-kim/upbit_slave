@@ -143,7 +143,16 @@ def _auth_headers(query=None):
             f"query_hash_input_exists={query is not None}"
         )
 
-    jwt_token = jwt.encode(get_payload(query), secret_key)
+    payload = get_payload(query)
+    jwt_token = jwt.encode(payload, secret_key)
+
+    if UPBIT_API_DEBUG:
+        nonce = payload.get("nonce")
+        print(
+            f"[UPBIT_API_DEBUG] AUTH_TOKEN nonce_len={len(str(nonce or ''))} "
+            f"jwt_len={len(str(jwt_token))}"
+        )
+
     return {"Authorization": f"Bearer {jwt_token}"}
 
 
@@ -272,8 +281,11 @@ def get_payload(query=None):
         masked_nonce = f"{nonce[:18]}...{nonce[-8:]}" if len(nonce) > 32 else nonce
         print(
             f"[UPBIT_API_DEBUG] PAYLOAD_BASE nonce={masked_nonce} "
+            f"nonce_len={len(nonce)} "
             f"query_provided={query is not None}"
         )
+        if len(nonce) > 36:
+            print("[UPBIT_API_DEBUG] WARN nonce length exceeds UUID length(36)")
 
     if not query:
         if UPBIT_API_DEBUG:
