@@ -102,6 +102,11 @@ class BacktestRunner:
             partial_take_profit_threshold=self.config.partial_take_profit_threshold,
             partial_take_profit_ratio=self.config.partial_take_profit_ratio,
             partial_stop_loss_ratio=self.config.partial_stop_loss_ratio,
+            exit_mode=self.config.exit_mode,
+            atr_period=self.config.atr_period,
+            atr_stop_mult=self.config.atr_stop_mult,
+            atr_trailing_mult=self.config.atr_trailing_mult,
+            swing_lookback=self.config.swing_lookback,
         )
         self.sell_decision_rule = str(sell_decision_rule).lower().strip()
         self.debug_mode = bool(debug_mode)
@@ -162,12 +167,22 @@ class BacktestRunner:
             print(f"[WARN] {message}")
         return available
 
-    def _resolve_exit_decision(self, *, state: BacktestPositionState, current_price: float, signal_exit: bool) -> ExitDecision:
+    def _resolve_exit_decision(
+        self,
+        *,
+        state: BacktestPositionState,
+        current_price: float,
+        signal_exit: bool,
+        current_atr: float = 0.0,
+        swing_low: float = 0.0,
+    ) -> ExitDecision:
         policy_decision = self.order_policy.evaluate(
             state=state.exit_state,
             avg_buy_price=state.avg_buy_price,
             current_price=current_price,
             signal_exit=False,
+            current_atr=current_atr,
+            swing_low=swing_low,
         )
         if self.sell_decision_rule == "and":
             if signal_exit and policy_decision.should_exit:
@@ -179,6 +194,31 @@ class BacktestRunner:
         if signal_exit:
             return ExitDecision(should_exit=True, qty_ratio=1.0, reason="signal_exit")
         return ExitDecision(should_exit=False)
+
+
+    def _latest_atr(self, candles_newest: list[dict], period: int) -> float:
+        if period <= 0:
+            return 0.0
+        candles = list(reversed(candles_newest))
+        if len(candles) < 2:
+            return 0.0
+        trs: list[float] = []
+        for i in range(1, len(candles)):
+            cur, prev = candles[i], candles[i - 1]
+            high = float(cur.get("high_price", cur.get("trade_price", 0.0)))
+            low = float(cur.get("low_price", cur.get("trade_price", 0.0)))
+            prev_close = float(prev.get("trade_price", 0.0))
+            trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        if not trs:
+            return 0.0
+        window = trs[-min(period, len(trs)) :]
+        return sum(window) / len(window)
+
+    def _latest_swing_low(self, candles_newest: list[dict], lookback: int) -> float:
+        window = candles_newest[: max(1, lookback)]
+        if not window:
+            return 0.0
+        return min(float(candle.get("low_price", candle.get("trade_price", 0.0))) for candle in window)
 
     def _target_count(self) -> int:
         base_count = self.buffer_cnt * self.multiple_cnt
@@ -428,6 +468,8 @@ class BacktestRunner:
             test_data = data_newest[start:end]
             current_price = float(test_data[0]["trade_price"])
             mtf_data = self._build_mtf_candles(test_data)
+            current_atr = self._latest_atr(test_data, self.config.atr_period)
+            swing_low = self._latest_swing_low(test_data, self.config.swing_lookback)
 
             if hold_coin == 0:
                 debug = debug_entry(mtf_data, self.strategy_params, side="buy")
@@ -455,7 +497,11 @@ class BacktestRunner:
                     entry_price = current_price * (1 + (self.spread_rate / 2) + self.slippage_rate)
                     hold_coin += (amount * (1 - self.config.fee_rate)) / entry_price
                     position_state.avg_buy_price = entry_price
-                    position_state.exit_state = PositionExitState(peak_price=current_price)
+                    position_state.exit_state = PositionExitState(
+                        peak_price=current_price,
+                        entry_atr=current_atr,
+                        entry_swing_low=swing_low,
+                    )
                     amount = 0.0
             else:
                 signal_exit = check_sell(mtf_data, avg_buy_price=position_state.avg_buy_price, params=self.strategy_params)
@@ -463,6 +509,8 @@ class BacktestRunner:
                     state=position_state,
                     current_price=current_price,
                     signal_exit=signal_exit,
+                    current_atr=current_atr,
+                    swing_low=swing_low,
                 )
                 if decision.should_exit:
                     qty_ratio = min(1.0, max(0.0, float(decision.qty_ratio)))
