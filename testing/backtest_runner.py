@@ -4,7 +4,8 @@ import datetime
 import math
 import os.path
 from argparse import ArgumentParser
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from statistics import pstdev
 
 import openpyxl  # noqa: F401
@@ -12,6 +13,7 @@ import pandas as pd
 
 import apis
 from core.config_loader import load_trading_config
+from core.position_policy import ExitDecision, PositionExitState, PositionOrderPolicy
 from core.strategy import check_buy, check_sell, preprocess_candles
 
 
@@ -29,6 +31,13 @@ class SegmentResult:
     cagr: float
     mdd: float
     sharpe: float
+    exit_reason_counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class BacktestPositionState:
+    avg_buy_price: float = 0.0
+    exit_state: PositionExitState = field(default_factory=PositionExitState)
 
 
 class BacktestRunner:
@@ -46,6 +55,7 @@ class BacktestRunner:
         oos_windows: int = 2,
         segment_report_path: str = "backtest_walkforward_segments.csv",
         lookback_days: int | None = None,
+        sell_decision_rule: str = "or",
     ):
         self.market = market
         self.path = path
@@ -62,6 +72,34 @@ class BacktestRunner:
         self.lookback_days = int(lookback_days) if lookback_days else None
         if self.lookback_days is not None and self.lookback_days <= 0:
             raise ValueError("lookback_days must be > 0")
+        self.order_policy = PositionOrderPolicy(
+            stop_loss_threshold=self.config.stop_loss_threshold,
+            trailing_stop_pct=self.config.trailing_stop_pct,
+            partial_take_profit_threshold=self.config.partial_take_profit_threshold,
+            partial_take_profit_ratio=self.config.partial_take_profit_ratio,
+            partial_stop_loss_ratio=self.config.partial_stop_loss_ratio,
+        )
+        self.sell_decision_rule = str(sell_decision_rule).lower().strip()
+        if self.sell_decision_rule not in {"or", "and"}:
+            raise ValueError("sell_decision_rule must be 'or' or 'and'")
+
+    def _resolve_exit_decision(self, *, state: BacktestPositionState, current_price: float, signal_exit: bool) -> ExitDecision:
+        policy_decision = self.order_policy.evaluate(
+            state=state.exit_state,
+            avg_buy_price=state.avg_buy_price,
+            current_price=current_price,
+            signal_exit=False,
+        )
+        if self.sell_decision_rule == "and":
+            if signal_exit and policy_decision.should_exit:
+                return policy_decision
+            return ExitDecision(should_exit=False)
+
+        if policy_decision.should_exit:
+            return policy_decision
+        if signal_exit:
+            return ExitDecision(should_exit=True, qty_ratio=1.0, reason="signal_exit")
+        return ExitDecision(should_exit=False)
 
     def _target_count(self) -> int:
         base_count = self.buffer_cnt * self.multiple_cnt
@@ -268,7 +306,8 @@ class BacktestRunner:
         attempted_entries = 0
         trades = 0
         equity_curve = [init_amount]
-        avg_buy_price = 0.0
+        position_state = BacktestPositionState()
+        exit_reason_counts: Counter[str] = Counter()
 
         for i in range(len(data_newest), self.buffer_cnt - 1, -1):
             end = i
@@ -283,13 +322,29 @@ class BacktestRunner:
                     trades += 1
                     entry_price = current_price * (1 + (self.spread_rate / 2) + self.slippage_rate)
                     hold_coin += (amount * (1 - self.config.fee_rate)) / entry_price
-                    avg_buy_price = entry_price
+                    position_state.avg_buy_price = entry_price
+                    position_state.exit_state = PositionExitState(peak_price=current_price)
                     amount = 0.0
             else:
-                if check_sell(mtf_data, avg_buy_price=avg_buy_price, params=self.strategy_params):
+                signal_exit = check_sell(mtf_data, avg_buy_price=position_state.avg_buy_price, params=self.strategy_params)
+                decision = self._resolve_exit_decision(
+                    state=position_state,
+                    current_price=current_price,
+                    signal_exit=signal_exit,
+                )
+                if decision.should_exit:
+                    qty_ratio = min(1.0, max(0.0, float(decision.qty_ratio)))
+                    if qty_ratio <= 0:
+                        continue
                     exit_price = current_price * (1 - (self.spread_rate / 2) - self.slippage_rate)
-                    amount += hold_coin * exit_price * (1 - self.config.fee_rate)
-                    hold_coin = 0.0
+                    sell_qty = hold_coin * qty_ratio
+                    amount += sell_qty * exit_price * (1 - self.config.fee_rate)
+                    hold_coin = max(0.0, hold_coin - sell_qty)
+                    normalized_reason = "signal_exit" if decision.reason == "strategy_signal" else decision.reason
+                    exit_reason_counts[normalized_reason] += 1
+                    if hold_coin <= 0:
+                        hold_coin = 0.0
+                        position_state = BacktestPositionState()
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
 
@@ -309,6 +364,7 @@ class BacktestRunner:
             cagr=cagr,
             mdd=mdd,
             sharpe=sharpe,
+            exit_reason_counts=dict(exit_reason_counts),
         )
 
     def run(self):
@@ -341,6 +397,7 @@ class BacktestRunner:
                 cagr=segment.cagr,
                 mdd=segment.mdd,
                 sharpe=segment.sharpe,
+                exit_reason_counts=segment.exit_reason_counts,
             )
             results.append(segment)
             segment_id += 1
@@ -349,6 +406,20 @@ class BacktestRunner:
             results.append(self._run_segment(raw_data, init_amount, segment_id=1))
 
         df = pd.DataFrame([r.__dict__ for r in results])
+        reason_df = pd.DataFrame(
+            [
+                {
+                    "exit_reason_signal_exit": row.exit_reason_counts.get("signal_exit", 0),
+                    "exit_reason_stop_loss": row.exit_reason_counts.get("stop_loss", 0),
+                    "exit_reason_trailing_stop": row.exit_reason_counts.get("trailing_stop", 0),
+                    "exit_reason_partial_take_profit": row.exit_reason_counts.get("partial_take_profit", 0),
+                    "exit_reason_partial_stop_loss": row.exit_reason_counts.get("partial_stop_loss", 0),
+                }
+                for row in results
+            ]
+        )
+        if not reason_df.empty:
+            df = pd.concat([df.drop(columns=["exit_reason_counts"]), reason_df], axis=1)
         df.to_csv(self.segment_report_path, index=False)
 
         summary = df[["return_pct", "cagr", "mdd", "sharpe", "fill_rate"]].mean().to_dict() if not df.empty else {}
@@ -368,6 +439,7 @@ if __name__ == "__main__":
     parser.add_argument("--oos-windows", type=int, default=2)
     parser.add_argument("--lookback-days", type=int, default=None)
     parser.add_argument("--segment-report-path", default="backtest_walkforward_segments.csv")
+    parser.add_argument("--sell-decision-rule", choices=["or", "and"], default="or")
     args = parser.parse_args()
 
     BacktestRunner(
@@ -379,4 +451,5 @@ if __name__ == "__main__":
         oos_windows=args.oos_windows,
         lookback_days=args.lookback_days,
         segment_report_path=args.segment_report_path,
+        sell_decision_rule=args.sell_decision_rule,
     ).run()
