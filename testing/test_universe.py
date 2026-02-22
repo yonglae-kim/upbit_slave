@@ -5,6 +5,7 @@ from core.universe import (
     UniverseBuilder,
     collect_krw_markets,
     filter_by_missing_rate,
+    is_market_excluded,
 )
 
 
@@ -19,6 +20,22 @@ class UniverseRulesTest(unittest.TestCase):
 
         selected = collect_krw_markets(markets, excluded_keywords=["TSHP"])
         self.assertEqual(selected, ["KRW-BTC", "KRW-XRP"])
+
+    def test_collect_krw_markets_uses_exact_match_only(self):
+        markets = [
+            {"market": "KRW-ETH"},
+            {"market": "KRW-ETHW"},
+            {"market": "KRW-CETH"},
+        ]
+
+        selected = collect_krw_markets(markets, excluded_keywords=["ETH"])
+        self.assertEqual(selected, ["KRW-ETHW", "KRW-CETH"])
+
+    def test_is_market_excluded_supports_exact_symbol_and_market_match(self):
+        self.assertTrue(is_market_excluded("KRW-ETH", ["ETH"]))
+        self.assertTrue(is_market_excluded("KRW-ETH", ["KRW-ETH"]))
+        self.assertFalse(is_market_excluded("KRW-ETHW", ["ETH"]))
+        self.assertFalse(is_market_excluded("KRW-CETH", ["ETH"]))
 
     def test_top_n_and_spread_filter(self):
         config = TradingConfig(

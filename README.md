@@ -86,10 +86,17 @@ UPBIT_API_DEBUG=1 python main.py
 
 ```env
 TRADING_MODE=paper
-TRADING_DO_NOT_TRADING=KRW-BTC,KRW-ETH
+TRADING_DO_NOT_TRADING=BTC,KRW-ETH
 TRADING_PAPER_INITIAL_KRW=1000000
 TRADING_MAX_HOLDINGS=1
 ```
+
+`TRADING_DO_NOT_TRADING` 허용 포맷과 매칭 규칙:
+
+- 쉼표(`,`)로 구분된 문자열 목록
+- **심볼 정확 일치**: `ETH` → `KRW-ETH`만 제외
+- **마켓 정확 일치**: `KRW-ETH` → `KRW-ETH`만 제외
+- 부분 문자열 매칭은 하지 않음 (`ETH`는 `KRW-ETHW`, `KRW-CETH`를 제외하지 않음)
 
 기본값은 `TradingConfig`를 따르며, 상세 키와 로딩/검증 규칙은 `core/config.py`, `core/config_loader.py`를 참고하세요.
 
