@@ -96,7 +96,7 @@ class TradingEngine:
 
         accounts = self.broker.get_accounts()
         portfolio = normalize_accounts(accounts, self.config.do_not_trading)
-        self.risk.set_baseline_equity(portfolio.available_krw)
+        self.risk.set_baseline_equity(portfolio.total_equity_krw)
         print("보유코인 :", portfolio.held_markets)
 
         for account in portfolio.my_coins:

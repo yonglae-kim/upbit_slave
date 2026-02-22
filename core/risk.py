@@ -31,20 +31,45 @@ class RiskManager:
         self.correlation_groups = correlation_groups or {}
         self.min_order_krw = float(min_order_krw)
 
+        # Baseline policy:
+        # - Keep one baseline equity snapshot per UTC day.
+        # - Reset realized PnL/loss streak exactly on UTC day rollover.
+        # - Baseline is set by set_baseline_equity(total_equity_krw) and can be refreshed
+        #   once per new UTC day using the first positive total_equity_krw observation.
         self._baseline_equity: float | None = None
+        self._baseline_day = date.today()
         self._loss_streak = 0
         self._realized_pnl_today = 0.0
         self._pnl_day = date.today()
 
     def reset_daily_if_needed(self, now: datetime | None = None) -> None:
+        """Reset daily trackers at UTC day rollover.
+
+        Tracking policy:
+        - Realized PnL and consecutive-loss streak are day-scoped and cleared when
+          UTC date changes.
+        - Baseline equity is also day-scoped. The baseline value itself is cleared on
+          rollover and re-initialized by the next set_baseline_equity() call with a
+          positive total_equity_krw value.
+        """
         current_date = (now or datetime.now(timezone.utc)).date()
         if current_date != self._pnl_day:
             self._pnl_day = current_date
             self._realized_pnl_today = 0.0
             self._loss_streak = 0
+            self._baseline_equity = None
+            self._baseline_day = current_date
 
-    def set_baseline_equity(self, total_equity_krw: float) -> None:
+    def set_baseline_equity(self, total_equity_krw: float, now: datetime | None = None) -> None:
+        """Set daily baseline from total equity (cash + marked coin value)."""
+        self.reset_daily_if_needed(now)
+        current_date = (now or datetime.now(timezone.utc)).date()
         equity = max(0.0, float(total_equity_krw))
+
+        if self._baseline_day != current_date:
+            self._baseline_day = current_date
+            self._baseline_equity = None
+
         if self._baseline_equity is None and equity > 0:
             self._baseline_equity = equity
 
