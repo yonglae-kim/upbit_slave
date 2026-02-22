@@ -1,3 +1,5 @@
+import os
+import warnings
 import unittest
 from unittest.mock import patch
 from dataclasses import replace
@@ -78,6 +80,21 @@ class MainSignalValidationTest(unittest.TestCase):
         ]
         active = filter_active_zones(zones, current_price=95.0, current_index=160, params=self.params)
         self.assertEqual(active, [])
+
+
+    def test_sequence_input_is_disabled_by_default(self):
+        c1 = [make_candle(100 + i * 0.1) for i in range(160)]
+        os.environ.pop("STRATEGY_ALLOW_SEQUENCE_FALLBACK_FOR_TESTS", None)
+        self.assertFalse(check_buy(c1, self.params))
+
+    def test_sequence_input_fallback_is_test_only_with_warning(self):
+        c1 = [make_candle(100 + i * 0.1) for i in range(160)]
+        with patch.dict(os.environ, {"STRATEGY_ALLOW_SEQUENCE_FALLBACK_FOR_TESTS": "1"}, clear=False):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                _ = check_buy(c1, self.params)
+
+        self.assertTrue(any("test-only" in str(w.message) for w in caught))
 
     def test_sell_requires_signal_and_profit_threshold(self):
         c15 = [make_candle(100 + (i % 5) - 2, spread=2.0) for i in range(160)]

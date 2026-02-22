@@ -53,6 +53,41 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertEqual(runner.oos_windows, 2)
 
 
+    def test_build_mtf_candles_resamples_ohlcv(self):
+        runner = BacktestRunner(buffer_cnt=4, multiple_cnt=2)
+        base = datetime.datetime(2024, 1, 1, 0, 5, 0)
+        candles = [
+            {
+                **self._candle(base - datetime.timedelta(minutes=i), 100 + i),
+                "opening_price": 100 + i,
+                "high_price": 101 + (i * 2),
+                "low_price": 99 - i,
+                "trade_price": 100.5 + i,
+                "candle_acc_trade_volume": 1 + i,
+            }
+            for i in range(6)
+        ]
+
+        mtf = runner._build_mtf_candles(candles)
+
+        self.assertEqual(set(mtf.keys()), {"1m", "5m", "15m"})
+        self.assertEqual(len(mtf["1m"]), 6)
+        self.assertEqual(len(mtf["5m"]), 2)
+        latest_5m = mtf["5m"][0]
+        self.assertEqual(latest_5m["opening_price"], candles[0]["opening_price"])
+        self.assertEqual(latest_5m["trade_price"], candles[0]["trade_price"])
+        self.assertEqual(latest_5m["high_price"], max(c["high_price"] for c in candles[:1]))
+        self.assertEqual(latest_5m["low_price"], min(c["low_price"] for c in candles[:1]))
+
+        older_5m = mtf["5m"][1]
+        bucket = candles[1:]
+        self.assertEqual(older_5m["opening_price"], bucket[-1]["opening_price"])
+        self.assertEqual(older_5m["trade_price"], bucket[0]["trade_price"])
+        self.assertEqual(older_5m["high_price"], max(c["high_price"] for c in bucket))
+        self.assertEqual(older_5m["low_price"], min(c["low_price"] for c in bucket))
+        self.assertEqual(older_5m["candle_acc_trade_volume"], sum(c["candle_acc_trade_volume"] for c in bucket))
+
+
     @patch("testing.backtest_runner.check_buy", return_value=False)
     def test_run_segment_when_len_equals_buffer_runs_once(self, _check_buy):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
@@ -61,6 +96,9 @@ class BacktestRunnerTest(unittest.TestCase):
 
         result = runner._run_segment(candles, init_amount=1_000_000, segment_id=1)
 
+        args, _ = _check_buy.call_args
+        self.assertIsInstance(args[0], dict)
+        self.assertEqual(set(args[0].keys()), {"1m", "5m", "15m"})
         self.assertEqual(result.attempted_entries, 1)
         self.assertEqual(result.trades, 0)
 
