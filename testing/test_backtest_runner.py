@@ -48,6 +48,18 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertLessEqual(len(filtered), len(candles))
         self.assertGreaterEqual(len(filtered), 7)
 
+
+    @patch("testing.backtest_runner.check_buy", return_value=False)
+    def test_run_segment_when_len_equals_buffer_runs_once(self, _check_buy):
+        runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        candles = [self._candle(base - datetime.timedelta(minutes=3 * i), 10000 + i) for i in range(3)]
+
+        result = runner._run_segment(candles, init_amount=1_000_000, segment_id=1)
+
+        self.assertEqual(result.attempted_entries, 1)
+        self.assertEqual(result.trades, 0)
+
     @patch("testing.backtest_runner.check_buy", return_value=True)
     @patch("testing.backtest_runner.check_sell", return_value=True)
     def test_run_segment_applies_costs_and_metrics(self, _check_sell, _check_buy):
