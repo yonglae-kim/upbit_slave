@@ -325,7 +325,14 @@ class BacktestRunner:
             "15m": self._resample_candles(base, timeframe_minutes=self.mtf_timeframes["15m"]),
         }
 
-    def _calc_metrics(self, equity_curve: list[float], trades: int, candidate_entries: int) -> tuple[float, float, float, float, float]:
+    def _calc_metrics(
+        self,
+        equity_curve: list[float],
+        trades: int,
+        attempted_entries: int,
+        candidate_entries: int,
+        triggered_entries: int,
+    ) -> tuple[float, float, float, float, float]:
         if not equity_curve:
             return 0.0, 0.0, 0.0, 0.0, 0.0
         start = equity_curve[0]
@@ -358,6 +365,10 @@ class BacktestRunner:
             annualize = math.sqrt(periods_per_year)
             sharpe = (mean_ret / vol) * annualize if vol > 0 else 0.0
 
+        # attempted/triggered entries are exposed for reporting parity with segment CSV,
+        # while fill_rate intentionally tracks candidate zone quality.
+        _ = attempted_entries
+        _ = triggered_entries
         fill_rate = trades / candidate_entries if candidate_entries > 0 else 0.0
         return total_return * 100, cagr * 100, abs(mdd) * 100, sharpe, fill_rate
 
@@ -392,8 +403,9 @@ class BacktestRunner:
 
             if hold_coin == 0:
                 debug = debug_entry(mtf_data, self.strategy_params, side="buy")
-                has_selected_zone = debug.get("selected_zone") is not None
-                if has_selected_zone:
+                selected_zone = debug.get("selected_zone") if debug else None
+                has_candidate_entry = selected_zone is not None
+                if has_candidate_entry:
                     candidate_entries += 1
                     attempted_entries += 1
 
@@ -436,7 +448,13 @@ class BacktestRunner:
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
 
-        total_return, cagr, mdd, sharpe, fill_rate = self._calc_metrics(equity_curve, trades, candidate_entries)
+        total_return, cagr, mdd, sharpe, fill_rate = self._calc_metrics(
+            equity_curve,
+            trades,
+            attempted_entries,
+            candidate_entries,
+            triggered_entries,
+        )
         oldest = data_newest[-1]["candle_date_time_kst"]
         newest = data_newest[0]["candle_date_time_kst"]
         return SegmentResult(
