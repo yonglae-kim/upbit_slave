@@ -359,6 +359,16 @@ class BacktestRunner:
         fill_rate = trades / attempted_entries if attempted_entries > 0 else 0.0
         return total_return * 100, cagr * 100, abs(mdd) * 100, sharpe, fill_rate
 
+    def _build_fail_summary(self, fail_counts: dict[str, int]) -> dict[str, int | str]:
+        counters = Counter(fail_counts)
+        return {
+            "fail_insufficient_candles": int(counters.get("insufficient_candles", 0)),
+            "fail_no_selected_zone": int(counters.get("no_selected_zone", 0)),
+            "fail_trigger_fail": int(counters.get("trigger_fail", 0)),
+            "fail_invalid_timeframe": int(counters.get("invalid_timeframe", 0)),
+            "dominant_fail_code": max(counters, key=counters.get) if counters else "none",
+        }
+
     def _run_segment(self, data_newest: list[dict], init_amount: float, segment_id: int) -> SegmentResult:
         amount = init_amount
         hold_coin = 0.0
@@ -378,13 +388,17 @@ class BacktestRunner:
 
             if hold_coin == 0:
                 attempted_entries += 1
+                debug = None
                 if self.debug_mode:
                     debug = debug_entry(mtf_data, self.strategy_params, side="buy")
                     buy_signal = bool(debug.get("final_pass", False))
-                    if not buy_signal:
-                        entry_fail_counts[str(debug.get("fail_code", "unknown"))] += 1
                 else:
                     buy_signal = check_buy(mtf_data, self.strategy_params)
+                    if not buy_signal:
+                        debug = debug_entry(mtf_data, self.strategy_params, side="buy")
+
+                if not buy_signal and debug:
+                    entry_fail_counts[str(debug.get("fail_code", "unknown"))] += 1
 
                 if buy_signal:
                     trades += 1
@@ -488,9 +502,19 @@ class BacktestRunner:
                 for row in results
             ]
         )
+        fail_df = pd.DataFrame([self._build_fail_summary(row.entry_fail_counts) for row in results])
         if not reason_df.empty:
             df = pd.concat([df.drop(columns=["exit_reason_counts", "entry_fail_counts"], errors="ignore"), reason_df], axis=1)
+        if not fail_df.empty:
+            df = pd.concat([df, fail_df], axis=1)
         df.to_csv(self.segment_report_path, index=False)
+
+        for row in results:
+            if row.trades > 0 or not row.entry_fail_counts:
+                continue
+            top_reasons = Counter(row.entry_fail_counts).most_common(3)
+            reasons_text = ", ".join(f"{code}={count}" for code, count in top_reasons)
+            print(f"[WARN] segment {row.segment_id} has trades=0, top fail reasons: {reasons_text}")
 
         if self.debug_mode and results:
             debug_df = pd.DataFrame(
@@ -500,13 +524,7 @@ class BacktestRunner:
                         "attempted_entries": row.attempted_entries,
                         "trades": row.trades,
                         "signal_zero": row.trades == 0,
-                        "fail_insufficient_candles": row.entry_fail_counts.get("insufficient_candles", 0),
-                        "fail_no_selected_zone": row.entry_fail_counts.get("no_selected_zone", 0),
-                        "fail_trigger_fail": row.entry_fail_counts.get("trigger_fail", 0),
-                        "fail_invalid_timeframe": row.entry_fail_counts.get("invalid_timeframe", 0),
-                        "dominant_fail_code": max(row.entry_fail_counts, key=row.entry_fail_counts.get)
-                        if row.entry_fail_counts
-                        else "none",
+                        **self._build_fail_summary(row.entry_fail_counts),
                     }
                     for row in results
                 ]

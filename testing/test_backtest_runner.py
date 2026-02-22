@@ -84,7 +84,8 @@ class BacktestRunnerTest(unittest.TestCase):
 
 
     @patch("testing.backtest_runner.check_buy", return_value=False)
-    def test_run_segment_when_len_equals_buffer_runs_once(self, _check_buy):
+    @patch("testing.backtest_runner.debug_entry", return_value={"final_pass": False, "fail_code": "trigger_fail"})
+    def test_run_segment_when_len_equals_buffer_runs_once(self, _debug_entry, _check_buy):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
         base = datetime.datetime(2024, 1, 1, 0, 0, 0)
         candles = [self._candle(base - datetime.timedelta(minutes=3 * i), 10000 + i) for i in range(3)]
@@ -96,6 +97,7 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertEqual(set(args[0].keys()), {"1m", "5m", "15m"})
         self.assertEqual(result.attempted_entries, 1)
         self.assertEqual(result.trades, 0)
+        self.assertEqual(result.entry_fail_counts.get("trigger_fail"), 1)
 
     @patch("testing.backtest_runner.check_buy", return_value=True)
     @patch("testing.backtest_runner.check_sell", return_value=True)
@@ -197,6 +199,39 @@ class BacktestRunnerTest(unittest.TestCase):
         df = pd.read_csv("/tmp/segments.csv")
         self.assertIn("exit_reason_signal_exit", df.columns)
         self.assertIn("exit_reason_trailing_stop", df.columns)
+
+    def test_segment_csv_includes_fail_columns_when_trades_are_zero(self):
+        runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2, path="/tmp/not_used_fail.xlsx", segment_report_path="/tmp/segments_fail.csv")
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        candles = [self._candle(base - datetime.timedelta(minutes=i), 100 + i) for i in range(12)]
+
+        with patch.object(runner, "_load_or_create_data", return_value=(candles, 0)):
+            with patch.object(runner, "_run_segment") as run_segment:
+                from testing.backtest_runner import SegmentResult
+
+                run_segment.return_value = SegmentResult(
+                    segment_id=1,
+                    insample_start="a",
+                    insample_end="b",
+                    oos_start="c",
+                    oos_end="d",
+                    trades=0,
+                    attempted_entries=3,
+                    fill_rate=0.0,
+                    return_pct=0.0,
+                    cagr=0.0,
+                    mdd=0.0,
+                    sharpe=0.0,
+                    exit_reason_counts={},
+                    entry_fail_counts={"no_selected_zone": 2, "trigger_fail": 1},
+                )
+                runner.run()
+
+        df = pd.read_csv("/tmp/segments_fail.csv")
+        self.assertIn("dominant_fail_code", df.columns)
+        self.assertIn("fail_no_selected_zone", df.columns)
+        self.assertEqual(df.loc[0, "dominant_fail_code"], "no_selected_zone")
+        self.assertGreater(df.loc[0, "fail_no_selected_zone"], 0)
 
     def test_mtf_timeframes_and_minimums_follow_base_interval(self):
         runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
