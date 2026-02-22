@@ -52,15 +52,9 @@ class ApiRequestError(Exception):
 
 
 class NonceGenerator:
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._process_prefix = f"{os.getpid()}-{uuid.uuid4().hex}"
-        self._counter = 0
-
     def next(self):
-        with self._lock:
-            self._counter += 1
-            return f"{self._process_prefix}-{int(time.time_ns())}-{self._counter}"
+        # Upbit expects nonce to be UUID-length/format.
+        return str(uuid.uuid4())
 
 
 class GroupThrottle:

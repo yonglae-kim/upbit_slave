@@ -92,6 +92,12 @@ class ApiJwtNonceTest(unittest.TestCase):
 
         self.assertEqual(query_string, "pairs=KRW-BTC&pairs=KRW-ETH&cursor=abc123")
 
+    def test_get_payload_nonce_is_uuid_v4_length(self):
+        payload = self.apis.get_payload()
+
+        self.assertEqual(len(payload["nonce"]), 36)
+        self.assertEqual(payload["nonce"].count("-"), 4)
+
     def test_get_payload_query_hash_matches_fixed_vector(self):
         query_string = "market=KRW-BTC&states[]=wait&states[]=watch&limit=10"
 
