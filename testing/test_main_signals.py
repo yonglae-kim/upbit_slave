@@ -8,6 +8,7 @@ from core.config import TradingConfig
 from core.strategy import (
     check_buy,
     check_sell,
+    debug_entry,
     cluster_sr_levels,
     detect_fvg_zones,
     detect_ob_zones,
@@ -36,6 +37,17 @@ class MainSignalValidationTest(unittest.TestCase):
 
     def _tf(self, c1, c5, c15):
         return {"1m": c1, "5m": c5, "15m": c15}
+
+    def test_debug_entry_returns_required_fields(self):
+        c15 = [make_candle(100 + (i % 6) - 3, spread=1.5) for i in range(160)]
+        c5 = [make_candle(120 + i * 0.01) for i in range(160)]
+        c1 = [make_candle(121 + i * 0.01) for i in range(120)]
+
+        debug = debug_entry(self._tf(c1, c5, c15), self.params, side="buy")
+
+        for key in ["len_c1", "len_c5", "len_c15", "zones_total", "zones_active", "selected_zone", "trigger_pass", "final_pass"]:
+            self.assertIn(key, debug)
+        self.assertEqual(debug["final_pass"], check_buy(self._tf(c1, c5, c15), self.params))
 
     def test_sr_only_does_not_trigger_entry(self):
         c15 = [make_candle(100 + (i % 6) - 3, spread=1.5) for i in range(140)]
