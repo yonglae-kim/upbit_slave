@@ -125,6 +125,7 @@ class BacktestRunnerTest(unittest.TestCase):
         result = runner._run_segment(candles, init_amount=1_000_000, segment_id=1)
 
         self.assertGreaterEqual(result.trades, 1)
+        self.assertGreaterEqual(result.entries, result.closed_trades)
         self.assertGreaterEqual(result.fill_rate, 0)
         self.assertLessEqual(result.fill_rate, 1)
         self.assertIsInstance(result.sharpe, float)
@@ -283,6 +284,13 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertIn("attempted_entries", df.columns)
         self.assertIn("candidate_entries", df.columns)
         self.assertIn("triggered_entries", df.columns)
+        self.assertIn("entries", df.columns)
+        self.assertIn("closed_trades", df.columns)
+        self.assertIn("win_rate", df.columns)
+        self.assertIn("expectancy", df.columns)
+        self.assertIn("compounded_return_pct", df.columns)
+        self.assertIn("segment_return_std", df.columns)
+        self.assertIn("segment_return_median", df.columns)
         self.assertEqual(df.loc[0, "fill_rate"], 0.5)
 
     def test_segment_csv_includes_exit_reason_columns(self):

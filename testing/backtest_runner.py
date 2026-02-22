@@ -6,7 +6,7 @@ import os.path
 from argparse import ArgumentParser
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from statistics import pstdev
+from statistics import median, pstdev
 
 import openpyxl  # noqa: F401
 import pandas as pd
@@ -25,9 +25,11 @@ class SegmentResult:
     oos_start: str
     oos_end: str
     trades: int
-    attempted_entries: int
-    candidate_entries: int
-    triggered_entries: int
+    entries: int = 0
+    closed_trades: int = 0
+    attempted_entries: int = 0
+    candidate_entries: int = 0
+    triggered_entries: int = 0
     avg_zones_total: float = 0.0
     avg_zones_active: float = 0.0
     fill_rate: float = 0.0
@@ -39,8 +41,29 @@ class SegmentResult:
     observed_days: float = 0.0
     mdd: float = 0.0
     sharpe: float = 0.0
+    win_rate: float = 0.0
+    avg_profit: float = 0.0
+    avg_loss: float = 0.0
+    profit_loss_ratio: float = 0.0
+    expectancy: float = 0.0
+    compounded_return_pct: float = 0.0
+    segment_return_std: float = 0.0
+    segment_return_median: float = 0.0
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
     entry_fail_counts: dict[str, int] = field(default_factory=dict)
+
+
+
+
+@dataclass
+class TradeLedgerEntry:
+    entry_price: float
+    exit_price: float
+    fee: float
+    pnl: float
+    r_multiple: float
+    reason: str
+    holding_minutes: float
 
 
 @dataclass
@@ -463,6 +486,19 @@ class BacktestRunner:
             "dominant_fail_code": max(counters, key=counters.get) if counters else "none",
         }
 
+    def _calc_trade_stats(self, ledger: list[TradeLedgerEntry]) -> tuple[float, float, float, float, float]:
+        if not ledger:
+            return 0.0, 0.0, 0.0, 0.0, 0.0
+        pnls = [entry.pnl for entry in ledger]
+        wins = [value for value in pnls if value > 0]
+        losses = [value for value in pnls if value < 0]
+        win_rate = (len(wins) / len(ledger)) * 100
+        avg_profit = sum(wins) / len(wins) if wins else 0.0
+        avg_loss = sum(losses) / len(losses) if losses else 0.0
+        profit_loss_ratio = (avg_profit / abs(avg_loss)) if avg_loss < 0 else 0.0
+        expectancy = sum(pnls) / len(pnls)
+        return win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy
+
     def _run_segment(self, data_newest: list[dict], init_amount: float, segment_id: int) -> SegmentResult:
         amount = init_amount
         hold_coin = 0.0
@@ -472,11 +508,14 @@ class BacktestRunner:
         zone_debug_samples = 0
         zones_total_sum = 0
         zones_active_sum = 0
-        trades = 0
+        entries = 0
+        closed_trades = 0
         equity_curve = [init_amount]
         position_state = BacktestPositionState()
         exit_reason_counts: Counter[str] = Counter()
         entry_fail_counts: Counter[str] = Counter()
+        trade_ledger: list[TradeLedgerEntry] = []
+        active_trade: dict[str, float | str] | None = None
 
         for bar_index, i in enumerate(range(len(data_newest), self.buffer_cnt - 1, -1)):
             end = i
@@ -514,7 +553,8 @@ class BacktestRunner:
 
                 if buy_signal:
                     triggered_entries += 1
-                    trades += 1
+                    entries += 1
+                    pre_entry_amount = amount
                     entry_price = current_price * (1 + (self.spread_rate / 2) + self.slippage_rate)
                     hold_coin += (amount * (1 - self.config.fee_rate)) / entry_price
                     position_state.avg_buy_price = entry_price
@@ -523,6 +563,16 @@ class BacktestRunner:
                         entry_atr=current_atr,
                         entry_swing_low=swing_low,
                     )
+                    active_trade = {
+                        "entry_price": entry_price,
+                        "entry_time": str(test_data[0]["candle_date_time_kst"]),
+                        "invested_cash": pre_entry_amount,
+                        "entry_fee": pre_entry_amount * self.config.fee_rate,
+                        "sold_qty": 0.0,
+                        "gross_exit_notional": 0.0,
+                        "exit_fee": 0.0,
+                        "net_exit_cash": 0.0,
+                    }
                     amount = 0.0
             else:
                 signal_exit = check_sell(mtf_data, avg_buy_price=position_state.avg_buy_price, params=self.strategy_params)
@@ -539,8 +589,15 @@ class BacktestRunner:
                         continue
                     exit_price = current_price * (1 - (self.spread_rate / 2) - self.slippage_rate)
                     sell_qty = hold_coin * qty_ratio
-                    amount += sell_qty * exit_price * (1 - self.config.fee_rate)
+                    gross_notional = sell_qty * exit_price
+                    exit_fee = gross_notional * self.config.fee_rate
+                    amount += gross_notional - exit_fee
                     hold_coin = max(0.0, hold_coin - sell_qty)
+                    if active_trade is not None:
+                        active_trade["sold_qty"] = float(active_trade["sold_qty"]) + sell_qty
+                        active_trade["gross_exit_notional"] = float(active_trade["gross_exit_notional"]) + gross_notional
+                        active_trade["exit_fee"] = float(active_trade["exit_fee"]) + exit_fee
+                        active_trade["net_exit_cash"] = float(active_trade["net_exit_cash"]) + (gross_notional - exit_fee)
                     normalized_reason = "signal_exit" if decision.reason == "strategy_signal" else decision.reason
                     exit_reason_counts[normalized_reason] += 1
                     if hold_coin <= 0:
@@ -550,16 +607,38 @@ class BacktestRunner:
                         position_state.last_exit_bar_index = bar_index
                         position_state.avg_buy_price = 0.0
                         position_state.exit_state = PositionExitState()
+                        if active_trade is not None and float(active_trade["sold_qty"]) > 0:
+                            closed_trades += 1
+                            entry_time = datetime.datetime.strptime(str(active_trade["entry_time"]), "%Y-%m-%dT%H:%M:%S")
+                            exit_time = datetime.datetime.strptime(test_data[0]["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
+                            holding_minutes = max(0.0, (exit_time - entry_time).total_seconds() / 60)
+                            avg_exit_price = float(active_trade["gross_exit_notional"]) / float(active_trade["sold_qty"])
+                            pnl = float(active_trade["net_exit_cash"]) - float(active_trade["invested_cash"])
+                            risk_amount = float(active_trade["invested_cash"]) * max(self.config.stop_loss_threshold, 1e-9)
+                            r_multiple = pnl / risk_amount if risk_amount > 0 else 0.0
+                            trade_ledger.append(
+                                TradeLedgerEntry(
+                                    entry_price=float(active_trade["entry_price"]),
+                                    exit_price=float(avg_exit_price),
+                                    fee=float(active_trade["entry_fee"]) + float(active_trade["exit_fee"]),
+                                    pnl=float(pnl),
+                                    r_multiple=float(r_multiple),
+                                    reason=normalized_reason,
+                                    holding_minutes=float(holding_minutes),
+                                )
+                            )
+                        active_trade = None
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
 
         total_return, return_per_trade, cagr, mdd, sharpe, fill_rate, cagr_valid, observed_days = self._calc_metrics(
             equity_curve,
-            trades,
+            entries,
             attempted_entries,
             candidate_entries,
             triggered_entries,
         )
+        win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy = self._calc_trade_stats(trade_ledger)
         oldest = data_newest[-1]["candle_date_time_kst"]
         newest = data_newest[0]["candle_date_time_kst"]
         avg_zones_total = zones_total_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
@@ -570,7 +649,9 @@ class BacktestRunner:
             insample_end=newest,
             oos_start=oldest,
             oos_end=newest,
-            trades=trades,
+            trades=entries,
+            entries=entries,
+            closed_trades=closed_trades,
             attempted_entries=attempted_entries,
             candidate_entries=candidate_entries,
             triggered_entries=triggered_entries,
@@ -585,6 +666,11 @@ class BacktestRunner:
             observed_days=observed_days,
             mdd=mdd,
             sharpe=sharpe,
+            win_rate=win_rate,
+            avg_profit=avg_profit,
+            avg_loss=avg_loss,
+            profit_loss_ratio=profit_loss_ratio,
+            expectancy=expectancy,
             exit_reason_counts=dict(exit_reason_counts),
             entry_fail_counts=dict(entry_fail_counts),
         )
@@ -613,6 +699,8 @@ class BacktestRunner:
                 oos_start=oos[-1]["candle_date_time_kst"],
                 oos_end=oos[0]["candle_date_time_kst"],
                 trades=segment.trades,
+                entries=segment.entries,
+                closed_trades=segment.closed_trades,
                 attempted_entries=segment.attempted_entries,
                 candidate_entries=segment.candidate_entries,
                 triggered_entries=segment.triggered_entries,
@@ -627,6 +715,11 @@ class BacktestRunner:
                 observed_days=segment.observed_days,
                 mdd=segment.mdd,
                 sharpe=segment.sharpe,
+                win_rate=segment.win_rate,
+                avg_profit=segment.avg_profit,
+                avg_loss=segment.avg_loss,
+                profit_loss_ratio=segment.profit_loss_ratio,
+                expectancy=segment.expectancy,
                 exit_reason_counts=segment.exit_reason_counts,
                 entry_fail_counts=segment.entry_fail_counts,
             )
@@ -654,6 +747,12 @@ class BacktestRunner:
             df = pd.concat([df.drop(columns=["exit_reason_counts", "entry_fail_counts"], errors="ignore"), reason_df], axis=1)
         if not fail_df.empty:
             df = pd.concat([df, fail_df], axis=1)
+        if not df.empty:
+            period_returns = pd.to_numeric(df["period_return"], errors="coerce").fillna(0.0)
+            compounded = (period_returns.div(100).add(1.0).prod() - 1.0) * 100
+            df["compounded_return_pct"] = compounded
+            df["segment_return_std"] = float(period_returns.std(ddof=0))
+            df["segment_return_median"] = float(period_returns.median())
         df.to_csv(self.segment_report_path, index=False)
 
         for row in results:
@@ -687,6 +786,11 @@ class BacktestRunner:
             if not df.empty
             else {}
         )
+        if not df.empty:
+            period_values = pd.to_numeric(df["period_return"], errors="coerce").fillna(0.0).tolist()
+            summary["compounded_return_pct"] = (math.prod((1 + (value / 100)) for value in period_values) - 1) * 100
+            summary["period_return_std"] = pstdev(period_values) if period_values else 0.0
+            summary["period_return_median"] = median(period_values) if period_values else 0.0
         abnormal_cagr_rows = (
             df[df["cagr_valid"] & df["cagr"].abs().gt(self.ABNORMAL_CAGR_THRESHOLD_PCT)] if not df.empty else pd.DataFrame()
         )
