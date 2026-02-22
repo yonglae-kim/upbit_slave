@@ -37,6 +37,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'min_candle_extra': 3,\n"
                 "    'buy_rsi_threshold': 35,\n"
                 "    'sell_profit_threshold': 1.01,\n"
+                "    'sell_requires_profit': True,\n"
                 "    'stop_loss_threshold': 0.975,\n"
                 "    'krw_markets': [],\n"
                 "    'universe_top_n1': 30,\n"

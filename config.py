@@ -24,6 +24,7 @@ TRADING_CONFIG = {
     "min_candle_extra": 3,
     "buy_rsi_threshold": 35,
     "sell_profit_threshold": 1.01,
+    "sell_requires_profit": True,
     "stop_loss_threshold": 0.975,
     "krw_markets": [],
     "universe_top_n1": 30,

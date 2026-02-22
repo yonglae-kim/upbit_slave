@@ -16,6 +16,7 @@ class StrategyParams:
     macd_n_signal: int = 9
     min_candle_extra: int = 3
     sell_profit_threshold: float = 1.01
+    sell_requires_profit: bool = True
     stop_loss_threshold: float = 0.975
     sr_pivot_left: int = 2
     sr_pivot_right: int = 2
@@ -460,6 +461,8 @@ def check_buy(data: Any, params: StrategyParams, source_order: str = "newest") -
 def check_sell(data: Any, avg_buy_price: float, params: StrategyParams, source_order: str = "newest") -> bool:
     if not _check_entry(data, params, side="sell", source_order=source_order):
         return False
+    if not params.sell_requires_profit:
+        return True
     tf = _normalize_timeframes(data)
     if tf is None or not tf["1m"]:
         return False

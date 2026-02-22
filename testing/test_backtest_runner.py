@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from core.config import TradingConfig
+
 if 'slave_constants' not in sys.modules:
     sys.modules['slave_constants'] = types.SimpleNamespace(ACCESS_KEY='x', SECRET_KEY='y', SERVER_URL='https://api.upbit.com')
 
@@ -355,6 +357,18 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertGreaterEqual(available["1m"], runner.strategy_params.min_candles_1m)
         self.assertGreaterEqual(available["5m"], runner.strategy_params.min_candles_5m)
         self.assertGreaterEqual(available["15m"], runner.strategy_params.min_candles_15m)
+
+    def test_strategy_params_default_sell_requires_profit_true(self):
+        runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
+
+        self.assertTrue(runner.strategy_params.sell_requires_profit)
+
+    def test_strategy_params_sell_requires_profit_can_be_disabled(self):
+        config = TradingConfig(do_not_trading=[], sell_requires_profit=False)
+        with patch("testing.backtest_runner.load_trading_config", return_value=config):
+            runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
+
+        self.assertFalse(runner.strategy_params.sell_requires_profit)
 
 
 if __name__ == "__main__":

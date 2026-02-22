@@ -174,6 +174,24 @@ class MainSignalValidationTest(unittest.TestCase):
         c1 = [make_candle(100 + (i % 3), spread=1.3, bull=(i % 2 == 0)) for i in range(140)]
         self.assertFalse(check_sell(self._tf(c1, c5, c15), avg_buy_price=300.0, params=self.params))
 
+    @patch("core.strategy._check_entry", return_value=True)
+    def test_sell_requires_profit_gate_when_enabled(self, _entry_mock):
+        c1 = [make_candle(100.0)]
+        c5 = [make_candle(100.0) for _ in range(160)]
+        c15 = [make_candle(100.0) for _ in range(160)]
+        params = replace(self.params, sell_requires_profit=True, sell_profit_threshold=1.01)
+
+        self.assertFalse(check_sell(self._tf(c1, c5, c15), avg_buy_price=200.0, params=params))
+
+    @patch("core.strategy._check_entry", return_value=True)
+    def test_sell_skips_profit_gate_when_disabled(self, _entry_mock):
+        c1 = [make_candle(100.0)]
+        c5 = [make_candle(100.0) for _ in range(160)]
+        c15 = [make_candle(100.0) for _ in range(160)]
+        params = replace(self.params, sell_requires_profit=False, sell_profit_threshold=1.5)
+
+        self.assertTrue(check_sell(self._tf(c1, c5, c15), avg_buy_price=200.0, params=params))
+
 
     def test_sr_scoring_reflects_touch_recency_volume(self):
         sr_levels = [
