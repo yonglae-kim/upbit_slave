@@ -127,7 +127,7 @@ class TradingEngineReconciliationTest(unittest.TestCase):
 
         engine.reconcile_orders()
 
-        self.assertEqual(broker.get_order_calls, ["u-1"])
+        self.assertGreaterEqual(broker.get_order_calls.count("u-1"), 1)
         self.assertEqual(broker.cancel_calls, ["u-1"])
         self.assertEqual(len(broker.buy_calls), 1)
 

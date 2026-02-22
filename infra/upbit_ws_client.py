@@ -7,11 +7,15 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Callable, Dict
 
+import importlib
+import importlib.util
+
 if TYPE_CHECKING:
     import websocket
 
 
 MessageHandler = Callable[[Dict[str, Any]], None]
+AuthHeadersProvider = Callable[[], Dict[str, str]]
 
 
 class UpbitWebSocketClient:
@@ -25,6 +29,8 @@ class UpbitWebSocketClient:
         default_format: str = "SIMPLE",
         on_message: MessageHandler | None = None,
         message_queue: queue.Queue[dict[str, Any]] | None = None,
+        private_ws_url: str = "wss://api.upbit.com/websocket/v1/private",
+        auth_headers_provider: AuthHeadersProvider | None = None,
     ):
         self.ws_url = ws_url
         self.ping_interval_seconds = ping_interval_seconds
@@ -33,9 +39,11 @@ class UpbitWebSocketClient:
         self.default_format = default_format
         self.on_message = on_message
         self.message_queue = message_queue
+        self.private_ws_url = private_ws_url
+        self.auth_headers_provider = auth_headers_provider
 
         self._lock = threading.Lock()
-        self._subscriptions: dict[tuple[str, tuple[str, ...], str], list[dict[str, Any]]] = {}
+        self._subscriptions: dict[tuple[str, tuple[str, ...], str, bool], list[dict[str, Any]]] = {}
         self._stop_event = threading.Event()
         self._connected_event = threading.Event()
         self._last_message_ts = 0.0
@@ -69,37 +77,85 @@ class UpbitWebSocketClient:
         if self._monitor_thread:
             self._monitor_thread.join(timeout=5)
 
-    def subscribe(self, subscription_type: str, markets: list[str], data_format: str | None = None) -> None:
-        payload = self._build_subscription_payload(subscription_type, markets, data_format)
-        key = self._subscription_key(subscription_type, markets, data_format or self.default_format)
+    def subscribe(
+        self,
+        subscription_type: str,
+        markets: list[str] | None = None,
+        data_format: str | None = None,
+        is_private: bool = False,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> None:
+        selected_markets = markets or []
+        payload = self._build_subscription_payload(
+            subscription_type,
+            selected_markets,
+            data_format,
+            is_private=is_private,
+            extra_payload=extra_payload,
+        )
+        key = self._subscription_key(subscription_type, selected_markets, data_format or self.default_format, is_private)
 
         with self._lock:
             self._subscriptions[key] = payload
 
         self._send_payload(payload)
 
-    def _subscription_key(self, subscription_type: str, markets: list[str], data_format: str) -> tuple[str, tuple[str, ...], str]:
-        return subscription_type, tuple(sorted(markets)), data_format
+    def _subscription_key(
+        self,
+        subscription_type: str,
+        markets: list[str],
+        data_format: str,
+        is_private: bool,
+    ) -> tuple[str, tuple[str, ...], str, bool]:
+        return subscription_type, tuple(sorted(markets)), data_format, is_private
 
     def _build_subscription_payload(
         self,
         subscription_type: str,
         markets: list[str],
         data_format: str | None = None,
+        *,
+        is_private: bool = False,
+        extra_payload: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         selected_format = data_format or self.default_format
+        body: dict[str, Any] = {"type": subscription_type, "isOnlyRealtime": True}
+        if markets:
+            body["codes"] = markets
+        if is_private:
+            body.update(self._build_private_auth_payload())
+        if extra_payload:
+            body.update(extra_payload)
+
         return [
             {"ticket": str(uuid.uuid4())},
-            {"type": subscription_type, "codes": markets, "isOnlyRealtime": True},
+            body,
             {"format": selected_format},
         ]
+
+    def _build_private_auth_payload(self) -> dict[str, Any]:
+        auth_headers_provider = self.auth_headers_provider or self._default_auth_headers_provider
+        headers = auth_headers_provider() if auth_headers_provider else {}
+        authorization = headers.get("Authorization") if isinstance(headers, dict) else None
+        if not authorization:
+            return {}
+        return {"authorizationToken": authorization}
+
+    def _default_auth_headers_provider(self) -> dict[str, str]:
+        if importlib.util.find_spec("apis") is None:
+            return {}
+        apis_module = importlib.import_module("apis")
+        if not hasattr(apis_module, "_auth_headers"):
+            return {}
+        return apis_module._auth_headers()
 
     def _run_connection_loop(self) -> None:
         while not self._stop_event.is_set():
             import websocket
 
             self._ws_app = websocket.WebSocketApp(
-                self.ws_url,
+                self._select_ws_url(),
+                header=self._build_ws_headers(),
                 on_open=self._on_open,
                 on_message=self._on_message,
                 on_error=self._on_error,
@@ -146,6 +202,26 @@ class UpbitWebSocketClient:
 
         self._ensure_monitor_thread()
         self._restore_subscriptions()
+
+    def _has_private_subscriptions(self) -> bool:
+        with self._lock:
+            return any(key[3] for key in self._subscriptions.keys())
+
+    def _select_ws_url(self) -> str:
+        if self._has_private_subscriptions():
+            return self.private_ws_url
+        return self.ws_url
+
+    def _build_ws_headers(self) -> list[str] | None:
+        if not self._has_private_subscriptions():
+            return None
+
+        auth_headers_provider = self.auth_headers_provider or self._default_auth_headers_provider
+        headers = auth_headers_provider() if auth_headers_provider else {}
+        authorization = headers.get("Authorization") if isinstance(headers, dict) else None
+        if not authorization:
+            return None
+        return [f"Authorization: {authorization}"]
 
     def _on_message(self, ws_app: Any, message: bytes | str) -> None:
         self._last_message_ts = time.time()
