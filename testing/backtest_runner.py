@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import math
 import os.path
+from argparse import ArgumentParser
 from dataclasses import dataclass
 from statistics import pstdev
 
@@ -44,6 +45,7 @@ class BacktestRunner:
         insample_windows: int = 2,
         oos_windows: int = 1,
         segment_report_path: str = "backtest_walkforward_segments.csv",
+        lookback_days: int | None = None,
     ):
         self.market = market
         self.path = path
@@ -56,6 +58,17 @@ class BacktestRunner:
         self.insample_windows = max(1, int(insample_windows))
         self.oos_windows = max(1, int(oos_windows))
         self.segment_report_path = segment_report_path
+        self.lookback_days = int(lookback_days) if lookback_days else None
+        if self.lookback_days is not None and self.lookback_days <= 0:
+            raise ValueError("lookback_days must be > 0")
+
+    def _target_count(self) -> int:
+        base_count = self.buffer_cnt * self.multiple_cnt
+        if self.lookback_days is None:
+            return base_count
+        candles_per_day = math.ceil((24 * 60) / self.config.candle_interval)
+        required_count = candles_per_day * self.lookback_days
+        return max(base_count, required_count)
 
     def _normalize_candle(self, candle: dict) -> dict:
         normalized = dict(candle)
@@ -78,7 +91,7 @@ class BacktestRunner:
         candles: list[dict] = []
         seen_times: set[str] = set()
         cursor: datetime.datetime | None = None
-        target_count = self.buffer_cnt * self.multiple_cnt
+        target_count = self._target_count()
 
         while len(candles) < target_count:
             chunk = self._fetch_chunk(cursor)
@@ -104,7 +117,7 @@ class BacktestRunner:
 
     def _apply_shortage_policy(self, candles_newest: list[dict]) -> tuple[list[dict], int]:
         """When backfill is shorter than target, prepend synthetic missing candles using prior close."""
-        target_count = self.buffer_cnt * self.multiple_cnt
+        target_count = self._target_count()
         if len(candles_newest) >= target_count or not candles_newest:
             return candles_newest[:target_count], 0
 
@@ -130,6 +143,18 @@ class BacktestRunner:
             )
 
         return candles_newest + padding, short_cnt
+
+    def _filter_recent_days(self, candles_newest: list[dict]) -> list[dict]:
+        if self.lookback_days is None or not candles_newest:
+            return candles_newest
+        newest_time = datetime.datetime.strptime(candles_newest[0]["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
+        threshold = newest_time - datetime.timedelta(days=self.lookback_days)
+        filtered = [
+            candle
+            for candle in candles_newest
+            if datetime.datetime.strptime(candle["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S") >= threshold
+        ]
+        return filtered or candles_newest
 
     def _load_or_create_data(self) -> tuple[list[dict], int]:
         if not os.path.exists(self.path):
@@ -235,6 +260,7 @@ class BacktestRunner:
 
     def run(self):
         raw_data, shortage_count = self._load_or_create_data()
+        raw_data = self._filter_recent_days(raw_data)
         init_amount = float(self.config.paper_initial_krw)
         in_len = self.insample_windows * self.buffer_cnt
         oos_len = self.oos_windows * self.buffer_cnt
@@ -280,4 +306,20 @@ class BacktestRunner:
 
 
 if __name__ == "__main__":
-    BacktestRunner().run()
+    parser = ArgumentParser(description="Run backtest with optional recent lookback window")
+    parser.add_argument("--market", default="KRW-BTC")
+    parser.add_argument("--path", default="backdata_candle_day.xlsx")
+    parser.add_argument("--buffer-cnt", type=int, default=200)
+    parser.add_argument("--multiple-cnt", type=int, default=6)
+    parser.add_argument("--lookback-days", type=int, default=None)
+    parser.add_argument("--segment-report-path", default="backtest_walkforward_segments.csv")
+    args = parser.parse_args()
+
+    BacktestRunner(
+        market=args.market,
+        path=args.path,
+        buffer_cnt=args.buffer_cnt,
+        multiple_cnt=args.multiple_cnt,
+        lookback_days=args.lookback_days,
+        segment_report_path=args.segment_report_path,
+    ).run()
