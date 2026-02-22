@@ -126,3 +126,28 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 - `--lookback-days 7`: 최신 캔들 기준 최근 7일만 사용
 - 결과 리포트: 기본값 `backtest_walkforward_segments.csv`
 - 캔들 원본: 기본값 `backdata_candle_day.xlsx` (없으면 자동 생성)
+
+
+## 공격형 기본 세팅
+
+아래 값으로 공격형 기본 전략 세팅을 적용합니다.
+
+```env
+TRADING_ZONE_PROFILE=aggressive
+TRADING_REGIME_FILTER_ENABLED=true
+TRADING_REGIME_EMA_FAST=50
+TRADING_REGIME_EMA_SLOW=200
+TRADING_REGIME_ADX_PERIOD=14
+TRADING_REGIME_ADX_MIN=18
+TRADING_EXIT_MODE=atr
+TRADING_ATR_STOP_MULT=1.4
+TRADING_ATR_TRAILING_MULT=2.0
+TRADING_SELL_REQUIRES_PROFIT=false
+TRADING_REENTRY_COOLDOWN_BARS=10
+```
+
+### 추가 개선 아이디어 (우선순위)
+
+- (상) 존 품질 스코어 threshold 도입
+  - displacement, FVG/ATR, volume spike, age, retest count, HTF 정합 반영
+- (상) 레짐 악화 시 손익 무관 강제 축소/강제 청산 옵션 추가

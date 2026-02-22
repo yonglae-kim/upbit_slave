@@ -43,10 +43,10 @@ class TradingConfig:
     partial_take_profit_threshold: float = 1.02
     partial_take_profit_ratio: float = 0.5
     partial_stop_loss_ratio: float = 1.0
-    exit_mode: str = "fixed_pct"
+    exit_mode: str = "atr"
     atr_period: int = 14
-    atr_stop_mult: float = 2.0
-    atr_trailing_mult: float = 1.0
+    atr_stop_mult: float = 1.4
+    atr_trailing_mult: float = 2.0
     swing_lookback: int = 5
     max_order_retries: int = 2
     partial_fill_timeout_scale: float = 0.5
@@ -59,7 +59,7 @@ class TradingConfig:
     min_candle_extra: int = 3
     buy_rsi_threshold: int = 35
     sell_profit_threshold: float = 1.01
-    sell_requires_profit: bool = True
+    sell_requires_profit: bool = False
     stop_loss_threshold: float = 0.975
     ws_data_format: str = "SIMPLE"
     krw_markets: list[str] = field(default_factory=list)
@@ -94,14 +94,14 @@ class TradingConfig:
     min_candles_1m: int = 80
     min_candles_5m: int = 30
     min_candles_15m: int = 40
-    regime_filter_enabled: bool = False
-    regime_ema_fast: int = 20
-    regime_ema_slow: int = 50
+    regime_filter_enabled: bool = True
+    regime_ema_fast: int = 50
+    regime_ema_slow: int = 200
     regime_adx_period: int = 14
-    regime_adx_min: float = 20.0
+    regime_adx_min: float = 18.0
     regime_slope_lookback: int = 3
-    zone_profile: str = "balanced"
-    reentry_cooldown_bars: int = 0
+    zone_profile: str = "aggressive"
+    reentry_cooldown_bars: int = 10
     cooldown_on_loss_exits_only: bool = False
 
     def to_strategy_params(

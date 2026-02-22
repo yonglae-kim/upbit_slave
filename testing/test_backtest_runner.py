@@ -387,10 +387,10 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertGreaterEqual(available["5m"], runner.strategy_params.min_candles_5m)
         self.assertGreaterEqual(available["15m"], runner.strategy_params.min_candles_15m)
 
-    def test_strategy_params_default_sell_requires_profit_true(self):
+    def test_strategy_params_default_sell_requires_profit_false(self):
         runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
 
-        self.assertTrue(runner.strategy_params.sell_requires_profit)
+        self.assertFalse(runner.strategy_params.sell_requires_profit)
 
     def test_strategy_params_sell_requires_profit_can_be_disabled(self):
         config = TradingConfig(do_not_trading=[], sell_requires_profit=False)
