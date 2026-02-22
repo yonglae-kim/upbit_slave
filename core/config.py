@@ -62,6 +62,9 @@ class TradingConfig:
     zone_reentry_buffer_pct: float = 0.0005
     trigger_rejection_wick_ratio: float = 0.35
     trigger_breakout_lookback: int = 3
+    trigger_zone_lookback: int = 5
+    trigger_confirm_lookback: int = 3
+    trigger_mode: str = "strict"
     min_candles_1m: int = 80
     min_candles_5m: int = 30
     min_candles_15m: int = 40
@@ -97,6 +100,9 @@ class TradingConfig:
             zone_reentry_buffer_pct=self.zone_reentry_buffer_pct,
             trigger_rejection_wick_ratio=self.trigger_rejection_wick_ratio,
             trigger_breakout_lookback=self.trigger_breakout_lookback,
+            trigger_zone_lookback=self.trigger_zone_lookback,
+            trigger_confirm_lookback=self.trigger_confirm_lookback,
+            trigger_mode=self.trigger_mode,
             min_candles_1m=self.min_candles_1m,
             min_candles_5m=self.min_candles_5m,
             min_candles_15m=self.min_candles_15m,
