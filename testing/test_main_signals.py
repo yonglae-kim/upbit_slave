@@ -16,6 +16,7 @@ from core.strategy import (
     filter_active_zones,
     pick_best_zone,
     score_sr_levels,
+    check_trigger_1m,
 )
 
 
@@ -48,6 +49,48 @@ class MainSignalValidationTest(unittest.TestCase):
         for key in ["len_c1", "len_c5", "len_c15", "zones_total", "zones_active", "selected_zone", "trigger_pass", "final_pass"]:
             self.assertIn(key, debug)
         self.assertEqual(debug["final_pass"], check_buy(self._tf(c1, c5, c15), self.params))
+
+
+    def test_trigger_strict_requires_same_candle_zone_and_confirmations(self):
+        params = replace(self.params, trigger_mode="strict", trigger_breakout_lookback=2, trigger_rejection_wick_ratio=0.3)
+        zone = {"lower": 99.0, "upper": 101.0}
+        candles = [
+            {"opening_price": 101.0, "trade_price": 103.0, "high_price": 103.5, "low_price": 99.0},
+            {"opening_price": 100.0, "trade_price": 100.2, "high_price": 101.0, "low_price": 99.5},
+            {"opening_price": 100.1, "trade_price": 100.0, "high_price": 100.8, "low_price": 99.4},
+            {"opening_price": 100.0, "trade_price": 99.9, "high_price": 100.5, "low_price": 99.3},
+        ]
+
+        self.assertTrue(check_trigger_1m(candles, zone, side="buy", params=params))
+
+    def test_trigger_balanced_passes_with_prior_zone_touch_then_breakout(self):
+        zone = {"lower": 99.0, "upper": 101.0}
+        candles = [
+            {"opening_price": 103.2, "trade_price": 104.0, "high_price": 104.2, "low_price": 103.0},
+            {"opening_price": 101.5, "trade_price": 101.6, "high_price": 102.0, "low_price": 101.2},
+            {"opening_price": 100.4, "trade_price": 100.0, "high_price": 101.0, "low_price": 99.4},
+            {"opening_price": 100.0, "trade_price": 100.1, "high_price": 100.5, "low_price": 99.6},
+            {"opening_price": 99.8, "trade_price": 99.9, "high_price": 100.4, "low_price": 99.2},
+        ]
+        strict_params = replace(self.params, trigger_mode="strict", trigger_breakout_lookback=2, trigger_zone_lookback=4, trigger_confirm_lookback=2)
+        balanced_params = replace(self.params, trigger_mode="balanced", trigger_breakout_lookback=2, trigger_zone_lookback=4, trigger_confirm_lookback=2)
+
+        self.assertFalse(check_trigger_1m(candles, zone, side="buy", params=strict_params))
+        self.assertTrue(check_trigger_1m(candles, zone, side="buy", params=balanced_params))
+
+    def test_debug_entry_exposes_trigger_fail_code_details(self):
+        c15 = [make_candle(100 + (i % 6) - 3, spread=1.5) for i in range(160)]
+        c5 = [make_candle(120 + i * 0.01) for i in range(160)]
+        c1 = [make_candle(121 + i * 0.01) for i in range(120)]
+        params = replace(self.params, trigger_mode="strict")
+
+        with patch("core.strategy.detect_fvg_zones", return_value=[]), patch(
+            "core.strategy.detect_ob_zones",
+            return_value=[{"type": "ob", "bias": "bullish", "lower": 110.0, "upper": 130.0, "created_index": 1}],
+        ), patch("core.strategy.pick_best_zone", return_value={"type": "ob", "bias": "bullish", "lower": 110.0, "upper": 130.0, "created_index": 1}):
+            debug = debug_entry(self._tf(c1, c5, c15), params, side="buy")
+
+        self.assertEqual(debug["fail_code"], "trigger_strict_breakout_miss")
 
     def test_sr_only_does_not_trigger_entry(self):
         c15 = [make_candle(100 + (i % 6) - 3, spread=1.5) for i in range(140)]

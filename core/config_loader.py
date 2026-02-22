@@ -58,6 +58,9 @@ _ENV_KEY_MAP = {
     "zone_reentry_buffer_pct": "TRADING_ZONE_REENTRY_BUFFER_PCT",
     "trigger_rejection_wick_ratio": "TRADING_TRIGGER_REJECTION_WICK_RATIO",
     "trigger_breakout_lookback": "TRADING_TRIGGER_BREAKOUT_LOOKBACK",
+    "trigger_zone_lookback": "TRADING_TRIGGER_ZONE_LOOKBACK",
+    "trigger_confirm_lookback": "TRADING_TRIGGER_CONFIRM_LOOKBACK",
+    "trigger_mode": "TRADING_TRIGGER_MODE",
     "min_candles_1m": "TRADING_MIN_CANDLES_1M",
     "min_candles_5m": "TRADING_MIN_CANDLES_5M",
     "min_candles_15m": "TRADING_MIN_CANDLES_15M",
@@ -115,6 +118,8 @@ def _parse_env_value(key: str, value: str):
         "ob_max_base_bars",
         "zone_expiry_bars_5m",
         "trigger_breakout_lookback",
+        "trigger_zone_lookback",
+        "trigger_confirm_lookback",
         "min_candles_1m",
         "min_candles_5m",
         "min_candles_15m",
@@ -185,6 +190,9 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "zone_reentry_buffer_pct": (int, float),
         "trigger_rejection_wick_ratio": (int, float),
         "trigger_breakout_lookback": int,
+        "trigger_zone_lookback": int,
+        "trigger_confirm_lookback": int,
+        "trigger_mode": str,
         "min_candles_1m": int,
         "min_candles_5m": int,
         "min_candles_15m": int,
@@ -224,6 +232,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "ob_max_base_bars",
         "zone_expiry_bars_5m",
         "trigger_breakout_lookback",
+        "trigger_zone_lookback",
+        "trigger_confirm_lookback",
         "min_candles_1m",
         "min_candles_5m",
         "min_candles_15m",
@@ -284,6 +294,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("zone_reentry_buffer_pct must be >= 0")
     if config["trigger_rejection_wick_ratio"] <= 0:
         raise ConfigValidationError("trigger_rejection_wick_ratio must be > 0")
+    if config["trigger_mode"] not in {"strict", "balanced"}:
+        raise ConfigValidationError("trigger_mode must be one of: strict, balanced")
 
 
 def load_trading_config() -> TradingConfig:

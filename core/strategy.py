@@ -37,6 +37,9 @@ class StrategyParams:
     zone_reentry_buffer_pct: float = 0.0005
     trigger_rejection_wick_ratio: float = 0.35
     trigger_breakout_lookback: int = 3
+    trigger_zone_lookback: int = 5
+    trigger_confirm_lookback: int = 3
+    trigger_mode: str = "strict"
     min_candles_1m: int = 80
     min_candles_5m: int = 120
     min_candles_15m: int = 120
@@ -262,28 +265,80 @@ def pick_best_zone(sr_levels: Sequence[dict[str, Any]], setup_zones: Sequence[di
     return setup_side[0] if setup_side else None
 
 
-def check_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str, Any], side: str, params: StrategyParams) -> bool:
-    if len(candles_newest) < params.trigger_breakout_lookback + 2:
-        return False
+def _candle_intersects_zone(candle: dict[str, Any], zone: dict[str, Any]) -> bool:
+    high = _price(candle, "high_price")
+    low = _price(candle, "low_price")
+    return max(low, zone["lower"]) <= min(high, zone["upper"])
 
-    latest = candles_newest[0]
-    previous = candles_newest[1 : params.trigger_breakout_lookback + 1]
-    latest_close = _price(latest, "trade_price")
-    latest_open = _price(latest, "opening_price")
-    latest_high = _price(latest, "high_price")
-    latest_low = _price(latest, "low_price")
-    range_size = max(latest_high - latest_low, 1e-8)
+
+def _is_breakout(candle_idx: int, candles_newest: Sequence[dict[str, Any]], side: str, params: StrategyParams) -> bool:
+    previous = candles_newest[candle_idx + 1 : candle_idx + 1 + params.trigger_breakout_lookback]
+    if len(previous) < params.trigger_breakout_lookback:
+        return False
+    close = _price(candles_newest[candle_idx], "trade_price")
+    if side == "buy":
+        return close > max(_price(c, "high_price") for c in previous)
+    return close < min(_price(c, "low_price") for c in previous)
+
+
+def _is_rejection(candle: dict[str, Any], side: str, params: StrategyParams) -> bool:
+    open_price = _price(candle, "opening_price")
+    close = _price(candle, "trade_price")
+    high = _price(candle, "high_price")
+    low = _price(candle, "low_price")
+    range_size = max(high - low, 1e-8)
 
     if side == "buy":
-        near_zone = zone["lower"] <= latest_low <= zone["upper"]
-        breakout = latest_close > max(_price(c, "high_price") for c in previous)
-        rejection = (min(latest_open, latest_close) - latest_low) / range_size >= params.trigger_rejection_wick_ratio
-        return near_zone and breakout and rejection
+        wick_ratio = (min(open_price, close) - low) / range_size
+    else:
+        wick_ratio = (high - max(open_price, close)) / range_size
+    return wick_ratio >= params.trigger_rejection_wick_ratio
 
-    near_zone = zone["lower"] <= latest_high <= zone["upper"]
-    breakout = latest_close < min(_price(c, "low_price") for c in previous)
-    rejection = (latest_high - max(latest_open, latest_close)) / range_size >= params.trigger_rejection_wick_ratio
-    return near_zone and breakout and rejection
+
+def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str, Any], side: str, params: StrategyParams) -> dict[str, Any]:
+    if len(candles_newest) < params.trigger_breakout_lookback + 2:
+        return {"pass": False, "fail_code": "trigger_insufficient_candles"}
+
+    if params.trigger_mode == "strict":
+        latest = candles_newest[0]
+        near_zone = _candle_intersects_zone(latest, zone)
+        if not near_zone:
+            return {"pass": False, "fail_code": "trigger_strict_zone_miss"}
+        if not _is_breakout(0, candles_newest, side=side, params=params):
+            return {"pass": False, "fail_code": "trigger_strict_breakout_miss"}
+        if not _is_rejection(latest, side=side, params=params):
+            return {"pass": False, "fail_code": "trigger_strict_rejection_miss"}
+        return {"pass": True, "fail_code": "pass"}
+
+    if params.trigger_mode == "balanced":
+        zone_lookback = min(params.trigger_zone_lookback, len(candles_newest) - 1)
+        touch_idx = -1
+        for idx in range(1, zone_lookback + 1):
+            if _candle_intersects_zone(candles_newest[idx], zone):
+                touch_idx = idx
+                break
+
+        if touch_idx < 0:
+            return {"pass": False, "fail_code": "trigger_balanced_zone_miss"}
+
+        confirm_limit = min(touch_idx, params.trigger_confirm_lookback)
+        if confirm_limit <= 0:
+            return {"pass": False, "fail_code": "trigger_balanced_confirm_miss"}
+
+        for idx in range(confirm_limit):
+            candle = candles_newest[idx]
+            if _is_breakout(idx, candles_newest, side=side, params=params):
+                return {"pass": True, "fail_code": "pass"}
+            if _candle_intersects_zone(candle, zone) and _is_rejection(candle, side=side, params=params):
+                return {"pass": True, "fail_code": "pass"}
+
+        return {"pass": False, "fail_code": "trigger_balanced_confirm_miss"}
+
+    return {"pass": False, "fail_code": "trigger_invalid_mode"}
+
+
+def check_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str, Any], side: str, params: StrategyParams) -> bool:
+    return evaluate_trigger_1m(candles_newest, zone, side=side, params=params)["pass"]
 
 
 def _normalize_timeframes(data: Any) -> dict[str, list[dict[str, Any]]] | None:
@@ -358,10 +413,10 @@ def debug_entry(data: Any, params: StrategyParams, side: str, source_order: str 
         debug["fail_code"] = "no_selected_zone"
         return debug
 
-    trigger_pass = check_trigger_1m(c1, selected, side=side, params=params)
-    debug["trigger_pass"] = trigger_pass
-    debug["final_pass"] = trigger_pass
-    debug["fail_code"] = "pass" if trigger_pass else "trigger_fail"
+    trigger_result = evaluate_trigger_1m(c1, selected, side=side, params=params)
+    debug["trigger_pass"] = trigger_result["pass"]
+    debug["final_pass"] = trigger_result["pass"]
+    debug["fail_code"] = trigger_result["fail_code"]
     return debug
 
 
