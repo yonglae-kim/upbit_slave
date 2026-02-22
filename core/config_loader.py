@@ -295,8 +295,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("zone_reentry_buffer_pct must be >= 0")
     if config["trigger_rejection_wick_ratio"] <= 0:
         raise ConfigValidationError("trigger_rejection_wick_ratio must be > 0")
-    if config["trigger_mode"] not in {"strict", "balanced"}:
-        raise ConfigValidationError("trigger_mode must be one of: strict, balanced")
+    if config["trigger_mode"] not in {"strict", "balanced", "adaptive"}:
+        raise ConfigValidationError("trigger_mode must be one of: strict, balanced, adaptive")
 
 
 def load_trading_config() -> TradingConfig:

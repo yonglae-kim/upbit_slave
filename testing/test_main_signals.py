@@ -78,6 +78,23 @@ class MainSignalValidationTest(unittest.TestCase):
         self.assertFalse(check_trigger_1m(candles, zone, side="buy", params=strict_params))
         self.assertTrue(check_trigger_1m(candles, zone, side="buy", params=balanced_params))
 
+
+    def test_trigger_adaptive_accepts_recent_zone_touch_with_rejection(self):
+        zone = {"lower": 99.0, "upper": 101.0}
+        candles = [
+            {"opening_price": 101.2, "trade_price": 101.4, "high_price": 101.7, "low_price": 101.1},
+            {"opening_price": 100.6, "trade_price": 100.9, "high_price": 101.1, "low_price": 99.4},
+            {"opening_price": 100.8, "trade_price": 101.0, "high_price": 101.2, "low_price": 99.6},
+            {"opening_price": 100.9, "trade_price": 101.1, "high_price": 101.3, "low_price": 99.8},
+        ]
+        strict_params = replace(self.params, trigger_mode="strict", trigger_breakout_lookback=2, trigger_zone_lookback=3, trigger_confirm_lookback=2)
+        adaptive_params = replace(self.params, trigger_mode="adaptive", trigger_breakout_lookback=2, trigger_zone_lookback=3, trigger_confirm_lookback=2)
+
+        self.assertFalse(check_trigger_1m(candles, zone, side="buy", params=strict_params))
+        self.assertTrue(check_trigger_1m(candles, zone, side="buy", params=adaptive_params))
+
+    def test_default_trigger_mode_is_adaptive(self):
+        self.assertEqual(self.params.trigger_mode, "adaptive")
     def test_debug_entry_exposes_trigger_fail_code_details(self):
         c15 = [make_candle(100 + (i % 6) - 3, spread=1.5) for i in range(160)]
         c5 = [make_candle(120 + i * 0.01) for i in range(160)]

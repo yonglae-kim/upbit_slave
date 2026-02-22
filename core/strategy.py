@@ -39,7 +39,7 @@ class StrategyParams:
     trigger_breakout_lookback: int = 3
     trigger_zone_lookback: int = 5
     trigger_confirm_lookback: int = 3
-    trigger_mode: str = "strict"
+    trigger_mode: str = "adaptive"
     min_candles_1m: int = 80
     min_candles_5m: int = 120
     min_candles_15m: int = 120
@@ -333,6 +333,30 @@ def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str
                 return {"pass": True, "fail_code": "pass"}
 
         return {"pass": False, "fail_code": "trigger_balanced_confirm_miss"}
+
+    if params.trigger_mode == "adaptive":
+        zone_lookback = min(max(params.trigger_zone_lookback, 0), len(candles_newest) - 1)
+        touch_idx = -1
+        for idx in range(zone_lookback + 1):
+            if _candle_intersects_zone(candles_newest[idx], zone):
+                touch_idx = idx
+                break
+
+        if touch_idx < 0:
+            return {"pass": False, "fail_code": "trigger_adaptive_zone_miss"}
+
+        confirm_limit = min(touch_idx + 1, params.trigger_confirm_lookback + 1)
+        if confirm_limit <= 0:
+            return {"pass": False, "fail_code": "trigger_adaptive_confirm_miss"}
+
+        for idx in range(confirm_limit):
+            candle = candles_newest[idx]
+            if _is_breakout(idx, candles_newest, side=side, params=params):
+                return {"pass": True, "fail_code": "pass"}
+            if _candle_intersects_zone(candle, zone) and _is_rejection(candle, side=side, params=params):
+                return {"pass": True, "fail_code": "pass"}
+
+        return {"pass": False, "fail_code": "trigger_adaptive_confirm_miss"}
 
     return {"pass": False, "fail_code": "trigger_invalid_mode"}
 
