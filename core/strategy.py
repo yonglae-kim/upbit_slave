@@ -144,18 +144,23 @@ def _adx(candles_newest: Sequence[dict[str, Any]], period: int) -> float:
     return sum(dx_values[-window:]) / len(dx_values[-window:])
 
 
-def passes_regime_filter(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> bool:
+def regime_filter_diagnostics(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> dict[str, Any]:
     if not params.regime_filter_enabled:
-        return True
+        return {"pass": True, "reason": "disabled"}
 
     need = max(params.regime_ema_slow, params.regime_adx_period + 1, params.regime_slope_lookback + 1)
     if len(c15_newest) < need:
-        return False
+        return {
+            "pass": False,
+            "reason": "insufficient_15m_candles",
+            "required_15m": int(need),
+            "actual_15m": int(len(c15_newest)),
+        }
 
     fast_ema = _ema_values(c15_newest, params.regime_ema_fast)
     slow_ema = _ema_values(c15_newest, params.regime_ema_slow)
     if len(fast_ema) <= params.regime_slope_lookback or not slow_ema:
-        return False
+        return {"pass": False, "reason": "ema_unavailable"}
 
     fast_now = fast_ema[-1]
     slow_now = slow_ema[-1]
@@ -163,7 +168,47 @@ def passes_regime_filter(c15_newest: Sequence[dict[str, Any]], params: StrategyP
     fast_slope = fast_now - fast_prev
     adx = _adx(c15_newest, params.regime_adx_period)
 
-    return fast_now > slow_now and fast_slope > 0 and adx >= params.regime_adx_min
+    if fast_now <= slow_now:
+        return {
+            "pass": False,
+            "reason": "ema_trend_fail",
+            "fast_now": float(fast_now),
+            "slow_now": float(slow_now),
+            "fast_slope": float(fast_slope),
+            "adx": float(adx),
+        }
+    if fast_slope <= 0:
+        return {
+            "pass": False,
+            "reason": "ema_slope_fail",
+            "fast_now": float(fast_now),
+            "slow_now": float(slow_now),
+            "fast_slope": float(fast_slope),
+            "adx": float(adx),
+        }
+    if adx < params.regime_adx_min:
+        return {
+            "pass": False,
+            "reason": "adx_fail",
+            "fast_now": float(fast_now),
+            "slow_now": float(slow_now),
+            "fast_slope": float(fast_slope),
+            "adx": float(adx),
+            "adx_min": float(params.regime_adx_min),
+        }
+
+    return {
+        "pass": True,
+        "reason": "pass",
+        "fast_now": float(fast_now),
+        "slow_now": float(slow_now),
+        "fast_slope": float(fast_slope),
+        "adx": float(adx),
+    }
+
+
+def passes_regime_filter(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> bool:
+    return bool(regime_filter_diagnostics(c15_newest, params).get("pass", False))
 
 
 def detect_sr_pivots(candles_newest: Sequence[dict[str, Any]], left: int, right: int) -> list[dict[str, Any]]:
@@ -512,8 +557,11 @@ def debug_entry(data: Any, params: StrategyParams, side: str, source_order: str 
     if len(c1) < params.min_candles_1m or len(c5) < params.min_candles_5m or len(c15) < params.min_candles_15m:
         return debug
 
-    if not passes_regime_filter(c15, params):
+    regime_diag = regime_filter_diagnostics(c15, params)
+    debug["regime_filter_reason"] = str(regime_diag.get("reason", "unknown"))
+    if not regime_diag.get("pass", False):
         debug["fail_code"] = "regime_filter_fail"
+        debug["regime_filter_metrics"] = regime_diag
         return debug
 
     pivots = detect_sr_pivots(c15[: params.sr_lookback_bars], params.sr_pivot_left, params.sr_pivot_right)

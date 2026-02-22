@@ -476,12 +476,13 @@ class BacktestRunner:
 
     def _build_fail_summary(self, fail_counts: dict[str, int]) -> dict[str, int | str]:
         counters = Counter(fail_counts)
+        regime_fail_total = sum(count for code, count in counters.items() if str(code).startswith("regime_filter_fail"))
         return {
             "fail_insufficient_candles": int(counters.get("insufficient_candles", 0)),
             "fail_no_selected_zone": int(counters.get("no_selected_zone", 0)),
             "fail_trigger_fail": int(counters.get("trigger_fail", 0)),
             "fail_invalid_timeframe": int(counters.get("invalid_timeframe", 0)),
-            "fail_regime_filter_fail": int(counters.get("regime_filter_fail", 0)),
+            "fail_regime_filter_fail": int(regime_fail_total),
             "fail_reentry_cooldown": int(counters.get("fail_reentry_cooldown", 0)),
             "dominant_fail_code": max(counters, key=counters.get) if counters else "none",
         }
@@ -549,7 +550,11 @@ class BacktestRunner:
                     entry_fail_counts["fail_reentry_cooldown"] += 1
 
                 if not buy_signal and debug and not blocked_by_cooldown:
-                    entry_fail_counts[str(debug.get("fail_code", "unknown"))] += 1
+                    fail_code = str(debug.get("fail_code", "unknown"))
+                    if fail_code == "regime_filter_fail":
+                        regime_reason = str(debug.get("regime_filter_reason", "unknown"))
+                        fail_code = f"regime_filter_fail:{regime_reason}"
+                    entry_fail_counts[fail_code] += 1
 
                 if buy_signal:
                     triggered_entries += 1
