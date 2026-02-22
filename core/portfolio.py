@@ -7,6 +7,7 @@ from typing import Any, Iterable
 @dataclass
 class PortfolioState:
     available_krw: float
+    total_equity_krw: float
     my_coins: list[dict[str, Any]]
     held_markets: list[str]
 
@@ -51,6 +52,7 @@ def normalize_accounts(accounts: list[dict[str, Any]], excluded: Iterable[str]) 
     my_coins: list[dict[str, Any]] = []
     held_markets: list[str] = []
     avail_krw = 0.0
+    coin_equity_krw = 0.0
 
     for item in accounts:
         if item["unit_currency"] != "KRW":
@@ -63,5 +65,13 @@ def normalize_accounts(accounts: list[dict[str, Any]], excluded: Iterable[str]) 
             continue
 
         handle_coin_account(item, my_coins, held_markets, excluded)
+        tradable_balance = to_safe_float(item.get("balance", 0)) + to_safe_float(item.get("locked", 0))
+        avg_buy_price = to_safe_float(item.get("avg_buy_price", 0))
+        coin_equity_krw += tradable_balance * avg_buy_price
 
-    return PortfolioState(available_krw=avail_krw, my_coins=my_coins, held_markets=held_markets)
+    return PortfolioState(
+        available_krw=avail_krw,
+        total_equity_krw=avail_krw + coin_equity_krw,
+        my_coins=my_coins,
+        held_markets=held_markets,
+    )
