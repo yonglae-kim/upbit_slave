@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import warnings
 from dataclasses import dataclass
 
 from core.price_rules import min_krw_tick_from_candles
@@ -291,6 +293,13 @@ def _normalize_timeframes(data: Any) -> dict[str, list[dict[str, Any]]] | None:
         c15 = list(data.get("15m", []))
         return {"1m": c1, "5m": c5, "15m": c15}
     if isinstance(data, Sequence):
+        if os.getenv("STRATEGY_ALLOW_SEQUENCE_FALLBACK_FOR_TESTS") != "1":
+            return None
+        warnings.warn(
+            "Sequence timeframe fallback is test-only and disabled in production by default.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         candles = list(data)
         return {"1m": candles, "5m": candles, "15m": candles}
     return None

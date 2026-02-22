@@ -175,6 +175,57 @@ class BacktestRunner:
         exit_multiplier = 1 - self.config.fee_rate - (self.spread_rate / 2) - self.slippage_rate
         return cash + hold_coin * current_price * max(exit_multiplier, 0.0)
 
+    def _resample_candles(self, candles_newest: list[dict], timeframe_minutes: int) -> list[dict]:
+        if timeframe_minutes <= 1:
+            return [dict(candle) for candle in candles_newest]
+        if not candles_newest:
+            return []
+
+        candles_oldest = list(reversed(candles_newest))
+        bucketed: list[dict] = []
+        current_bucket: dict | None = None
+        current_bucket_ts: datetime.datetime | None = None
+
+        for candle in candles_oldest:
+            ts = datetime.datetime.strptime(candle["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
+            bucket_ts = ts.replace(minute=(ts.minute // timeframe_minutes) * timeframe_minutes, second=0, microsecond=0)
+
+            if current_bucket is None or current_bucket_ts != bucket_ts:
+                if current_bucket is not None:
+                    bucketed.append(current_bucket)
+                current_bucket_ts = bucket_ts
+                current_bucket = {
+                    "market": candle.get("market", self.market),
+                    "candle_date_time_kst": bucket_ts.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "opening_price": float(candle["opening_price"]),
+                    "high_price": float(candle["high_price"]),
+                    "low_price": float(candle["low_price"]),
+                    "trade_price": float(candle["trade_price"]),
+                    "candle_acc_trade_volume": float(candle.get("candle_acc_trade_volume", 0.0)),
+                }
+                continue
+
+            # Explicit OHLCV resampling rules per timeframe bucket.
+            current_bucket["high_price"] = max(float(current_bucket["high_price"]), float(candle["high_price"]))
+            current_bucket["low_price"] = min(float(current_bucket["low_price"]), float(candle["low_price"]))
+            current_bucket["trade_price"] = float(candle["trade_price"])
+            current_bucket["candle_acc_trade_volume"] = float(current_bucket["candle_acc_trade_volume"]) + float(
+                candle.get("candle_acc_trade_volume", 0.0)
+            )
+
+        if current_bucket is not None:
+            bucketed.append(current_bucket)
+
+        return list(reversed(bucketed))
+
+    def _build_mtf_candles(self, candles_newest: list[dict]) -> dict[str, list[dict]]:
+        base = [dict(candle) for candle in candles_newest]
+        return {
+            "1m": base,
+            "5m": self._resample_candles(base, timeframe_minutes=5),
+            "15m": self._resample_candles(base, timeframe_minutes=15),
+        }
+
     def _calc_metrics(self, equity_curve: list[float], trades: int, attempted_entries: int) -> tuple[float, float, float, float]:
         if not equity_curve:
             return 0.0, 0.0, 0.0, 0.0
@@ -224,17 +275,18 @@ class BacktestRunner:
             start = max(end - self.buffer_cnt, 0)
             test_data = data_newest[start:end]
             current_price = float(test_data[0]["trade_price"])
+            mtf_data = self._build_mtf_candles(test_data)
 
             if hold_coin == 0:
                 attempted_entries += 1
-                if check_buy(test_data, self.strategy_params):
+                if check_buy(mtf_data, self.strategy_params):
                     trades += 1
                     entry_price = current_price * (1 + (self.spread_rate / 2) + self.slippage_rate)
                     hold_coin += (amount * (1 - self.config.fee_rate)) / entry_price
                     avg_buy_price = entry_price
                     amount = 0.0
             else:
-                if check_sell(test_data, avg_buy_price=avg_buy_price, params=self.strategy_params):
+                if check_sell(mtf_data, avg_buy_price=avg_buy_price, params=self.strategy_params):
                     exit_price = current_price * (1 - (self.spread_rate / 2) - self.slippage_rate)
                     amount += hold_coin * exit_price * (1 - self.config.fee_rate)
                     hold_coin = 0.0
