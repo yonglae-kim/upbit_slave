@@ -26,6 +26,8 @@ class SegmentResult:
     oos_end: str
     trades: int
     attempted_entries: int
+    candidate_entries: int
+    triggered_entries: int
     fill_rate: float
     return_pct: float
     cagr: float
@@ -323,9 +325,9 @@ class BacktestRunner:
             "15m": self._resample_candles(base, timeframe_minutes=self.mtf_timeframes["15m"]),
         }
 
-    def _calc_metrics(self, equity_curve: list[float], trades: int, attempted_entries: int) -> tuple[float, float, float, float]:
+    def _calc_metrics(self, equity_curve: list[float], trades: int, candidate_entries: int) -> tuple[float, float, float, float, float]:
         if not equity_curve:
-            return 0.0, 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0
         start = equity_curve[0]
         end = equity_curve[-1]
         total_return = (end / start) - 1 if start > 0 else 0.0
@@ -356,7 +358,7 @@ class BacktestRunner:
             annualize = math.sqrt(periods_per_year)
             sharpe = (mean_ret / vol) * annualize if vol > 0 else 0.0
 
-        fill_rate = trades / attempted_entries if attempted_entries > 0 else 0.0
+        fill_rate = trades / candidate_entries if candidate_entries > 0 else 0.0
         return total_return * 100, cagr * 100, abs(mdd) * 100, sharpe, fill_rate
 
     def _build_fail_summary(self, fail_counts: dict[str, int]) -> dict[str, int | str]:
@@ -373,6 +375,8 @@ class BacktestRunner:
         amount = init_amount
         hold_coin = 0.0
         attempted_entries = 0
+        candidate_entries = 0
+        triggered_entries = 0
         trades = 0
         equity_curve = [init_amount]
         position_state = BacktestPositionState()
@@ -387,20 +391,22 @@ class BacktestRunner:
             mtf_data = self._build_mtf_candles(test_data)
 
             if hold_coin == 0:
-                attempted_entries += 1
-                debug = None
+                debug = debug_entry(mtf_data, self.strategy_params, side="buy")
+                has_selected_zone = debug.get("selected_zone") is not None
+                if has_selected_zone:
+                    candidate_entries += 1
+                    attempted_entries += 1
+
                 if self.debug_mode:
-                    debug = debug_entry(mtf_data, self.strategy_params, side="buy")
                     buy_signal = bool(debug.get("final_pass", False))
                 else:
                     buy_signal = check_buy(mtf_data, self.strategy_params)
-                    if not buy_signal:
-                        debug = debug_entry(mtf_data, self.strategy_params, side="buy")
 
                 if not buy_signal and debug:
                     entry_fail_counts[str(debug.get("fail_code", "unknown"))] += 1
 
                 if buy_signal:
+                    triggered_entries += 1
                     trades += 1
                     entry_price = current_price * (1 + (self.spread_rate / 2) + self.slippage_rate)
                     hold_coin += (amount * (1 - self.config.fee_rate)) / entry_price
@@ -430,7 +436,7 @@ class BacktestRunner:
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
 
-        total_return, cagr, mdd, sharpe, fill_rate = self._calc_metrics(equity_curve, trades, attempted_entries)
+        total_return, cagr, mdd, sharpe, fill_rate = self._calc_metrics(equity_curve, trades, candidate_entries)
         oldest = data_newest[-1]["candle_date_time_kst"]
         newest = data_newest[0]["candle_date_time_kst"]
         return SegmentResult(
@@ -441,6 +447,8 @@ class BacktestRunner:
             oos_end=newest,
             trades=trades,
             attempted_entries=attempted_entries,
+            candidate_entries=candidate_entries,
+            triggered_entries=triggered_entries,
             fill_rate=fill_rate,
             return_pct=total_return,
             cagr=cagr,
@@ -475,6 +483,8 @@ class BacktestRunner:
                 oos_end=oos[0]["candle_date_time_kst"],
                 trades=segment.trades,
                 attempted_entries=segment.attempted_entries,
+                candidate_entries=segment.candidate_entries,
+                triggered_entries=segment.triggered_entries,
                 fill_rate=segment.fill_rate,
                 return_pct=segment.return_pct,
                 cagr=segment.cagr,
@@ -522,6 +532,8 @@ class BacktestRunner:
                     {
                         "segment_id": row.segment_id,
                         "attempted_entries": row.attempted_entries,
+                        "candidate_entries": row.candidate_entries,
+                        "triggered_entries": row.triggered_entries,
                         "trades": row.trades,
                         "signal_zero": row.trades == 0,
                         **self._build_fail_summary(row.entry_fail_counts),
