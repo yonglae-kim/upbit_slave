@@ -22,7 +22,7 @@ class DummyResponse:
 class ApiJwtNonceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        sys.modules["jwt"] = types.SimpleNamespace(encode=lambda payload, secret: "")
+        sys.modules["jwt"] = types.SimpleNamespace(encode=lambda payload, secret, algorithm=None: "")
         sys.modules["pandas"] = types.SimpleNamespace()
         fake_session = types.SimpleNamespace(request=lambda **kwargs: None)
         sys.modules["requests"] = types.SimpleNamespace(Session=lambda: fake_session)
@@ -45,8 +45,12 @@ class ApiJwtNonceTest(unittest.TestCase):
         return importlib.import_module("apis")
 
     @staticmethod
-    def _fake_encode(payload, _secret):
+    def _fake_encode(payload, _secret, algorithm=None):
         return f"jwt-{payload['nonce']}"
+
+    @staticmethod
+    def _fake_encode_bytes(payload, _secret, algorithm=None):
+        return f"jwt-{payload['nonce']}".encode("utf-8")
 
     @patch("apis._session.request", return_value=DummyResponse())
     @patch("apis.jwt.encode", side_effect=_fake_encode)
@@ -119,6 +123,18 @@ class ApiJwtNonceTest(unittest.TestCase):
         expected_hash = hashlib.sha512(expected_query.encode()).hexdigest()
 
         self.assertEqual(payload_arg["query_hash"], expected_hash)
+        self.assertEqual(payload_arg["query_hash_alg"], "SHA512")
+        self.assertEqual(mock_encode.call_args.kwargs["algorithm"], "HS512")
+
+    @patch("apis._session.request", return_value=DummyResponse())
+    @patch("apis.jwt.encode", side_effect=_fake_encode_bytes)
+    def test_get_accounts_decodes_jwt_bytes_and_uses_hs512(self, mock_encode, mock_request):
+        self.apis.get_accounts()
+
+        auth_header = mock_request.call_args.kwargs["headers"]["Authorization"]
+
+        self.assertTrue(auth_header.startswith("Bearer jwt-"))
+        self.assertEqual(mock_encode.call_args.kwargs["algorithm"], "HS512")
 
 
     @patch("apis._session.request", return_value=DummyResponse())
