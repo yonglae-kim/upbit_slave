@@ -12,6 +12,11 @@ class DummyWebSocketApp:
         self.sent_messages.append(payload)
 
 
+class PrivateAwareClient(UpbitWebSocketClient):
+    def __init__(self):
+        super().__init__(auth_headers_provider=lambda: {"Authorization": "Bearer test-token"})
+
+
 class UpbitWebSocketClientTest(unittest.TestCase):
     def test_subscriptions_are_restored_on_reconnect(self):
         client = UpbitWebSocketClient(default_format="SIMPLE")
@@ -37,6 +42,22 @@ class UpbitWebSocketClientTest(unittest.TestCase):
         self.assertEqual(received[0]["code"], "KRW-BTC")
         queued = message_queue.get_nowait()
         self.assertEqual(queued["type"], "ticker")
+
+    def test_private_subscription_payload_contains_auth_token(self):
+        client = PrivateAwareClient()
+        payload = client._build_subscription_payload("myOrder", [], "SIMPLE", is_private=True)
+
+        body = payload[1]
+        self.assertEqual(body["type"], "myOrder")
+        self.assertEqual(body["authorizationToken"], "Bearer test-token")
+        self.assertNotIn("codes", body)
+
+    def test_private_headers_are_built_when_private_subscription_exists(self):
+        client = PrivateAwareClient()
+        client.subscribe("myAsset", is_private=True)
+
+        headers = client._build_ws_headers()
+        self.assertEqual(headers, ["Authorization: Bearer test-token"])
 
 
 if __name__ == "__main__":

@@ -74,6 +74,10 @@ class TradingEngine:
         self.ws_client.connect()
         self.ws_client.subscribe("ticker", self.config.krw_markets, data_format=self.config.ws_data_format)
 
+        if self._should_subscribe_private_channels():
+            self.ws_client.subscribe("myOrder", data_format=self.config.ws_data_format, is_private=True)
+            self.ws_client.subscribe("myAsset", data_format=self.config.ws_data_format, is_private=True)
+
     def shutdown(self) -> None:
         if self.ws_client:
             self.ws_client.close()
@@ -252,6 +256,10 @@ class TradingEngine:
         return True
 
 
+    def _should_subscribe_private_channels(self) -> bool:
+        mode = str(self.config.mode or "").lower()
+        return mode not in {"paper", "dry_run"} and hasattr(self.broker, "get_order")
+
     def _route_ws_message(self, message: dict) -> None:
         message_type = message.get("type") or message.get("ty")
         if message_type == "myOrder":
@@ -262,6 +270,7 @@ class TradingEngine:
             apply_my_asset_event(message, self.portfolio_snapshot)
 
     def reconcile_orders(self) -> None:
+        self._reconcile_orders_via_rest()
         now = datetime.now(timezone.utc)
         for order in list(self.orders_by_identifier.values()):
             if order.state in {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}:
@@ -277,6 +286,44 @@ class TradingEngine:
 
             if 0 < order.filled_qty < order.requested_qty and order.state == OrderStatus.ACCEPTED:
                 order.state = OrderStatus.PARTIALLY_FILLED
+
+    def _reconcile_orders_via_rest(self) -> None:
+        if not hasattr(self.broker, "get_order"):
+            return
+
+        for order in list(self.orders_by_identifier.values()):
+            if order.state in {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}:
+                continue
+
+            if not order.uuid:
+                continue
+
+            try:
+                remote_order = self.broker.get_order(order.uuid)
+            except Exception:
+                continue
+
+            if not isinstance(remote_order, dict):
+                continue
+
+            remote_event = dict(remote_order)
+            remote_event.setdefault("identifier", order.identifier)
+            remote_event.setdefault("uuid", order.uuid)
+            remote_event.setdefault("market", order.market)
+            remote_event.setdefault("side", order.side)
+            remote_event.setdefault("volume", order.requested_qty)
+
+            remote_state = str(remote_event.get("state") or "").lower()
+            remote_requested = float(remote_event.get("volume") or order.requested_qty or 0.0)
+            remote_filled = remote_event.get("executed_volume")
+            if remote_filled is None and remote_event.get("remaining_volume") is not None:
+                remote_filled = max(0.0, remote_requested - float(remote_event.get("remaining_volume") or 0.0))
+            remote_filled_qty = float(remote_filled or 0.0)
+
+            if remote_state in {"wait", "watch"} and remote_filled_qty <= order.filled_qty:
+                continue
+
+            apply_my_order_event(remote_event, self.orders_by_identifier)
 
     def _on_order_timeout(self, order: OrderRecord) -> None:
         action = "NO_ACTION"
