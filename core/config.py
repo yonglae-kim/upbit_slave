@@ -54,6 +54,7 @@ class TradingConfig:
     min_candle_extra: int = 3
     buy_rsi_threshold: int = 35
     sell_profit_threshold: float = 1.01
+    sell_requires_profit: bool = True
     stop_loss_threshold: float = 0.975
     ws_data_format: str = "SIMPLE"
     krw_markets: list[str] = field(default_factory=list)
@@ -114,6 +115,7 @@ class TradingConfig:
             "macd_n_signal": self.macd_n_signal,
             "min_candle_extra": self.min_candle_extra,
             "sell_profit_threshold": self.sell_profit_threshold,
+            "sell_requires_profit": self.sell_requires_profit,
             "stop_loss_threshold": self.stop_loss_threshold,
             "sr_pivot_left": self.sr_pivot_left,
             "sr_pivot_right": self.sr_pivot_right,

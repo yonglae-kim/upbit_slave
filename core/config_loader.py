@@ -34,6 +34,7 @@ _ENV_KEY_MAP = {
     "min_candle_extra": "TRADING_MIN_CANDLE_EXTRA",
     "buy_rsi_threshold": "TRADING_BUY_RSI_THRESHOLD",
     "sell_profit_threshold": "TRADING_SELL_PROFIT_THRESHOLD",
+    "sell_requires_profit": "TRADING_SELL_REQUIRES_PROFIT",
     "stop_loss_threshold": "TRADING_STOP_LOSS_THRESHOLD",
     "krw_markets": "TRADING_KRW_MARKETS",
     "universe_top_n1": "TRADING_UNIVERSE_TOP_N1",
@@ -128,6 +129,8 @@ def _parse_env_value(key: str, value: str):
         return int(value)
     if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio"}:
         return float(value)
+    if key == "sell_requires_profit":
+        return value.strip().lower() in {"1", "true", "yes", "on"}
     return value
 
 
@@ -167,6 +170,7 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "min_candle_extra": int,
         "buy_rsi_threshold": int,
         "sell_profit_threshold": (int, float),
+        "sell_requires_profit": bool,
         "stop_loss_threshold": (int, float),
         "krw_markets": list,
         "universe_top_n1": int,
