@@ -786,11 +786,13 @@ class BacktestRunner:
             if not df.empty
             else {}
         )
+        summary["initial_amount_krw"] = init_amount
         if not df.empty:
             period_values = pd.to_numeric(df["period_return"], errors="coerce").fillna(0.0).tolist()
             summary["compounded_return_pct"] = (math.prod((1 + (value / 100)) for value in period_values) - 1) * 100
             summary["period_return_std"] = pstdev(period_values) if period_values else 0.0
             summary["period_return_median"] = median(period_values) if period_values else 0.0
+        summary["final_amount_krw"] = summary["initial_amount_krw"] * (1 + (summary.get("compounded_return_pct", 0.0) / 100))
         abnormal_cagr_rows = (
             df[df["cagr_valid"] & df["cagr"].abs().gt(self.ABNORMAL_CAGR_THRESHOLD_PCT)] if not df.empty else pd.DataFrame()
         )
