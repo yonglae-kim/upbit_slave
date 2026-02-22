@@ -78,7 +78,9 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'regime_ema_slow': 50,\n"
                 "    'regime_adx_period': 14,\n"
                 "    'regime_adx_min': 20.0,\n"
-                "    'regime_slope_lookback': 3\n"
+                "    'regime_slope_lookback': 3,\n"
+                "    'reentry_cooldown_bars': 0,\n"
+                "    'cooldown_on_loss_exits_only': False\n"
                 "}\n",
                 encoding="utf-8",
             )

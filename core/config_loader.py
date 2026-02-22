@@ -77,6 +77,8 @@ _ENV_KEY_MAP = {
     "regime_adx_min": "TRADING_REGIME_ADX_MIN",
     "regime_slope_lookback": "TRADING_REGIME_SLOPE_LOOKBACK",
     "zone_profile": "TRADING_ZONE_PROFILE",
+    "reentry_cooldown_bars": "TRADING_REENTRY_COOLDOWN_BARS",
+    "cooldown_on_loss_exits_only": "TRADING_COOLDOWN_ON_LOSS_EXITS_ONLY",
 }
 
 
@@ -142,11 +144,12 @@ def _parse_env_value(key: str, value: str):
         "regime_ema_slow",
         "regime_adx_period",
         "regime_slope_lookback",
+        "reentry_cooldown_bars",
     }:
         return int(value)
     if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min"}:
         return float(value)
-    if key in {"sell_requires_profit", "regime_filter_enabled"}:
+    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only"}:
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return value
 
@@ -229,6 +232,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "regime_adx_period": int,
         "regime_adx_min": (int, float),
         "regime_slope_lookback": int,
+        "reentry_cooldown_bars": int,
+        "cooldown_on_loss_exits_only": bool,
     }
 
     for key, expected in required_types.items():
@@ -345,6 +350,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("regime_ema_fast must be smaller than regime_ema_slow")
     if config["regime_adx_min"] < 0:
         raise ConfigValidationError("regime_adx_min must be >= 0")
+    if config["reentry_cooldown_bars"] < 0:
+        raise ConfigValidationError("reentry_cooldown_bars must be >= 0")
 
 
 def load_trading_config() -> TradingConfig:
