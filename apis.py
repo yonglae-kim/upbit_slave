@@ -155,6 +155,16 @@ def _mask_headers_for_log(headers):
     return masked
 
 
+def _extract_upbit_error_payload(payload):
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        return {
+            "name": error.get("name"),
+            "message": error.get("message"),
+        }
+    return payload
+
+
 def _request(
     method,
     path,
@@ -209,6 +219,20 @@ def _request(
             return _build_rate_limit_signal(response.status_code, payload, remaining_req, retry_after)
 
         if not 200 <= response.status_code < 300:
+            if UPBIT_API_DEBUG:
+                debug_header_keys = ("Remaining-Req", "Request-Id", "Date", "Content-Type", "Authorization")
+                response_headers_for_log = {
+                    key: response.headers.get(key)
+                    for key in debug_header_keys
+                    if response.headers.get(key) is not None
+                }
+                response_headers_for_log = _mask_headers_for_log(response_headers_for_log)
+
+                print(
+                    f"[UPBIT_API_DEBUG] ERROR method={method} path={path} group={group} attempt={attempt} "
+                    f"status_code={response.status_code} payload={_extract_upbit_error_payload(payload)} "
+                    f"headers={response_headers_for_log}"
+                )
             raise ApiRequestError(response.status_code, payload, remaining_req)
 
         return payload
