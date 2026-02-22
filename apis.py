@@ -138,7 +138,9 @@ def _auth_headers(query=None):
         )
 
     payload = get_payload(query)
-    jwt_token = jwt.encode(payload, secret_key)
+    jwt_token = jwt.encode(payload, secret_key, algorithm="HS512")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
 
     if UPBIT_API_DEBUG:
         nonce = payload.get("nonce")
