@@ -49,6 +49,6 @@ TRADING_CONFIG = {
     "trigger_rejection_wick_ratio": 0.35,
     "trigger_breakout_lookback": 3,
     "min_candles_1m": 80,
-    "min_candles_5m": 120,
-    "min_candles_15m": 120,
+    "min_candles_5m": 30,
+    "min_candles_15m": 40,
 }

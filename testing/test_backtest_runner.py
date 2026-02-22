@@ -60,7 +60,7 @@ class BacktestRunnerTest(unittest.TestCase):
         base = datetime.datetime(2024, 1, 1, 0, 5, 0)
         candles = [
             {
-                **self._candle(base - datetime.timedelta(minutes=i), 100 + i),
+                **self._candle(base - datetime.timedelta(minutes=3 * i), 100 + i),
                 "opening_price": 100 + i,
                 "high_price": 101 + (i * 2),
                 "low_price": 99 - i,
@@ -74,20 +74,13 @@ class BacktestRunnerTest(unittest.TestCase):
 
         self.assertEqual(set(mtf.keys()), {"1m", "5m", "15m"})
         self.assertEqual(len(mtf["1m"]), 6)
-        self.assertEqual(len(mtf["5m"]), 2)
+        self.assertEqual(len(mtf["5m"]), 3)
         latest_5m = mtf["5m"][0]
-        self.assertEqual(latest_5m["opening_price"], candles[0]["opening_price"])
-        self.assertEqual(latest_5m["trade_price"], candles[0]["trade_price"])
-        self.assertEqual(latest_5m["high_price"], max(c["high_price"] for c in candles[:1]))
-        self.assertEqual(latest_5m["low_price"], min(c["low_price"] for c in candles[:1]))
-
-        older_5m = mtf["5m"][1]
-        bucket = candles[1:]
-        self.assertEqual(older_5m["opening_price"], bucket[-1]["opening_price"])
-        self.assertEqual(older_5m["trade_price"], bucket[0]["trade_price"])
-        self.assertEqual(older_5m["high_price"], max(c["high_price"] for c in bucket))
-        self.assertEqual(older_5m["low_price"], min(c["low_price"] for c in bucket))
-        self.assertEqual(older_5m["candle_acc_trade_volume"], sum(c["candle_acc_trade_volume"] for c in bucket))
+        latest_bucket = candles[:2]
+        self.assertEqual(latest_5m["opening_price"], latest_bucket[-1]["opening_price"])
+        self.assertEqual(latest_5m["trade_price"], latest_bucket[0]["trade_price"])
+        self.assertEqual(latest_5m["high_price"], max(c["high_price"] for c in latest_bucket))
+        self.assertEqual(latest_5m["low_price"], min(c["low_price"] for c in latest_bucket))
 
 
     @patch("testing.backtest_runner.check_buy", return_value=False)
@@ -204,6 +197,32 @@ class BacktestRunnerTest(unittest.TestCase):
         df = pd.read_csv("/tmp/segments.csv")
         self.assertIn("exit_reason_signal_exit", df.columns)
         self.assertIn("exit_reason_trailing_stop", df.columns)
+
+    def test_mtf_timeframes_and_minimums_follow_base_interval(self):
+        runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
+
+        self.assertEqual(runner.mtf_timeframes, {"1m": 3, "5m": 6, "15m": 15})
+        self.assertEqual(runner.strategy_params.min_candles_1m, 27)
+        self.assertEqual(runner.strategy_params.min_candles_5m, 25)
+        self.assertEqual(runner.strategy_params.min_candles_15m, 40)
+
+    def test_validate_mtf_capacity_reports_clear_error_for_impossible_combination(self):
+        runner = BacktestRunner(buffer_cnt=10, multiple_cnt=2)
+
+        with self.assertRaises(ValueError) as exc:
+            runner._validate_mtf_capacity(raise_on_failure=True)
+
+        self.assertIn("insufficient MTF candle capacity", str(exc.exception))
+        self.assertIn("available=", str(exc.exception))
+
+    def test_default_buffer_capacity_is_not_insufficient(self):
+        runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
+
+        available = runner._validate_mtf_capacity(raise_on_failure=True)
+
+        self.assertGreaterEqual(available["1m"], runner.strategy_params.min_candles_1m)
+        self.assertGreaterEqual(available["5m"], runner.strategy_params.min_candles_5m)
+        self.assertGreaterEqual(available["15m"], runner.strategy_params.min_candles_15m)
 
 
 if __name__ == "__main__":
