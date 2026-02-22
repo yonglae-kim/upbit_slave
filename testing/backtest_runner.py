@@ -177,18 +177,37 @@ class BacktestRunner:
         for key, minutes in self.mtf_timeframes.items():
             ratio = max(1, int(math.ceil(minutes / base_interval)))
             available[key] = max(1, int(math.ceil(self.buffer_cnt / ratio)))
-        required = {
+        required_min = {
             "1m": int(self.strategy_params.min_candles_1m),
             "5m": int(self.strategy_params.min_candles_5m),
             "15m": int(self.strategy_params.min_candles_15m),
         }
+        regime_required_15m = self._required_regime_15m_candles() if bool(self.strategy_params.regime_filter_enabled) else 0
+        required = dict(required_min)
+        if regime_required_15m > 0:
+            required["15m"] = max(required_min["15m"], regime_required_15m)
+
         insufficient = {key: (available[key], required[key]) for key in required if available[key] < required[key]}
         if insufficient:
-            detail = ", ".join(f"{k}: available={v[0]} < required={v[1]}" for k, v in insufficient.items())
+            details = []
+            for key, values in insufficient.items():
+                available_cnt, required_cnt = values
+                min_required = required_min[key]
+                if key == "15m":
+                    details.append(
+                        f"{key}: available={available_cnt} < required={required_cnt} "
+                        f"(min_candles 기준={min_required}, regime 기준={regime_required_15m})"
+                    )
+                else:
+                    details.append(
+                        f"{key}: available={available_cnt} < required={required_cnt} "
+                        f"(min_candles 기준={min_required})"
+                    )
+            detail = ", ".join(details)
             message = (
                 "insufficient MTF candle capacity for backtest buffer_cnt="
                 f"{self.buffer_cnt} (base={self.config.candle_interval}m, tf={self.mtf_timeframes}): {detail}. "
-                "Increase buffer_cnt or lower min_candles thresholds."
+                "Increase buffer_cnt or lower min_candles/regime thresholds."
             )
             if raise_on_failure:
                 raise ValueError(message)

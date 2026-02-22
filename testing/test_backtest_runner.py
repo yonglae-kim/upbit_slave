@@ -1,8 +1,10 @@
 import datetime
+import io
 import sys
 from dataclasses import replace
 import types
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 import pandas as pd
@@ -426,13 +428,31 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertIn("available=", str(exc.exception))
 
     def test_default_buffer_capacity_is_not_insufficient(self):
-        runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
+        config = TradingConfig(do_not_trading=[], regime_filter_enabled=False)
+        with patch("testing.backtest_runner.load_trading_config", return_value=config):
+            runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
 
         available = runner._validate_mtf_capacity(raise_on_failure=True)
 
         self.assertGreaterEqual(available["1m"], runner.strategy_params.min_candles_1m)
         self.assertGreaterEqual(available["5m"], runner.strategy_params.min_candles_5m)
         self.assertGreaterEqual(available["15m"], runner.strategy_params.min_candles_15m)
+
+    def test_validate_mtf_capacity_warns_with_separated_min_and_regime_requirements(self):
+        config = TradingConfig(do_not_trading=[], candle_interval=1, regime_filter_enabled=True, regime_ema_slow=200)
+        with patch("testing.backtest_runner.load_trading_config", return_value=config):
+            runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
+
+        captured = io.StringIO()
+        with redirect_stdout(captured):
+            available = runner._validate_mtf_capacity(raise_on_failure=False)
+
+        self.assertEqual(available["15m"], 14)
+        warning = captured.getvalue()
+        self.assertIn("insufficient MTF candle capacity", warning)
+        self.assertIn("15m: available=14 < required=200", warning)
+        self.assertIn("min_candles 기준=40", warning)
+        self.assertIn("regime 기준=200", warning)
 
     def test_strategy_params_default_sell_requires_profit_false(self):
         runner = BacktestRunner(buffer_cnt=200, multiple_cnt=2)
