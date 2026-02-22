@@ -95,9 +95,23 @@ class BacktestRunnerTest(unittest.TestCase):
         args, _ = _check_buy.call_args
         self.assertIsInstance(args[0], dict)
         self.assertEqual(set(args[0].keys()), {"1m", "5m", "15m"})
-        self.assertEqual(result.attempted_entries, 1)
+        self.assertEqual(result.attempted_entries, 0)
+        self.assertEqual(result.candidate_entries, 0)
         self.assertEqual(result.trades, 0)
         self.assertEqual(result.entry_fail_counts.get("trigger_fail"), 1)
+
+    @patch("testing.backtest_runner.check_buy", return_value=False)
+    @patch("testing.backtest_runner.debug_entry", return_value={"final_pass": False, "fail_code": "trigger_fail", "selected_zone": {"x": 1}})
+    def test_run_segment_counts_candidate_entries_only_with_selected_zone(self, _debug_entry, _check_buy):
+        runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        candles = [self._candle(base - datetime.timedelta(minutes=3 * i), 10000 + i) for i in range(3)]
+
+        result = runner._run_segment(candles, init_amount=1_000_000, segment_id=1)
+
+        self.assertEqual(result.attempted_entries, 1)
+        self.assertEqual(result.candidate_entries, 1)
+        self.assertEqual(result.triggered_entries, 0)
 
     @patch("testing.backtest_runner.check_buy", return_value=True)
     @patch("testing.backtest_runner.check_sell", return_value=True)
@@ -170,6 +184,18 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertTrue((debug_df["dominant_fail_code"] == "no_selected_zone").all())
         self.assertGreater(debug_df["fail_no_selected_zone"].sum(), 0)
 
+
+    def test_fill_rate_uses_candidate_entries(self):
+        runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
+
+        total_return, cagr, mdd, sharpe, fill_rate = runner._calc_metrics([1_000_000, 1_000_000], trades=2, candidate_entries=4)
+
+        self.assertIsInstance(total_return, float)
+        self.assertIsInstance(cagr, float)
+        self.assertIsInstance(mdd, float)
+        self.assertIsInstance(sharpe, float)
+        self.assertEqual(fill_rate, 0.5)
+
     def test_segment_csv_includes_exit_reason_columns(self):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2, path="/tmp/not_used.xlsx", segment_report_path="/tmp/segments.csv")
         base = datetime.datetime(2024, 1, 1, 0, 0, 0)
@@ -187,6 +213,8 @@ class BacktestRunnerTest(unittest.TestCase):
                     oos_end="d",
                     trades=1,
                     attempted_entries=1,
+                    candidate_entries=1,
+                    triggered_entries=1,
                     fill_rate=1.0,
                     return_pct=1.0,
                     cagr=1.0,
@@ -217,6 +245,8 @@ class BacktestRunnerTest(unittest.TestCase):
                     oos_end="d",
                     trades=0,
                     attempted_entries=3,
+                    candidate_entries=3,
+                    triggered_entries=0,
                     fill_rate=0.0,
                     return_pct=0.0,
                     cagr=0.0,
