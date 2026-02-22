@@ -4,6 +4,8 @@ import types
 import unittest
 from unittest.mock import patch
 
+import pandas as pd
+
 if 'slave_constants' not in sys.modules:
     sys.modules['slave_constants'] = types.SimpleNamespace(ACCESS_KEY='x', SECRET_KEY='y', SERVER_URL='https://api.upbit.com')
 
@@ -115,6 +117,60 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertGreaterEqual(result.fill_rate, 0)
         self.assertLessEqual(result.fill_rate, 1)
         self.assertIsInstance(result.sharpe, float)
+
+    @patch("testing.backtest_runner.check_buy", return_value=True)
+    @patch("testing.backtest_runner.check_sell", return_value=False)
+    def test_run_segment_tracks_partial_take_profit_reason(self, _check_sell, _check_buy):
+        runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        prices = [100.0, 103.0, 103.5, 100.0, 99.0, 98.0]
+        candles = [self._candle(base - datetime.timedelta(minutes=i), p) for i, p in enumerate(prices)]
+
+        result = runner._run_segment(candles, init_amount=1_000_000, segment_id=1)
+
+        self.assertGreaterEqual(result.exit_reason_counts.get("partial_take_profit", 0), 1)
+
+    @patch("testing.backtest_runner.check_buy", return_value=True)
+    @patch("testing.backtest_runner.check_sell", return_value=True)
+    def test_sell_decision_rule_and_requires_both_signal_and_policy(self, _check_sell, _check_buy):
+        runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2, sell_decision_rule="and")
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        prices = [100.0, 100.5, 100.3, 100.2, 100.1, 100.0]
+        candles = [self._candle(base - datetime.timedelta(minutes=i), p) for i, p in enumerate(prices)]
+
+        result = runner._run_segment(candles, init_amount=1_000_000, segment_id=1)
+
+        self.assertEqual(result.exit_reason_counts.get("signal_exit", 0), 0)
+
+    def test_segment_csv_includes_exit_reason_columns(self):
+        runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2, path="/tmp/not_used.xlsx", segment_report_path="/tmp/segments.csv")
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        candles = [self._candle(base - datetime.timedelta(minutes=i), 100 + i) for i in range(12)]
+
+        with patch.object(runner, "_load_or_create_data", return_value=(candles, 0)):
+            with patch.object(runner, "_run_segment") as run_segment:
+                from testing.backtest_runner import SegmentResult
+
+                run_segment.return_value = SegmentResult(
+                    segment_id=1,
+                    insample_start="a",
+                    insample_end="b",
+                    oos_start="c",
+                    oos_end="d",
+                    trades=1,
+                    attempted_entries=1,
+                    fill_rate=1.0,
+                    return_pct=1.0,
+                    cagr=1.0,
+                    mdd=1.0,
+                    sharpe=1.0,
+                    exit_reason_counts={"signal_exit": 2, "trailing_stop": 1},
+                )
+                runner.run()
+
+        df = pd.read_csv("/tmp/segments.csv")
+        self.assertIn("exit_reason_signal_exit", df.columns)
+        self.assertIn("exit_reason_trailing_stop", df.columns)
 
 
 if __name__ == "__main__":
