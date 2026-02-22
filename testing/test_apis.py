@@ -211,6 +211,43 @@ class ApiJwtNonceTest(unittest.TestCase):
 
         self.assertEqual(context.exception.status_code, 500)
 
+    @patch("apis.time.sleep")
+    @patch("apis.time.monotonic", side_effect=[10.10, 11.05])
+    def test_group_throttle_strengthens_when_remaining_sec_is_zero(self, _mock_monotonic, mock_sleep):
+        throttle = self.apis.GroupThrottle({"order": 10})
+        throttle.update_remaining("order", {"group": "order", "sec": 0}, observed_at=10.0)
+
+        throttle.wait("order")
+
+        self.assertEqual(mock_sleep.call_count, 1)
+        self.assertAlmostEqual(mock_sleep.call_args.args[0], 0.9, places=2)
+
+    @patch("apis.time.sleep")
+    @patch("apis.time.monotonic", return_value=20.10)
+    def test_group_throttle_relaxes_when_remaining_sec_is_high(self, _mock_monotonic, mock_sleep):
+        throttle = self.apis.GroupThrottle({"order": 10})
+        throttle.update_remaining("order", {"group": "order", "sec": 8}, observed_at=20.0)
+
+        throttle.wait("order")
+
+        mock_sleep.assert_not_called()
+
+    @patch("apis._session.request", return_value=DummyResponse(headers={"Remaining-Req": "group=order; min=59; sec=6"}))
+    def test_request_stores_remaining_req_by_group(self, _mock_request):
+        self.apis.get_accounts()
+
+        self.assertEqual(
+            self.apis.get_remaining_req_by_group("order"),
+            {"group": "order", "min": 59, "sec": 6},
+        )
+
+    @patch("apis.time.sleep")
+    @patch("apis._session.request", return_value=DummyResponse(status_code=429, body={"error": "too_many"}))
+    def test_429_opens_group_circuit_breaker(self, _mock_request, _mock_sleep):
+        self.apis.get_accounts()
+
+        self.assertGreater(self.apis._group_throttle._circuit_open_until.get("default", 0), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

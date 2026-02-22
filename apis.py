@@ -24,6 +24,7 @@ READ_TIMEOUT = 10
 TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
 _session = requests.Session()
 _last_remaining_req = None
+_remaining_req_by_group = {}
 
 
 def _parse_env_bool(value):
@@ -63,6 +64,30 @@ class GroupThrottle:
         self._lock = threading.Lock()
         self._window_start = {}
         self._count_in_window = {}
+        self._last_remaining_sec = {}
+        self._remaining_observed_at = {}
+        self._circuit_open_until = {}
+
+    def update_remaining(self, group, remaining_req, observed_at=None):
+        if not group or not isinstance(remaining_req, dict):
+            return
+
+        sec = remaining_req.get("sec")
+        if not isinstance(sec, int):
+            return
+
+        with self._lock:
+            self._last_remaining_sec[group] = sec
+            self._remaining_observed_at[group] = time.monotonic() if observed_at is None else observed_at
+
+    def trip_circuit(self, group, pause_seconds):
+        if not group or pause_seconds <= 0:
+            return
+
+        with self._lock:
+            current = self._circuit_open_until.get(group, 0)
+            until = time.monotonic() + pause_seconds
+            self._circuit_open_until[group] = max(current, until)
 
     def wait(self, group):
         second_limit = self._second_limits.get(group)
@@ -73,17 +98,36 @@ class GroupThrottle:
             sleep_seconds = 0
             now = time.monotonic()
             with self._lock:
+                circuit_until = self._circuit_open_until.get(group, 0)
+                if circuit_until > now:
+                    sleep_seconds = max(sleep_seconds, circuit_until - now)
+
                 current_window = int(now)
                 if self._window_start.get(group) != current_window:
                     self._window_start[group] = current_window
                     self._count_in_window[group] = 0
 
                 used = self._count_in_window[group]
+                local_window_sleep = 0
                 if used < second_limit:
                     self._count_in_window[group] = used + 1
-                    return
+                else:
+                    local_window_sleep = (current_window + 1) - now
 
-                sleep_seconds = (current_window + 1) - now
+                remaining_sec = self._last_remaining_sec.get(group)
+                remaining_observed_at = self._remaining_observed_at.get(group)
+                dynamic_sleep = 0
+                if isinstance(remaining_sec, int) and remaining_observed_at is not None:
+                    elapsed = max(0.0, now - remaining_observed_at)
+                    if remaining_sec <= 0:
+                        dynamic_sleep = max(dynamic_sleep, 1.0 - elapsed)
+                    elif remaining_sec <= 2:
+                        dynamic_sleep = max(dynamic_sleep, 0.12 * (3 - remaining_sec))
+
+                sleep_seconds = max(sleep_seconds, local_window_sleep, dynamic_sleep)
+
+                if sleep_seconds <= 0:
+                    return
 
             if sleep_seconds > 0:
                 time.sleep(sleep_seconds)
@@ -108,6 +152,12 @@ def parse_remaining_req(remaining_req_header):
 
 def get_last_remaining_req():
     return _last_remaining_req
+
+
+def get_remaining_req_by_group(group=None):
+    if group is None:
+        return dict(_remaining_req_by_group)
+    return _remaining_req_by_group.get(group)
 
 
 def _build_rate_limit_signal(status_code, payload, remaining_req, retry_after=None):
@@ -215,6 +265,11 @@ def _request(
 
         remaining_req = parse_remaining_req(response.headers.get("Remaining-Req"))
         _last_remaining_req = remaining_req
+        if remaining_req:
+            header_group = remaining_req.get("group")
+            effective_group = header_group or group
+            _remaining_req_by_group[effective_group] = dict(remaining_req)
+            _group_throttle.update_remaining(effective_group, remaining_req)
 
         if UPBIT_API_DEBUG:
             print(
@@ -230,6 +285,11 @@ def _request(
         if response.status_code in (429, 418):
             retry_after_header = response.headers.get("Retry-After")
             retry_after = int(retry_after_header) if retry_after_header and retry_after_header.isdigit() else None
+            if response.status_code == 418:
+                circuit_break_seconds = retry_after if retry_after is not None else 30
+            else:
+                circuit_break_seconds = retry_after if retry_after is not None else DEFAULT_BACKOFF_SECONDS * (2 ** attempt)
+            _group_throttle.trip_circuit(group, circuit_break_seconds)
             if attempt < max_retries:
                 backoff_seconds = retry_after if retry_after is not None else DEFAULT_BACKOFF_SECONDS * (2 ** attempt)
                 time.sleep(backoff_seconds)
