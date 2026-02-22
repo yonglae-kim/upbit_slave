@@ -73,10 +73,24 @@ def collect_krw_markets(markets: Iterable[dict[str, Any]], excluded_keywords: li
         market = str(item.get("market", ""))
         if not market.startswith("KRW-"):
             continue
-        if any(excluded in market for excluded in excluded_keywords):
+        if is_market_excluded(market, excluded_keywords):
             continue
         krw_markets.append(market)
     return krw_markets
+
+
+def is_market_excluded(market: str, excluded_keywords: Iterable[str]) -> bool:
+    if not market:
+        return False
+
+    symbol = market.split("-", 1)[1] if "-" in market else market
+    for keyword in excluded_keywords:
+        normalized = str(keyword).strip()
+        if not normalized:
+            continue
+        if normalized == market or normalized == symbol:
+            return True
+    return False
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
