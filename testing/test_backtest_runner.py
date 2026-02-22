@@ -1,5 +1,6 @@
 import datetime
 import sys
+from dataclasses import replace
 import types
 import unittest
 from unittest.mock import patch
@@ -55,6 +56,19 @@ class BacktestRunnerTest(unittest.TestCase):
     def test_oos_windows_is_clamped_to_two_or_more(self):
         runner = BacktestRunner(buffer_cnt=4, multiple_cnt=2, oos_windows=1)
         self.assertEqual(runner.oos_windows, 2)
+
+    def test_required_base_bars_for_regime_uses_strategy_regime_diagnostics_formula(self):
+        runner = BacktestRunner(buffer_cnt=4, multiple_cnt=2)
+
+        required_15m = max(
+            runner.strategy_params.regime_ema_slow,
+            runner.strategy_params.regime_adx_period + 1,
+            runner.strategy_params.regime_slope_lookback + 1,
+        )
+        expected_base_bars = required_15m * 5  # default 3m base candles -> 15m requires 5 base bars.
+
+        self.assertEqual(runner._required_regime_15m_candles(), required_15m)
+        self.assertEqual(runner.required_base_bars_for_regime, expected_base_bars)
 
 
     def test_build_mtf_candles_resamples_ohlcv(self):
@@ -114,6 +128,39 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertEqual(result.attempted_entries, 1)
         self.assertEqual(result.candidate_entries, 1)
         self.assertEqual(result.triggered_entries, 0)
+
+    @patch("testing.backtest_runner.check_buy", return_value=False)
+    @patch("testing.backtest_runner.debug_entry")
+    def test_run_segment_expands_warmup_for_regime_filter_lookback(self, debug_entry_mock, _check_buy):
+        runner = BacktestRunner(buffer_cnt=3000, multiple_cnt=2)
+        runner.config.candle_interval = 1
+        runner.mtf_timeframes = runner._resolve_mtf_timeframes()
+        runner.strategy_params = replace(runner.strategy_params, regime_ema_slow=200)
+        runner.required_base_bars_for_regime = runner._required_base_bars_for_regime()
+        runner.required_base_bars_for_mtf_minimums = runner._required_base_bars_for_mtf_minimums()
+
+        base = datetime.datetime(2024, 1, 1, 6, 0, 0)
+        candles = [self._candle(base - datetime.timedelta(minutes=i), 10000 + i) for i in range(3200)]
+
+        def debug_side_effect(mtf_data, _params, side="buy"):
+            if len(mtf_data["15m"]) < 200:
+                return {
+                    "final_pass": False,
+                    "fail_code": "regime_filter_fail",
+                    "regime_filter_reason": "insufficient_15m_candles",
+                }
+            return {
+                "final_pass": False,
+                "fail_code": "regime_filter_fail",
+                "regime_filter_reason": "ema_trend_fail",
+            }
+
+        debug_entry_mock.side_effect = debug_side_effect
+
+        result = runner._run_segment(candles, init_amount=1_000_000, segment_id=1)
+
+        self.assertGreater(result.entry_fail_counts.get("regime_filter_fail:ema_trend_fail", 0), 0)
+        self.assertEqual(result.entry_fail_counts.get("regime_filter_fail:insufficient_15m_candles", 0), 0)
 
     @patch("testing.backtest_runner.check_buy", return_value=True)
     @patch("testing.backtest_runner.check_sell", return_value=True)
