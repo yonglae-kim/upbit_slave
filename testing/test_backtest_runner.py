@@ -188,7 +188,7 @@ class BacktestRunnerTest(unittest.TestCase):
     def test_fill_rate_uses_candidate_entries(self):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
 
-        total_return, cagr, mdd, sharpe, fill_rate = runner._calc_metrics(
+        total_return, return_per_trade, cagr, mdd, sharpe, fill_rate, cagr_valid, observed_days = runner._calc_metrics(
             [1_000_000, 1_000_000],
             trades=2,
             attempted_entries=10,
@@ -201,6 +201,27 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertIsInstance(mdd, float)
         self.assertIsInstance(sharpe, float)
         self.assertEqual(fill_rate, 0.5)
+        self.assertFalse(cagr_valid)
+        self.assertGreater(observed_days, 0)
+        self.assertAlmostEqual(return_per_trade, total_return / 2)
+
+    def test_calc_metrics_marks_short_period_cagr_as_nan(self):
+        runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
+
+        total_return, return_per_trade, cagr, mdd, sharpe, fill_rate, cagr_valid, observed_days = runner._calc_metrics(
+            [1_000_000, 1_010_000, 1_020_000],
+            trades=1,
+            attempted_entries=1,
+            candidate_entries=1,
+            triggered_entries=1,
+        )
+
+        self.assertFalse(cagr_valid)
+        self.assertTrue(pd.isna(cagr))
+        self.assertLess(observed_days, runner.MIN_CAGR_OBSERVATION_DAYS)
+        self.assertGreater(total_return, 0)
+        self.assertEqual(return_per_trade, total_return)
+        self.assertGreaterEqual(fill_rate, 0)
 
     def test_segment_csv_keeps_entry_counter_columns_for_fill_rate_context(self):
         runner = BacktestRunner(
