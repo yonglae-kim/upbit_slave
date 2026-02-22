@@ -66,4 +66,6 @@ TRADING_CONFIG = {
     "regime_adx_period": 14,
     "regime_adx_min": 20.0,
     "regime_slope_lookback": 3,
+    "reentry_cooldown_bars": 0,
+    "cooldown_on_loss_exits_only": False,
 }

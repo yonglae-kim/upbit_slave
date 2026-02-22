@@ -47,6 +47,9 @@ class SegmentResult:
 class BacktestPositionState:
     avg_buy_price: float = 0.0
     exit_state: PositionExitState = field(default_factory=PositionExitState)
+    last_exit_at: str = ""
+    last_exit_reason: str = ""
+    last_exit_bar_index: int = -1
 
 
 class BacktestRunner:
@@ -194,6 +197,18 @@ class BacktestRunner:
         if signal_exit:
             return ExitDecision(should_exit=True, qty_ratio=1.0, reason="signal_exit")
         return ExitDecision(should_exit=False)
+
+
+    def _is_reentry_cooldown_active(self, state: BacktestPositionState, bar_index: int) -> bool:
+        cooldown_bars = max(0, int(self.config.reentry_cooldown_bars))
+        if cooldown_bars <= 0 or state.last_exit_bar_index < 0:
+            return False
+
+        if self.config.cooldown_on_loss_exits_only and state.last_exit_reason not in {"trailing_stop", "stop_loss"}:
+            return False
+
+        elapsed_bars = max(0, bar_index - state.last_exit_bar_index)
+        return elapsed_bars < cooldown_bars
 
 
     def _latest_atr(self, candles_newest: list[dict], period: int) -> float:
@@ -444,6 +459,7 @@ class BacktestRunner:
             "fail_trigger_fail": int(counters.get("trigger_fail", 0)),
             "fail_invalid_timeframe": int(counters.get("invalid_timeframe", 0)),
             "fail_regime_filter_fail": int(counters.get("regime_filter_fail", 0)),
+            "fail_reentry_cooldown": int(counters.get("fail_reentry_cooldown", 0)),
             "dominant_fail_code": max(counters, key=counters.get) if counters else "none",
         }
 
@@ -462,7 +478,7 @@ class BacktestRunner:
         exit_reason_counts: Counter[str] = Counter()
         entry_fail_counts: Counter[str] = Counter()
 
-        for i in range(len(data_newest), self.buffer_cnt - 1, -1):
+        for bar_index, i in enumerate(range(len(data_newest), self.buffer_cnt - 1, -1)):
             end = i
             start = max(end - self.buffer_cnt, 0)
             test_data = data_newest[start:end]
@@ -488,7 +504,12 @@ class BacktestRunner:
                 else:
                     buy_signal = check_buy(mtf_data, self.strategy_params)
 
-                if not buy_signal and debug:
+                blocked_by_cooldown = buy_signal and self._is_reentry_cooldown_active(position_state, bar_index)
+                if blocked_by_cooldown:
+                    buy_signal = False
+                    entry_fail_counts["fail_reentry_cooldown"] += 1
+
+                if not buy_signal and debug and not blocked_by_cooldown:
                     entry_fail_counts[str(debug.get("fail_code", "unknown"))] += 1
 
                 if buy_signal:
@@ -524,7 +545,11 @@ class BacktestRunner:
                     exit_reason_counts[normalized_reason] += 1
                     if hold_coin <= 0:
                         hold_coin = 0.0
-                        position_state = BacktestPositionState()
+                        position_state.last_exit_at = test_data[0]["candle_date_time_kst"]
+                        position_state.last_exit_reason = normalized_reason
+                        position_state.last_exit_bar_index = bar_index
+                        position_state.avg_buy_price = 0.0
+                        position_state.exit_state = PositionExitState()
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
 

@@ -66,6 +66,8 @@ class TradingEngine:
         )
         self._position_exit_states: dict[str, PositionExitState] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
+        self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
+        self.debug_counters: dict[str, int] = {"fail_reentry_cooldown": 0}
 
         if self.ws_client:
             self.ws_client.on_message = self._route_ws_message
@@ -153,6 +155,9 @@ class TradingEngine:
                 self.risk.record_trade_result((current_price - avg_buy_price) * requested_volume)
                 if decision.qty_ratio >= 1.0:
                     self._position_exit_states.pop(market, None)
+                    latest_candle = data.get("1m", [{}])[0]
+                    exit_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
+                    self._last_exit_snapshot_by_market[market] = {"time": exit_time, "reason": decision.reason}
                 self.notifier.send(f"SELL_ACCEPTED {market} {current_price} {delta}% reason={decision.reason}")
 
         self._print_runtime_status(stage="evaluating_entries", portfolio=portfolio)
@@ -181,6 +186,11 @@ class TradingEngine:
 
             data = candles_by_market[market]
             if not self._should_run_strategy(market, data):
+                continue
+            latest_candle = data.get("1m", [{}])[0]
+            latest_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
+            if self._is_reentry_cooldown_active(market, latest_time):
+                self.debug_counters["fail_reentry_cooldown"] = self.debug_counters.get("fail_reentry_cooldown", 0) + 1
                 continue
             if not check_buy(data, strategy_params):
                 continue
@@ -232,6 +242,29 @@ class TradingEngine:
             print("BUY_ACCEPTED", market, str(int(preflight["order_value"])) + "원", data["1m"][0]["trade_price"])
             self.notifier.send(f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']}")
             break
+
+
+    def _is_reentry_cooldown_active(self, market: str, now_at: datetime) -> bool:
+        cooldown_bars = max(0, int(self.config.reentry_cooldown_bars))
+        if cooldown_bars <= 0:
+            return False
+
+        last_exit = self._last_exit_snapshot_by_market.get(market)
+        if not last_exit:
+            return False
+
+        last_reason = str(last_exit.get("reason", ""))
+        if self.config.cooldown_on_loss_exits_only and last_reason not in {"trailing_stop", "stop_loss"}:
+            return False
+
+        last_time = last_exit.get("time")
+        if not isinstance(last_time, datetime):
+            return False
+
+        elapsed_minutes = max(0.0, (now_at - last_time).total_seconds() / 60.0)
+        bar_minutes = max(1, int(self.config.candle_interval))
+        elapsed_bars = int(elapsed_minutes // bar_minutes)
+        return elapsed_bars < cooldown_bars
 
     def _get_strategy_candles(self, market: str) -> dict[str, list[dict]]:
         intervals = {1: "1m", 5: "5m", 15: "15m"}

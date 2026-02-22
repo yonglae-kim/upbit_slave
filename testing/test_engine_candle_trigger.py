@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 
 from core.config import TradingConfig
 from core.engine import TradingEngine
@@ -57,6 +58,27 @@ class TradingEngineCandleTriggerTest(unittest.TestCase):
         }
 
         self.assertFalse(engine._should_run_strategy("KRW-BTC", data))
+
+    def test_reentry_cooldown_blocks_same_market_and_counts_failures(self):
+        broker = TriggerBroker()
+        config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=["KRW-BTC"],
+            reentry_cooldown_bars=2,
+            cooldown_on_loss_exits_only=True,
+        )
+        engine = TradingEngine(broker, DummyNotifier(), config)
+        engine._last_exit_snapshot_by_market["KRW-BTC"] = {
+            "time": datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc),
+            "reason": "stop_loss",
+        }
+
+        blocked = engine._is_reentry_cooldown_active("KRW-BTC", datetime(2024, 1, 1, 0, 1, tzinfo=timezone.utc))
+        allowed = engine._is_reentry_cooldown_active("KRW-BTC", datetime(2024, 1, 1, 0, 7, tzinfo=timezone.utc))
+
+        self.assertTrue(blocked)
+        self.assertFalse(allowed)
+
 
 
 if __name__ == "__main__":

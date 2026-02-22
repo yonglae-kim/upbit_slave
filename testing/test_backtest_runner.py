@@ -186,6 +186,26 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertTrue((debug_df["dominant_fail_code"] == "no_selected_zone").all())
         self.assertGreater(debug_df["fail_no_selected_zone"].sum(), 0)
 
+    @patch("testing.backtest_runner.check_buy", return_value=True)
+    @patch("testing.backtest_runner.check_sell", return_value=False)
+    def test_run_segment_reentry_cooldown_zero_vs_positive(self, _check_sell, _check_buy):
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        prices = [100.0, 90.0, 100.0, 90.0, 100.0, 90.0, 100.0, 90.0, 100.0]
+        candles = [self._candle(base - datetime.timedelta(minutes=i), p) for i, p in enumerate(prices)]
+
+        runner_no_cooldown = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
+        runner_no_cooldown.config.reentry_cooldown_bars = 0
+        result_no_cooldown = runner_no_cooldown._run_segment(candles, init_amount=1_000_000, segment_id=1)
+
+        runner_with_cooldown = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
+        runner_with_cooldown.config.reentry_cooldown_bars = 2
+        runner_with_cooldown.config.cooldown_on_loss_exits_only = True
+        result_with_cooldown = runner_with_cooldown._run_segment(candles, init_amount=1_000_000, segment_id=1)
+
+        self.assertGreater(result_no_cooldown.trades, result_with_cooldown.trades)
+        self.assertGreater(result_with_cooldown.entry_fail_counts.get("fail_reentry_cooldown", 0), 0)
+
+
 
     def test_fill_rate_uses_candidate_entries(self):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)

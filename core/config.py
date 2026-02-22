@@ -101,6 +101,8 @@ class TradingConfig:
     regime_adx_min: float = 20.0
     regime_slope_lookback: int = 3
     zone_profile: str = "balanced"
+    reentry_cooldown_bars: int = 0
+    cooldown_on_loss_exits_only: bool = False
 
     def to_strategy_params(
         self,
