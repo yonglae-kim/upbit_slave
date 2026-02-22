@@ -218,7 +218,7 @@ class BacktestRunner:
         equity_curve = [init_amount]
         avg_buy_price = 0.0
 
-        for i in range(len(data_newest), self.buffer_cnt, -1):
+        for i in range(len(data_newest), self.buffer_cnt - 1, -1):
             end = i
             start = max(end - self.buffer_cnt, 0)
             test_data = data_newest[start:end]

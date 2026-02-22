@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 
 from core.config import TradingConfig
@@ -55,6 +56,20 @@ class MainSignalValidationTest(unittest.TestCase):
         best = pick_best_zone(sr_levels, setup_zones, side="buy", params=self.params)
         self.assertIsNotNone(best)
         self.assertEqual(best["lower"], 99.5)
+
+
+    def test_check_buy_uses_lookback_index_for_active_zone_filter(self):
+        c15 = [make_candle(100 + (i % 6) - 3, spread=1.5) for i in range(160)]
+        c5 = [make_candle(120 + i * 0.01) for i in range(160)]
+        c1 = [make_candle(121 + i * 0.01) for i in range(120)]
+
+        with patch("core.strategy.detect_fvg_zones", return_value=[]), patch(
+            "core.strategy.detect_ob_zones",
+            return_value=[{"type": "ob", "bias": "bullish", "lower": 110.0, "upper": 130.0, "created_index": 1}],
+        ), patch("core.strategy.filter_active_zones", return_value=[]) as active_mock:
+            check_buy(self._tf(c1, c5, c15), self.params)
+
+        self.assertEqual(active_mock.call_args.kwargs["current_index"], self.params.ob_lookback_bars)
 
     def test_zone_invalidation_and_expiry(self):
         zones = [

@@ -314,7 +314,7 @@ def _check_entry(data: Any, params: StrategyParams, side: str, source_order: str
 
     zones = detect_fvg_zones(c5[: params.ob_lookback_bars], params) + detect_ob_zones(c5[: params.ob_lookback_bars], params)
     current_price_5m = _price(c5[0], "trade_price")
-    active = filter_active_zones(zones, current_price_5m, current_index=len(c5), params=params)
+    active = filter_active_zones(zones, current_price_5m, current_index=len(c5[: params.ob_lookback_bars]), params=params)
     selected = pick_best_zone(sr_levels, active, side=side, params=params)
     if selected is None:
         return False
