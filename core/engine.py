@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-import math
 
 from core.candle_buffer import CandleBuffer
 from core.config import TradingConfig
 from core.interfaces import Broker
 from core.order_state import OrderRecord, OrderStatus
+from core.price_rules import krw_tick_size, round_down_to_tick
 from core.position_policy import PositionExitState, PositionOrderPolicy
 from core.portfolio import normalize_accounts
 from core.reconciliation import apply_my_asset_event, apply_my_order_event
@@ -481,34 +481,10 @@ class TradingEngine:
         return float(tickers[0].get("trade_price", 0.0) or 0.0)
 
     def _krw_tick_size(self, price: float) -> float:
-        if price >= 2_000_000:
-            return 1000.0
-        if price >= 1_000_000:
-            return 500.0
-        if price >= 500_000:
-            return 100.0
-        if price >= 100_000:
-            return 50.0
-        if price >= 10_000:
-            return 10.0
-        if price >= 1_000:
-            return 1.0
-        if price >= 100:
-            return 0.1
-        if price >= 10:
-            return 0.01
-        if price >= 1:
-            return 0.001
-        if price >= 0.1:
-            return 0.0001
-        if price >= 0.01:
-            return 0.00001
-        if price >= 0.001:
-            return 0.000001
-        return 0.0000001
+        return krw_tick_size(price)
 
     def _round_to_tick(self, value: float, tick: float) -> float:
-        return math.floor(value / tick) * tick
+        return round_down_to_tick(value, tick)
 
     def _preflight_order(self, market: str, side: str, requested_value: float, reference_price: float) -> dict:
         if requested_value <= 0 or reference_price <= 0:
