@@ -64,6 +64,7 @@ _ENV_KEY_MAP = {
     "min_candles_1m": "TRADING_MIN_CANDLES_1M",
     "min_candles_5m": "TRADING_MIN_CANDLES_5M",
     "min_candles_15m": "TRADING_MIN_CANDLES_15M",
+    "zone_profile": "TRADING_ZONE_PROFILE",
 }
 
 

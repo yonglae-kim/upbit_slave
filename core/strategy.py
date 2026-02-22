@@ -420,6 +420,15 @@ def debug_entry(data: Any, params: StrategyParams, side: str, source_order: str 
     return debug
 
 
+def zone_debug_metrics(debug: dict[str, Any] | None) -> tuple[int, int, bool]:
+    if not debug:
+        return 0, 0, False
+    zones_total = int(debug.get("zones_total", 0) or 0)
+    zones_active = int(debug.get("zones_active", 0) or 0)
+    has_selected_zone = debug.get("selected_zone") is not None
+    return zones_total, zones_active, has_selected_zone
+
+
 def check_buy(data: Any, params: StrategyParams, source_order: str = "newest") -> bool:
     return _check_entry(data, params, side="buy", source_order=source_order)
 

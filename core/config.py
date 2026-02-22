@@ -3,6 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+ZONE_PROFILE_OVERRIDES: dict[str, dict[str, int | float]] = {
+    "conservative": {
+        "fvg_min_width_atr_mult": 0.28,
+        "displacement_min_atr_mult": 1.45,
+        "zone_expiry_bars_5m": 24,
+    },
+    "balanced": {},
+    "aggressive": {
+        "fvg_min_width_atr_mult": 0.16,
+        "displacement_min_atr_mult": 1.0,
+        "zone_expiry_bars_5m": 48,
+    },
+    "krw_eth_relaxed": {
+        "fvg_min_width_atr_mult": 0.14,
+        "displacement_min_atr_mult": 0.95,
+        "zone_expiry_bars_5m": 60,
+    },
+}
+
+
 @dataclass
 class TradingConfig:
     do_not_trading: list[str]
@@ -68,42 +88,61 @@ class TradingConfig:
     min_candles_1m: int = 80
     min_candles_5m: int = 30
     min_candles_15m: int = 40
+    zone_profile: str = "balanced"
 
-    def to_strategy_params(self):
+    def to_strategy_params(
+        self,
+        *,
+        zone_profile: str | None = None,
+        zone_overrides: dict[str, int | float] | None = None,
+    ):
         from core.strategy import StrategyParams
 
-        return StrategyParams(
-            buy_rsi_threshold=self.buy_rsi_threshold,
-            macd_n_fast=self.macd_n_fast,
-            macd_n_slow=self.macd_n_slow,
-            macd_n_signal=self.macd_n_signal,
-            min_candle_extra=self.min_candle_extra,
-            sell_profit_threshold=self.sell_profit_threshold,
-            stop_loss_threshold=self.stop_loss_threshold,
-            sr_pivot_left=self.sr_pivot_left,
-            sr_pivot_right=self.sr_pivot_right,
-            sr_cluster_band_pct=self.sr_cluster_band_pct,
-            sr_min_touches=self.sr_min_touches,
-            sr_lookback_bars=self.sr_lookback_bars,
-            sr_touch_weight=self.sr_touch_weight,
-            sr_recency_weight=self.sr_recency_weight,
-            sr_volume_weight=self.sr_volume_weight,
-            zone_priority_mode=self.zone_priority_mode,
-            fvg_atr_period=self.fvg_atr_period,
-            fvg_min_width_atr_mult=self.fvg_min_width_atr_mult,
-            fvg_min_width_ticks=self.fvg_min_width_ticks,
-            displacement_min_body_ratio=self.displacement_min_body_ratio,
-            displacement_min_atr_mult=self.displacement_min_atr_mult,
-            ob_lookback_bars=self.ob_lookback_bars,
-            ob_max_base_bars=self.ob_max_base_bars,
-            zone_expiry_bars_5m=self.zone_expiry_bars_5m,
-            zone_reentry_buffer_pct=self.zone_reentry_buffer_pct,
-            trigger_rejection_wick_ratio=self.trigger_rejection_wick_ratio,
-            trigger_breakout_lookback=self.trigger_breakout_lookback,
-            trigger_zone_lookback=self.trigger_zone_lookback,
-            trigger_confirm_lookback=self.trigger_confirm_lookback,
-            trigger_mode=self.trigger_mode,
-            min_candles_1m=self.min_candles_1m,
-            min_candles_5m=self.min_candles_5m,
-            min_candles_15m=self.min_candles_15m,
-        )
+        profile_name = (zone_profile or self.zone_profile or "balanced").strip().lower()
+        profile_overrides = ZONE_PROFILE_OVERRIDES.get(profile_name)
+        if profile_overrides is None:
+            valid_profiles = ", ".join(sorted(ZONE_PROFILE_OVERRIDES))
+            raise ValueError(f"unknown zone_profile '{profile_name}'. valid: {valid_profiles}")
+
+        runtime_overrides = {k: v for k, v in (zone_overrides or {}).items() if v is not None}
+
+        base_params = {
+
+            "buy_rsi_threshold": self.buy_rsi_threshold,
+            "macd_n_fast": self.macd_n_fast,
+            "macd_n_slow": self.macd_n_slow,
+            "macd_n_signal": self.macd_n_signal,
+            "min_candle_extra": self.min_candle_extra,
+            "sell_profit_threshold": self.sell_profit_threshold,
+            "stop_loss_threshold": self.stop_loss_threshold,
+            "sr_pivot_left": self.sr_pivot_left,
+            "sr_pivot_right": self.sr_pivot_right,
+            "sr_cluster_band_pct": self.sr_cluster_band_pct,
+            "sr_min_touches": self.sr_min_touches,
+            "sr_lookback_bars": self.sr_lookback_bars,
+            "sr_touch_weight": self.sr_touch_weight,
+            "sr_recency_weight": self.sr_recency_weight,
+            "sr_volume_weight": self.sr_volume_weight,
+            "zone_priority_mode": self.zone_priority_mode,
+            "fvg_atr_period": self.fvg_atr_period,
+            "fvg_min_width_atr_mult": self.fvg_min_width_atr_mult,
+            "fvg_min_width_ticks": self.fvg_min_width_ticks,
+            "displacement_min_body_ratio": self.displacement_min_body_ratio,
+            "displacement_min_atr_mult": self.displacement_min_atr_mult,
+            "ob_lookback_bars": self.ob_lookback_bars,
+            "ob_max_base_bars": self.ob_max_base_bars,
+            "zone_expiry_bars_5m": self.zone_expiry_bars_5m,
+            "zone_reentry_buffer_pct": self.zone_reentry_buffer_pct,
+            "trigger_rejection_wick_ratio": self.trigger_rejection_wick_ratio,
+            "trigger_breakout_lookback": self.trigger_breakout_lookback,
+            "trigger_zone_lookback": self.trigger_zone_lookback,
+            "trigger_confirm_lookback": self.trigger_confirm_lookback,
+            "trigger_mode": self.trigger_mode,
+            "min_candles_1m": self.min_candles_1m,
+            "min_candles_5m": self.min_candles_5m,
+            "min_candles_15m": self.min_candles_15m,
+        
+        }
+        base_params.update(profile_overrides)
+        base_params.update(runtime_overrides)
+        return StrategyParams(**base_params)
