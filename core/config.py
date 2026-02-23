@@ -72,6 +72,11 @@ class TradingConfig:
     low_spec_watch_cap_n2: int = 10
     max_relative_spread: float = 0.003
     max_candle_missing_rate: float = 0.1
+    market_damping_enabled: bool = False
+    market_damping_max_spread: float = 0.003
+    market_damping_min_trade_value_24h: float = 10_000_000_000
+    market_damping_atr_period: int = 14
+    market_damping_max_atr_ratio: float = 0.03
     sr_pivot_left: int = 2
     sr_pivot_right: int = 2
     sr_cluster_band_pct: float = 0.0025
