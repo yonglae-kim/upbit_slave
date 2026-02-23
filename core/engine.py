@@ -178,6 +178,7 @@ class TradingEngine:
             return
 
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
+        ticker_by_market = {str(ticker.get("market")): ticker for ticker in tickers if ticker.get("market")}
         top_and_spread_result = self.universe.select_watch_markets_with_report(tickers)
         candles_by_market = {market: self._get_strategy_candles(market) for market in top_and_spread_result.watch_markets}
         universe_result = self.universe.select_watch_markets_with_report(
@@ -243,7 +244,22 @@ class TradingEngine:
             else:
                 cash_cap_order_krw = min(hard_cash_limit_krw, configured_cash_management_cap_krw)
 
-            final_order_krw = min(risk_sized_order_krw, cash_cap_order_krw)
+            base_order_krw = min(risk_sized_order_krw, cash_cap_order_krw)
+            final_order_krw = base_order_krw
+            damping_log = None
+            if self.config.market_damping_enabled:
+                liquidity_factor, volatility_factor, damping_reasons = self._compute_market_damping_factors(
+                    ticker=ticker_by_market.get(market, {}),
+                    candles_1m=data.get("1m", []),
+                )
+                damping_factor = min(liquidity_factor, volatility_factor)
+                final_order_krw = base_order_krw * damping_factor
+                damping_log = {
+                    "liquidity_factor": liquidity_factor,
+                    "volatility_factor": volatility_factor,
+                    "damping_factor": damping_factor,
+                    "reasons": damping_reasons,
+                }
 
             if len(held_markets) >= self.config.max_holdings:
                 print(
@@ -303,6 +319,18 @@ class TradingEngine:
                 self._notify_preflight_failure(preflight)
                 continue
 
+            if damping_log is not None and damping_log["damping_factor"] < 1.0:
+                print(
+                    "BUY_DAMPING_APPLIED",
+                    market,
+                    f"base_order_krw={int(base_order_krw)}",
+                    f"liquidity_factor={damping_log['liquidity_factor']:.4f}",
+                    f"volatility_factor={damping_log['volatility_factor']:.4f}",
+                    f"damping_factor={damping_log['damping_factor']:.4f}",
+                    f"final_order_krw={int(final_order_krw)}",
+                    f"reasons={','.join(damping_log['reasons']) if damping_log['reasons'] else 'none'}",
+                )
+
             identifier = self._next_order_identifier(market, "bid")
             response = self.broker.buy_market(market, preflight["order_value"], identifier=identifier)
             self._record_accepted_order(response, identifier, market, "bid", preflight["order_value"])
@@ -323,15 +351,58 @@ class TradingEngine:
                 data["1m"][0]["trade_price"],
                 f"risk_sized_order_krw={int(risk_sized_order_krw)}",
                 f"cash_cap_order_krw={int(cash_cap_order_krw)}",
+                f"base_order_krw={int(base_order_krw)}",
                 f"final_order_krw={int(final_order_krw)}",
             )
             self.notifier.send(
                 f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']} "
                 f"risk_sized_order_krw={int(risk_sized_order_krw)} "
                 f"cash_cap_order_krw={int(cash_cap_order_krw)} "
+                f"base_order_krw={int(base_order_krw)} "
                 f"final_order_krw={int(final_order_krw)}"
             )
             break
+
+    def _compute_market_damping_factors(self, ticker: dict, candles_1m: list[dict]) -> tuple[float, float, list[str]]:
+        liquidity_factor = 1.0
+        volatility_factor = 1.0
+        reasons: list[str] = []
+
+        ask = self._safe_float(ticker.get("ask_price"))
+        bid = self._safe_float(ticker.get("bid_price"))
+        last = self._safe_float(ticker.get("trade_price", ticker.get("last")))
+        relative_spread = (ask - bid) / last if ask > 0 and bid > 0 and last > 0 else 0.0
+        max_spread = max(1e-9, float(self.config.market_damping_max_spread))
+        spread_factor = min(1.0, max_spread / relative_spread) if relative_spread > 0 else 1.0
+
+        trade_value_24h = self._safe_float(
+            ticker.get("acc_trade_price_24h", ticker.get("acc_trade_price", ticker.get("trade_volume")))
+        )
+        min_trade_value = max(1.0, float(self.config.market_damping_min_trade_value_24h))
+        trade_value_factor = min(1.0, trade_value_24h / min_trade_value) if trade_value_24h > 0 else 0.0
+
+        liquidity_factor = min(spread_factor, trade_value_factor)
+        if spread_factor < 1.0:
+            reasons.append(f"high_spread:{relative_spread:.6f}>{max_spread:.6f}")
+        if trade_value_factor < 1.0:
+            reasons.append(f"low_trade_value_24h:{trade_value_24h:.0f}<{min_trade_value:.0f}")
+
+        atr_period = max(2, int(self.config.market_damping_atr_period))
+        atr = self._latest_atr(candles_1m, atr_period)
+        atr_ratio = atr / last if atr > 0 and last > 0 else 0.0
+        max_atr_ratio = max(1e-9, float(self.config.market_damping_max_atr_ratio))
+        volatility_factor = min(1.0, max_atr_ratio / atr_ratio) if atr_ratio > 0 else 1.0
+        if volatility_factor < 1.0:
+            reasons.append(f"high_atr_ratio:{atr_ratio:.6f}>{max_atr_ratio:.6f}")
+
+        return liquidity_factor, volatility_factor, reasons
+
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
 
     def _is_reentry_cooldown_active(self, market: str, now_at: datetime) -> bool:
