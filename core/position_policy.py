@@ -16,6 +16,12 @@ class PositionExitState:
     partial_take_profit_done: bool = False
     entry_atr: float = 0.0
     entry_swing_low: float = 0.0
+    entry_price: float = 0.0
+    initial_stop_price: float = 0.0
+    risk_per_unit: float = 0.0
+    bars_held: int = 0
+    strategy_partial_done: bool = False
+    breakeven_armed: bool = False
 
 
 class PositionOrderPolicy:
@@ -53,16 +59,40 @@ class PositionOrderPolicy:
         signal_exit: bool,
         current_atr: float = 0.0,
         swing_low: float = 0.0,
+        strategy_name: str = "",
+        partial_take_profit_enabled: bool = False,
+        partial_take_profit_r: float = 1.0,
+        partial_take_profit_size: float = 0.0,
+        move_stop_to_breakeven_after_partial: bool = False,
     ) -> ExitDecision:
         if avg_buy_price <= 0 or current_price <= 0:
             return ExitDecision(should_exit=False)
 
+        state.bars_held = max(0, int(state.bars_held)) + 1
         state.peak_price = max(state.peak_price, current_price)
+        if state.entry_price <= 0:
+            state.entry_price = float(avg_buy_price)
+
+        strategy_mode = str(strategy_name).lower().strip() == "rsi_bb_reversal_long"
+
+        strategy_partial_enabled = (
+            strategy_mode
+            and partial_take_profit_enabled
+            and partial_take_profit_size > 0
+            and partial_take_profit_r > 0
+        )
+
+        if strategy_partial_enabled and state.risk_per_unit <= 0:
+            fallback_stop = state.initial_stop_price if state.initial_stop_price > 0 else avg_buy_price * self.stop_loss_threshold
+            state.risk_per_unit = max(state.entry_price - fallback_stop, 0.0)
 
         if self.exit_mode == "atr":
             hard_stop_price = self._atr_stop_price(state, avg_buy_price, current_atr, swing_low)
         else:
             hard_stop_price = avg_buy_price * self.stop_loss_threshold
+
+        if strategy_partial_enabled and state.breakeven_armed and move_stop_to_breakeven_after_partial:
+            hard_stop_price = max(hard_stop_price, state.entry_price)
 
         if current_price <= hard_stop_price:
             if not state.partial_take_profit_done and self.partial_stop_loss_ratio < 1.0:
@@ -70,8 +100,17 @@ class PositionOrderPolicy:
                 return ExitDecision(True, self.partial_stop_loss_ratio, "partial_stop_loss")
             return ExitDecision(True, 1.0, "stop_loss")
 
+        if strategy_partial_enabled and not state.strategy_partial_done:
+            target_price = state.entry_price + (state.risk_per_unit * partial_take_profit_r)
+            if state.risk_per_unit > 0 and current_price >= target_price:
+                state.strategy_partial_done = True
+                if move_stop_to_breakeven_after_partial:
+                    state.breakeven_armed = True
+                return ExitDecision(True, min(1.0, max(0.0, partial_take_profit_size)), "strategy_partial_take_profit")
+
         if (
-            not state.partial_take_profit_done
+            not strategy_partial_enabled
+            and not state.partial_take_profit_done
             and self.partial_take_profit_ratio > 0
             and current_price >= avg_buy_price * self.partial_take_profit_threshold
         ):
