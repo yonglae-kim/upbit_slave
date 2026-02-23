@@ -6,6 +6,8 @@ TRADING_CONFIG = {
     "min_order_krw": 5_000,
     "max_holdings": 1,
     "buy_divisor": 5,
+    "position_sizing_mode": "risk_first",
+    "max_order_krw_by_cash_management": 0,
     "min_buyable_krw": 20_000,
     "risk_per_trade_pct": 0.1,
     "max_daily_loss_pct": 0.05,

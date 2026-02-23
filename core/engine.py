@@ -176,8 +176,6 @@ class TradingEngine:
     def _try_buy(self, available_krw: float, held_markets: list[str], strategy_params) -> None:
         if available_krw <= self.config.min_buyable_krw:
             return
-        if len(held_markets) >= self.config.max_holdings:
-            return
 
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
         top_and_spread_result = self.universe.select_watch_markets_with_report(tickers)
@@ -214,14 +212,6 @@ class TradingEngine:
                 self.debug_counters["fail_strategy_cooldown"] = self.debug_counters.get("fail_strategy_cooldown", 0) + 1
                 continue
 
-            risk_decision = self.risk.allow_entry(
-                available_krw=available_krw,
-                held_markets=held_markets,
-                candidate_market=market,
-            )
-            if not risk_decision.allowed:
-                continue
-
             reference_price = float(data["1m"][0]["trade_price"])
             stop_price = reference_price * self.config.stop_loss_threshold
             strategy_entry_price = reference_price
@@ -231,24 +221,82 @@ class TradingEngine:
                 strategy_entry_price = float(diagnostics.get("entry_price", strategy_entry_price) or strategy_entry_price)
                 stop_price = float(diagnostics.get("stop_price", stop_price) or stop_price)
                 strategy_risk_per_unit = max(float(diagnostics.get("r_value", strategy_risk_per_unit) or strategy_risk_per_unit), 0.0)
+
             risk_sized_order_krw = self.risk.compute_risk_sized_order_krw(
                 available_krw=available_krw,
                 entry_price=strategy_entry_price,
                 stop_price=stop_price,
             )
-            order_krw = min(
-                (available_krw / self.config.buy_divisor) * (1 - self.config.fee_rate),
-                risk_sized_order_krw,
-            )
-            if order_krw < self.config.min_order_krw:
+            if risk_sized_order_krw <= 0:
                 continue
-            if available_krw - order_krw < self.config.min_order_krw:
+
+            cash_split_order_krw = (available_krw / self.config.buy_divisor) * (1 - self.config.fee_rate)
+            hard_cash_limit_krw = available_krw * (1 - self.config.fee_rate)
+            configured_cash_management_cap_krw = float(self.config.max_order_krw_by_cash_management)
+            if configured_cash_management_cap_krw <= 0:
+                configured_cash_management_cap_krw = cash_split_order_krw
+
+            if self.config.position_sizing_mode == "cash_split_first":
+                cash_cap_order_krw = min(cash_split_order_krw, hard_cash_limit_krw)
+                if self.config.max_order_krw_by_cash_management > 0:
+                    cash_cap_order_krw = min(cash_cap_order_krw, float(self.config.max_order_krw_by_cash_management))
+            else:
+                cash_cap_order_krw = min(hard_cash_limit_krw, configured_cash_management_cap_krw)
+
+            final_order_krw = min(risk_sized_order_krw, cash_cap_order_krw)
+
+            if len(held_markets) >= self.config.max_holdings:
+                print(
+                    "BUY_SIZING_SKIPPED",
+                    market,
+                    "reason=max_holdings",
+                    f"risk_sized_order_krw={int(risk_sized_order_krw)}",
+                    f"cash_cap_order_krw={int(cash_cap_order_krw)}",
+                    f"final_order_krw={int(final_order_krw)}",
+                )
+                continue
+
+            risk_decision = self.risk.allow_entry(
+                available_krw=available_krw,
+                held_markets=held_markets,
+                candidate_market=market,
+            )
+            if not risk_decision.allowed:
+                print(
+                    "BUY_SIZING_SKIPPED",
+                    market,
+                    f"reason={risk_decision.reason}",
+                    f"risk_sized_order_krw={int(risk_sized_order_krw)}",
+                    f"cash_cap_order_krw={int(cash_cap_order_krw)}",
+                    f"final_order_krw={int(final_order_krw)}",
+                )
+                continue
+
+            if final_order_krw < self.config.min_order_krw:
+                print(
+                    "BUY_SIZING_SKIPPED",
+                    market,
+                    "reason=min_order_krw",
+                    f"risk_sized_order_krw={int(risk_sized_order_krw)}",
+                    f"cash_cap_order_krw={int(cash_cap_order_krw)}",
+                    f"final_order_krw={int(final_order_krw)}",
+                )
+                continue
+            if available_krw - final_order_krw < self.config.min_order_krw:
+                print(
+                    "BUY_SIZING_SKIPPED",
+                    market,
+                    "reason=insufficient_residual_cash",
+                    f"risk_sized_order_krw={int(risk_sized_order_krw)}",
+                    f"cash_cap_order_krw={int(cash_cap_order_krw)}",
+                    f"final_order_krw={int(final_order_krw)}",
+                )
                 continue
 
             preflight = self._preflight_order(
                 market=market,
                 side="bid",
-                requested_value=order_krw,
+                requested_value=final_order_krw,
                 reference_price=reference_price,
             )
             if not preflight["ok"]:
@@ -268,8 +316,21 @@ class TradingEngine:
                 initial_stop_price=stop_price,
                 risk_per_unit=strategy_risk_per_unit,
             )
-            print("BUY_ACCEPTED", market, str(int(preflight["order_value"])) + "원", data["1m"][0]["trade_price"])
-            self.notifier.send(f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']}")
+            print(
+                "BUY_ACCEPTED",
+                market,
+                str(int(preflight["order_value"])) + "원",
+                data["1m"][0]["trade_price"],
+                f"risk_sized_order_krw={int(risk_sized_order_krw)}",
+                f"cash_cap_order_krw={int(cash_cap_order_krw)}",
+                f"final_order_krw={int(final_order_krw)}",
+            )
+            self.notifier.send(
+                f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']} "
+                f"risk_sized_order_krw={int(risk_sized_order_krw)} "
+                f"cash_cap_order_krw={int(cash_cap_order_krw)} "
+                f"final_order_krw={int(final_order_krw)}"
+            )
             break
 
 

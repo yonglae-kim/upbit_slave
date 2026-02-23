@@ -32,6 +32,8 @@ class TradingConfig:
     min_order_krw: int = 5000
     max_holdings: int = 1
     buy_divisor: int = 5
+    position_sizing_mode: str = "risk_first"
+    max_order_krw_by_cash_management: int = 0
     min_buyable_krw: int = 20000
     risk_per_trade_pct: float = 0.1
     max_daily_loss_pct: float = 0.05
