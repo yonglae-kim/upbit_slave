@@ -34,7 +34,9 @@ class TradingConfig:
     buy_divisor: int = 5
     position_sizing_mode: str = "risk_first"
     max_order_krw_by_cash_management: int = 0
-    min_buyable_krw: int = 20000
+    # Dynamic cash buffer used for pre-entry short-circuit.
+    # Effective threshold is max(min_order_krw, min_buyable_krw).
+    min_buyable_krw: int = 0
     risk_per_trade_pct: float = 0.1
     max_daily_loss_pct: float = 0.05
     max_consecutive_losses: int = 3
@@ -137,6 +139,10 @@ class TradingConfig:
     move_stop_to_breakeven_after_partial: bool = True
     max_hold_bars: int = 0
     strategy_cooldown_bars: int = 0
+
+    @property
+    def min_effective_buyable_krw(self) -> int:
+        return max(int(self.min_order_krw), int(self.min_buyable_krw))
 
     def to_strategy_params(
         self,

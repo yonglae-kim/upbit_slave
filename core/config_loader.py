@@ -330,7 +330,6 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "min_order_krw",
         "max_holdings",
         "buy_divisor",
-        "min_buyable_krw",
         "max_concurrent_positions",
         "max_correlated_positions",
         "atr_period",
@@ -381,6 +380,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("position_sizing_mode must be one of: risk_first, cash_split_first")
     if config["max_order_krw_by_cash_management"] < 0:
         raise ConfigValidationError("max_order_krw_by_cash_management must be >= 0")
+    if config["min_buyable_krw"] < 0:
+        raise ConfigValidationError("min_buyable_krw must be >= 0")
     if not 0 < config["risk_per_trade_pct"] <= 1:
         raise ConfigValidationError("risk_per_trade_pct must be in (0, 1]")
     if not 0 <= config["max_daily_loss_pct"] <= 1:

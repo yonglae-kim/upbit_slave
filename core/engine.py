@@ -174,7 +174,7 @@ class TradingEngine:
         self._print_runtime_status(stage="cycle_complete", portfolio=portfolio)
 
     def _try_buy(self, available_krw: float, held_markets: list[str], strategy_params) -> None:
-        if available_krw <= self.config.min_buyable_krw:
+        if available_krw < self.config.min_effective_buyable_krw:
             return
 
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
