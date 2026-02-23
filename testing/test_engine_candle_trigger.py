@@ -7,6 +7,7 @@ from core.engine import TradingEngine
 
 class TriggerBroker:
     def __init__(self):
+        self.buy_orders = []
         self._candles = {
             1: [{"candle_date_time_utc": "2024-01-01T00:01:00", "trade_price": 10000.0}],
             5: [{"candle_date_time_utc": "2024-01-01T00:00:00", "trade_price": 10000.0}],
@@ -25,6 +26,10 @@ class TriggerBroker:
     def get_candles(self, _market, interval, count=200):
         _ = count
         return list(self._candles[interval])
+
+    def buy_market(self, market, value, identifier=None):
+        self.buy_orders.append({"market": market, "value": value, "identifier": identifier})
+        return {"uuid": f"buy-{len(self.buy_orders)}"}
 
 class TimeStopBroker(TriggerBroker):
     def __init__(self):
@@ -126,6 +131,49 @@ class TradingEngineCandleTriggerTest(unittest.TestCase):
 
         self.assertTrue(blocked)
         self.assertFalse(allowed)
+
+    def test_strategy_exit_snapshot_is_recorded_for_strategy_signal_only(self):
+        broker = TimeStopBroker()
+        config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=["KRW-BTC"],
+            max_hold_bars=2,
+            exit_mode="fixed_pct",
+            min_buyable_krw=1_000_000_000,
+        )
+        engine = TradingEngine(broker, DummyNotifier(), config)
+
+        with patch("core.engine.check_sell", return_value=False):
+            engine.run_once()
+            broker._candles[1] = [{"candle_date_time_utc": "2024-01-01T00:02:00", "trade_price": 10000.0}]
+            engine.run_once()
+
+        self.assertNotIn("KRW-BTC", engine._last_strategy_exit_snapshot_by_market)
+
+        with patch("core.engine.check_sell", return_value=True):
+            broker._candles[1] = [{"candle_date_time_utc": "2024-01-01T00:03:00", "trade_price": 10000.0}]
+            engine.run_once()
+
+        self.assertEqual(engine._last_strategy_exit_snapshot_by_market["KRW-BTC"]["reason"], "strategy_signal")
+
+    def test_strategy_cooldown_blocks_buy_and_counts_failure(self):
+        broker = TriggerBroker()
+        config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=["KRW-BTC"],
+            strategy_cooldown_bars=2,
+        )
+        engine = TradingEngine(broker, DummyNotifier(), config)
+        engine._last_strategy_exit_snapshot_by_market["KRW-BTC"] = {
+            "time": datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc),
+            "reason": "strategy_signal",
+        }
+
+        with patch("core.engine.check_buy", return_value=True):
+            engine._try_buy(available_krw=100000, held_markets=[], strategy_params=config.to_strategy_params())
+
+        self.assertEqual(len(broker.buy_orders), 0)
+        self.assertEqual(engine.debug_counters["fail_strategy_cooldown"], 1)
 
 if __name__ == "__main__":
     unittest.main()
