@@ -67,7 +67,11 @@ class TradingEngine:
         self._position_exit_states: dict[str, PositionExitState] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
         self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
-        self.debug_counters: dict[str, int] = {"fail_reentry_cooldown": 0}
+        self._last_strategy_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
+        self.debug_counters: dict[str, int] = {
+            "fail_reentry_cooldown": 0,
+            "fail_strategy_cooldown": 0,
+        }
 
         if self.ws_client:
             self.ws_client.on_message = self._route_ws_message
@@ -158,6 +162,11 @@ class TradingEngine:
                     latest_candle = data.get("1m", [{}])[0]
                     exit_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
                     self._last_exit_snapshot_by_market[market] = {"time": exit_time, "reason": decision.reason}
+                    if decision.reason == "strategy_signal":
+                        self._last_strategy_exit_snapshot_by_market[market] = {
+                            "time": exit_time,
+                            "reason": decision.reason,
+                        }
                 self.notifier.send(f"SELL_ACCEPTED {market} {current_price} {delta}% reason={decision.reason}")
 
         self._print_runtime_status(stage="evaluating_entries", portfolio=portfolio)
@@ -199,6 +208,10 @@ class TradingEngine:
                 if not strategy_entry_result.final_pass:
                     continue
             elif not check_buy(data, strategy_params):
+                continue
+
+            if self._is_strategy_cooldown_active(market, latest_time, strategy_params):
+                self.debug_counters["fail_strategy_cooldown"] = self.debug_counters.get("fail_strategy_cooldown", 0) + 1
                 continue
 
             risk_decision = self.risk.allow_entry(
@@ -277,10 +290,31 @@ class TradingEngine:
         if not isinstance(last_time, datetime):
             return False
 
-        elapsed_minutes = max(0.0, (now_at - last_time).total_seconds() / 60.0)
-        bar_minutes = max(1, int(self.config.candle_interval))
-        elapsed_bars = int(elapsed_minutes // bar_minutes)
+        elapsed_bars = self._compute_elapsed_bars(last_time, now_at)
         return elapsed_bars < cooldown_bars
+
+    def _is_strategy_cooldown_active(self, market: str, now_at: datetime, strategy_params) -> bool:
+        cooldown_bars = max(0, int(getattr(strategy_params, "strategy_cooldown_bars", 0)))
+        if cooldown_bars <= 0:
+            return False
+
+        last_exit = self._last_strategy_exit_snapshot_by_market.get(market)
+        if not last_exit:
+            return False
+
+        last_time = last_exit.get("time")
+        if not isinstance(last_time, datetime):
+            return False
+
+        elapsed_bars = self._compute_elapsed_bars(last_time, now_at)
+        return elapsed_bars < cooldown_bars
+
+    def _compute_elapsed_bars(self, before_at: datetime, now_at: datetime) -> int:
+        normalized_before = before_at if before_at.tzinfo is not None else before_at.replace(tzinfo=timezone.utc)
+        normalized_now = now_at if now_at.tzinfo is not None else now_at.replace(tzinfo=timezone.utc)
+        elapsed_minutes = max(0.0, (normalized_now - normalized_before).total_seconds() / 60.0)
+        bar_minutes = max(1, int(self.config.candle_interval))
+        return int(elapsed_minutes // bar_minutes)
 
     def _get_strategy_candles(self, market: str) -> dict[str, list[dict]]:
         intervals = {1: "1m", 5: "5m", 15: "15m"}
