@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from core.price_rules import min_krw_tick_from_candles
 from typing import Any, Sequence
 
+from core.rsi_bb_reversal_long import evaluate_long_entry, should_exit_long
+
 
 @dataclass(frozen=True)
 class StrategyParams:
@@ -50,6 +52,38 @@ class StrategyParams:
     regime_adx_period: int = 14
     regime_adx_min: float = 20.0
     regime_slope_lookback: int = 3
+    strategy_name: str = "sr_ob_fvg"
+    rsi_period: int = 14
+    rsi_long_threshold: float = 30.0
+    rsi_neutral_filter_enabled: bool = True
+    rsi_neutral_low: float = 45.0
+    rsi_neutral_high: float = 55.0
+    bb_period: int = 20
+    bb_std: float = 2.0
+    bb_touch_mode: str = "touch_or_break"
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    macd_histogram_filter_enabled: bool = False
+    engulfing_strict: bool = True
+    engulfing_include_wick: bool = False
+    consecutive_bearish_count: int = 3
+    pivot_left: int = 3
+    pivot_right: int = 3
+    double_bottom_lookback_bars: int = 40
+    double_bottom_tolerance_pct: float = 0.5
+    require_band_reentry_on_second_bottom: bool = True
+    require_neckline_break: bool = False
+    divergence_signal_enabled: bool = True
+    entry_mode: str = "close"
+    stop_mode_long: str = "swing_low"
+    take_profit_r: float = 2.0
+    partial_take_profit_enabled: bool = False
+    partial_take_profit_r: float = 1.0
+    partial_take_profit_size: float = 0.5
+    move_stop_to_breakeven_after_partial: bool = True
+    max_hold_bars: int = 0
+    strategy_cooldown_bars: int = 0
 
 
 def preprocess_candles(data: Sequence[dict[str, Any]], source_order: str = "newest") -> list[dict[str, Any]]:
@@ -596,10 +630,15 @@ def zone_debug_metrics(debug: dict[str, Any] | None) -> tuple[int, int, bool]:
 
 
 def check_buy(data: Any, params: StrategyParams, source_order: str = "newest") -> bool:
+    if str(params.strategy_name).lower().strip() == "rsi_bb_reversal_long":
+        result = evaluate_long_entry(data if isinstance(data, dict) else {}, params)
+        return bool(result.final_pass)
     return _check_entry(data, params, side="buy", source_order=source_order)
 
 
 def check_sell(data: Any, avg_buy_price: float, params: StrategyParams, source_order: str = "newest") -> bool:
+    if str(params.strategy_name).lower().strip() == "rsi_bb_reversal_long":
+        return should_exit_long(data if isinstance(data, dict) else {}, params, avg_buy_price)
     if not _check_entry(data, params, side="sell", source_order=source_order):
         return False
     if not params.sell_requires_profit:

@@ -103,6 +103,38 @@ class TradingConfig:
     zone_profile: str = "aggressive"
     reentry_cooldown_bars: int = 10
     cooldown_on_loss_exits_only: bool = False
+    strategy_name: str = "sr_ob_fvg"
+    rsi_period: int = 14
+    rsi_long_threshold: float = 30.0
+    rsi_neutral_filter_enabled: bool = True
+    rsi_neutral_low: float = 45.0
+    rsi_neutral_high: float = 55.0
+    bb_period: int = 20
+    bb_std: float = 2.0
+    bb_touch_mode: str = "touch_or_break"
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    macd_histogram_filter_enabled: bool = False
+    engulfing_strict: bool = True
+    engulfing_include_wick: bool = False
+    consecutive_bearish_count: int = 3
+    pivot_left: int = 3
+    pivot_right: int = 3
+    double_bottom_lookback_bars: int = 40
+    double_bottom_tolerance_pct: float = 0.5
+    require_band_reentry_on_second_bottom: bool = True
+    require_neckline_break: bool = False
+    divergence_signal_enabled: bool = True
+    entry_mode: str = "close"
+    stop_mode_long: str = "swing_low"
+    take_profit_r: float = 2.0
+    partial_take_profit_enabled: bool = False
+    partial_take_profit_r: float = 1.0
+    partial_take_profit_size: float = 0.5
+    move_stop_to_breakeven_after_partial: bool = True
+    max_hold_bars: int = 0
+    strategy_cooldown_bars: int = 0
 
     def to_strategy_params(
         self,
@@ -123,6 +155,38 @@ class TradingConfig:
         base_params = {
 
             "buy_rsi_threshold": self.buy_rsi_threshold,
+            "strategy_name": self.strategy_name,
+            "rsi_period": self.rsi_period,
+            "rsi_long_threshold": self.rsi_long_threshold,
+            "rsi_neutral_filter_enabled": self.rsi_neutral_filter_enabled,
+            "rsi_neutral_low": self.rsi_neutral_low,
+            "rsi_neutral_high": self.rsi_neutral_high,
+            "bb_period": self.bb_period,
+            "bb_std": self.bb_std,
+            "bb_touch_mode": self.bb_touch_mode,
+            "macd_fast": self.macd_fast,
+            "macd_slow": self.macd_slow,
+            "macd_signal": self.macd_signal,
+            "macd_histogram_filter_enabled": self.macd_histogram_filter_enabled,
+            "engulfing_strict": self.engulfing_strict,
+            "engulfing_include_wick": self.engulfing_include_wick,
+            "consecutive_bearish_count": self.consecutive_bearish_count,
+            "pivot_left": self.pivot_left,
+            "pivot_right": self.pivot_right,
+            "double_bottom_lookback_bars": self.double_bottom_lookback_bars,
+            "double_bottom_tolerance_pct": self.double_bottom_tolerance_pct,
+            "require_band_reentry_on_second_bottom": self.require_band_reentry_on_second_bottom,
+            "require_neckline_break": self.require_neckline_break,
+            "divergence_signal_enabled": self.divergence_signal_enabled,
+            "entry_mode": self.entry_mode,
+            "stop_mode_long": self.stop_mode_long,
+            "take_profit_r": self.take_profit_r,
+            "partial_take_profit_enabled": self.partial_take_profit_enabled,
+            "partial_take_profit_r": self.partial_take_profit_r,
+            "partial_take_profit_size": self.partial_take_profit_size,
+            "move_stop_to_breakeven_after_partial": self.move_stop_to_breakeven_after_partial,
+            "max_hold_bars": self.max_hold_bars,
+            "strategy_cooldown_bars": self.strategy_cooldown_bars,
             "macd_n_fast": self.macd_n_fast,
             "macd_n_slow": self.macd_n_slow,
             "macd_n_signal": self.macd_n_signal,

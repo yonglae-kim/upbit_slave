@@ -79,6 +79,38 @@ _ENV_KEY_MAP = {
     "zone_profile": "TRADING_ZONE_PROFILE",
     "reentry_cooldown_bars": "TRADING_REENTRY_COOLDOWN_BARS",
     "cooldown_on_loss_exits_only": "TRADING_COOLDOWN_ON_LOSS_EXITS_ONLY",
+    "strategy_name": "TRADING_STRATEGY_NAME",
+    "rsi_period": "TRADING_RSI_PERIOD",
+    "rsi_long_threshold": "TRADING_RSI_LONG_THRESHOLD",
+    "rsi_neutral_filter_enabled": "TRADING_RSI_NEUTRAL_FILTER_ENABLED",
+    "rsi_neutral_low": "TRADING_RSI_NEUTRAL_LOW",
+    "rsi_neutral_high": "TRADING_RSI_NEUTRAL_HIGH",
+    "bb_period": "TRADING_BB_PERIOD",
+    "bb_std": "TRADING_BB_STD",
+    "bb_touch_mode": "TRADING_BB_TOUCH_MODE",
+    "macd_fast": "TRADING_MACD_FAST",
+    "macd_slow": "TRADING_MACD_SLOW",
+    "macd_signal": "TRADING_MACD_SIGNAL",
+    "macd_histogram_filter_enabled": "TRADING_MACD_HISTOGRAM_FILTER_ENABLED",
+    "engulfing_strict": "TRADING_ENGULFING_STRICT",
+    "engulfing_include_wick": "TRADING_ENGULFING_INCLUDE_WICK",
+    "consecutive_bearish_count": "TRADING_CONSECUTIVE_BEARISH_COUNT",
+    "pivot_left": "TRADING_PIVOT_LEFT",
+    "pivot_right": "TRADING_PIVOT_RIGHT",
+    "double_bottom_lookback_bars": "TRADING_DOUBLE_BOTTOM_LOOKBACK_BARS",
+    "double_bottom_tolerance_pct": "TRADING_DOUBLE_BOTTOM_TOLERANCE_PCT",
+    "require_band_reentry_on_second_bottom": "TRADING_REQUIRE_BAND_REENTRY_ON_SECOND_BOTTOM",
+    "require_neckline_break": "TRADING_REQUIRE_NECKLINE_BREAK",
+    "divergence_signal_enabled": "TRADING_DIVERGENCE_SIGNAL_ENABLED",
+    "entry_mode": "TRADING_ENTRY_MODE",
+    "stop_mode_long": "TRADING_STOP_MODE_LONG",
+    "take_profit_r": "TRADING_TAKE_PROFIT_R",
+    "partial_take_profit_enabled": "TRADING_PARTIAL_TAKE_PROFIT_ENABLED",
+    "partial_take_profit_r": "TRADING_PARTIAL_TAKE_PROFIT_R",
+    "partial_take_profit_size": "TRADING_PARTIAL_TAKE_PROFIT_SIZE",
+    "move_stop_to_breakeven_after_partial": "TRADING_MOVE_STOP_TO_BREAKEVEN_AFTER_PARTIAL",
+    "max_hold_bars": "TRADING_MAX_HOLD_BARS",
+    "strategy_cooldown_bars": "TRADING_STRATEGY_COOLDOWN_BARS",
 }
 
 
@@ -145,11 +177,22 @@ def _parse_env_value(key: str, value: str):
         "regime_adx_period",
         "regime_slope_lookback",
         "reentry_cooldown_bars",
+        "rsi_period",
+        "bb_period",
+        "macd_fast",
+        "macd_slow",
+        "macd_signal",
+        "consecutive_bearish_count",
+        "pivot_left",
+        "pivot_right",
+        "double_bottom_lookback_bars",
+        "max_hold_bars",
+        "strategy_cooldown_bars",
     }:
         return int(value)
-    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min"}:
+    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min", "rsi_long_threshold", "rsi_neutral_low", "rsi_neutral_high", "bb_std", "double_bottom_tolerance_pct", "take_profit_r", "partial_take_profit_r", "partial_take_profit_size"}:
         return float(value)
-    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only"}:
+    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only", "rsi_neutral_filter_enabled", "macd_histogram_filter_enabled", "engulfing_strict", "engulfing_include_wick", "require_band_reentry_on_second_bottom", "require_neckline_break", "divergence_signal_enabled", "partial_take_profit_enabled", "move_stop_to_breakeven_after_partial"}:
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return value
 
@@ -234,6 +277,38 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "regime_slope_lookback": int,
         "reentry_cooldown_bars": int,
         "cooldown_on_loss_exits_only": bool,
+        "strategy_cooldown_bars": int,
+        "strategy_name": str,
+        "rsi_period": int,
+        "rsi_long_threshold": (int, float),
+        "rsi_neutral_filter_enabled": bool,
+        "rsi_neutral_low": (int, float),
+        "rsi_neutral_high": (int, float),
+        "bb_period": int,
+        "bb_std": (int, float),
+        "bb_touch_mode": str,
+        "macd_fast": int,
+        "macd_slow": int,
+        "macd_signal": int,
+        "macd_histogram_filter_enabled": bool,
+        "engulfing_strict": bool,
+        "engulfing_include_wick": bool,
+        "consecutive_bearish_count": int,
+        "pivot_left": int,
+        "pivot_right": int,
+        "double_bottom_lookback_bars": int,
+        "double_bottom_tolerance_pct": (int, float),
+        "require_band_reentry_on_second_bottom": bool,
+        "require_neckline_break": bool,
+        "divergence_signal_enabled": bool,
+        "entry_mode": str,
+        "stop_mode_long": str,
+        "take_profit_r": (int, float),
+        "partial_take_profit_enabled": bool,
+        "partial_take_profit_r": (int, float),
+        "partial_take_profit_size": (int, float),
+        "move_stop_to_breakeven_after_partial": bool,
+        "max_hold_bars": int,
     }
 
     for key, expected in required_types.items():
@@ -281,6 +356,15 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "regime_ema_slow",
         "regime_adx_period",
         "regime_slope_lookback",
+        "rsi_period",
+        "bb_period",
+        "macd_fast",
+        "macd_slow",
+        "macd_signal",
+        "consecutive_bearish_count",
+        "pivot_left",
+        "pivot_right",
+        "double_bottom_lookback_bars",
     ]
     for key in positive_keys:
         if config[key] <= 0:
@@ -352,6 +436,35 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("regime_adx_min must be >= 0")
     if config["reentry_cooldown_bars"] < 0:
         raise ConfigValidationError("reentry_cooldown_bars must be >= 0")
+
+    if config["strategy_name"] not in {"sr_ob_fvg", "rsi_bb_reversal_long"}:
+        raise ConfigValidationError("strategy_name must be one of: sr_ob_fvg, rsi_bb_reversal_long")
+    if not 0 <= config["rsi_long_threshold"] <= 100:
+        raise ConfigValidationError("rsi_long_threshold must be in [0, 100]")
+    if not 0 <= config["rsi_neutral_low"] <= 100 or not 0 <= config["rsi_neutral_high"] <= 100:
+        raise ConfigValidationError("rsi_neutral_low/high must be in [0, 100]")
+    if config["rsi_neutral_low"] > config["rsi_neutral_high"]:
+        raise ConfigValidationError("rsi_neutral_low must be <= rsi_neutral_high")
+    if config["bb_std"] <= 0:
+        raise ConfigValidationError("bb_std must be > 0")
+    if config["bb_touch_mode"] not in {"touch_only", "break_only", "touch_or_break"}:
+        raise ConfigValidationError("bb_touch_mode must be one of: touch_only, break_only, touch_or_break")
+    if config["macd_fast"] >= config["macd_slow"]:
+        raise ConfigValidationError("macd_fast must be smaller than macd_slow")
+    if config["double_bottom_tolerance_pct"] < 0:
+        raise ConfigValidationError("double_bottom_tolerance_pct must be >= 0")
+    if config["entry_mode"] not in {"close", "next_open"}:
+        raise ConfigValidationError("entry_mode must be one of: close, next_open")
+    if config["stop_mode_long"] not in {"swing_low", "lower_band", "conservative"}:
+        raise ConfigValidationError("stop_mode_long must be one of: swing_low, lower_band, conservative")
+    if config["take_profit_r"] <= 0:
+        raise ConfigValidationError("take_profit_r must be > 0")
+    if config["partial_take_profit_r"] <= 0:
+        raise ConfigValidationError("partial_take_profit_r must be > 0")
+    if not 0 <= config["partial_take_profit_size"] <= 1:
+        raise ConfigValidationError("partial_take_profit_size must be in [0, 1]")
+    if config["max_hold_bars"] < 0 or config["strategy_cooldown_bars"] < 0:
+        raise ConfigValidationError("max_hold_bars and strategy_cooldown_bars must be >= 0")
 
 
 def load_trading_config() -> TradingConfig:
