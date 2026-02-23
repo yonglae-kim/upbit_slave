@@ -12,7 +12,7 @@ from core.position_policy import PositionExitState, PositionOrderPolicy
 from core.portfolio import normalize_accounts
 from core.reconciliation import apply_my_asset_event, apply_my_order_event
 from core.risk import RiskManager
-from core.strategy import check_buy, check_sell, preprocess_candles
+from core.strategy import check_buy, check_sell, evaluate_long_entry, preprocess_candles
 from core.universe import UniverseBuilder
 from infra.upbit_ws_client import UpbitWebSocketClient
 from message.notifier import Notifier
@@ -192,7 +192,13 @@ class TradingEngine:
             if self._is_reentry_cooldown_active(market, latest_time):
                 self.debug_counters["fail_reentry_cooldown"] = self.debug_counters.get("fail_reentry_cooldown", 0) + 1
                 continue
-            if not check_buy(data, strategy_params):
+
+            strategy_entry_result = None
+            if str(strategy_params.strategy_name).lower().strip() == "rsi_bb_reversal_long":
+                strategy_entry_result = evaluate_long_entry(data, strategy_params)
+                if not strategy_entry_result.final_pass:
+                    continue
+            elif not check_buy(data, strategy_params):
                 continue
 
             risk_decision = self.risk.allow_entry(
@@ -205,9 +211,16 @@ class TradingEngine:
 
             reference_price = float(data["1m"][0]["trade_price"])
             stop_price = reference_price * self.config.stop_loss_threshold
+            strategy_entry_price = reference_price
+            strategy_risk_per_unit = max(reference_price - stop_price, 0.0)
+            if strategy_entry_result is not None:
+                diagnostics = strategy_entry_result.diagnostics if isinstance(strategy_entry_result.diagnostics, dict) else {}
+                strategy_entry_price = float(diagnostics.get("entry_price", strategy_entry_price) or strategy_entry_price)
+                stop_price = float(diagnostics.get("stop_price", stop_price) or stop_price)
+                strategy_risk_per_unit = max(float(diagnostics.get("r_value", strategy_risk_per_unit) or strategy_risk_per_unit), 0.0)
             risk_sized_order_krw = self.risk.compute_risk_sized_order_krw(
                 available_krw=available_krw,
-                entry_price=reference_price,
+                entry_price=strategy_entry_price,
                 stop_price=stop_price,
             )
             order_krw = min(
@@ -238,6 +251,9 @@ class TradingEngine:
                 peak_price=reference_price,
                 entry_atr=entry_atr,
                 entry_swing_low=entry_swing_low,
+                entry_price=strategy_entry_price,
+                initial_stop_price=stop_price,
+                risk_per_unit=strategy_risk_per_unit,
             )
             print("BUY_ACCEPTED", market, str(int(preflight["order_value"])) + "원", data["1m"][0]["trade_price"])
             self.notifier.send(f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']}")
@@ -639,6 +655,9 @@ class TradingEngine:
                 peak_price=current_price,
                 entry_atr=current_atr,
                 entry_swing_low=swing_low,
+                entry_price=avg_buy_price,
+                initial_stop_price=avg_buy_price * self.config.stop_loss_threshold,
+                risk_per_unit=max(avg_buy_price - (avg_buy_price * self.config.stop_loss_threshold), 0.0),
             ),
         )
         signal_exit = check_sell(data, avg_buy_price, strategy_params)
@@ -649,6 +668,13 @@ class TradingEngine:
             signal_exit=signal_exit,
             current_atr=current_atr,
             swing_low=swing_low,
+            strategy_name=str(getattr(strategy_params, "strategy_name", "")),
+            partial_take_profit_enabled=bool(getattr(strategy_params, "partial_take_profit_enabled", False)),
+            partial_take_profit_r=float(getattr(strategy_params, "partial_take_profit_r", 1.0)),
+            partial_take_profit_size=float(getattr(strategy_params, "partial_take_profit_size", 0.0)),
+            move_stop_to_breakeven_after_partial=bool(
+                getattr(strategy_params, "move_stop_to_breakeven_after_partial", False)
+            ),
         )
 
     def _latest_atr(self, candles_newest: list[dict], period: int) -> float:
