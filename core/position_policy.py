@@ -23,6 +23,12 @@ class PositionExitState:
     strategy_partial_done: bool = False
     breakeven_armed: bool = False
 
+    def reset_after_full_exit(self) -> None:
+        self.bars_held = 0
+        self.partial_take_profit_done = False
+        self.strategy_partial_done = False
+        self.breakeven_armed = False
+
 
 class PositionOrderPolicy:
     def __init__(
@@ -64,14 +70,17 @@ class PositionOrderPolicy:
         partial_take_profit_r: float = 1.0,
         partial_take_profit_size: float = 0.0,
         move_stop_to_breakeven_after_partial: bool = False,
+        max_hold_bars: int = 0,
     ) -> ExitDecision:
         if avg_buy_price <= 0 or current_price <= 0:
             return ExitDecision(should_exit=False)
 
-        state.bars_held = max(0, int(state.bars_held)) + 1
         state.peak_price = max(state.peak_price, current_price)
         if state.entry_price <= 0:
             state.entry_price = float(avg_buy_price)
+
+        if max(0, int(max_hold_bars)) > 0 and max(0, int(state.bars_held)) >= int(max_hold_bars):
+            return ExitDecision(True, 1.0, "time_stop")
 
         strategy_mode = str(strategy_name).lower().strip() == "rsi_bb_reversal_long"
 

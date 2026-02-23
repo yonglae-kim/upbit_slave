@@ -154,7 +154,7 @@ class TradingEngine:
                 delta = ((current_price - avg_buy_price) / avg_buy_price) * 100
                 self.risk.record_trade_result((current_price - avg_buy_price) * requested_volume)
                 if decision.qty_ratio >= 1.0:
-                    self._position_exit_states.pop(market, None)
+                    self._reset_position_exit_state(market)
                     latest_candle = data.get("1m", [{}])[0]
                     exit_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
                     self._last_exit_snapshot_by_market[market] = {"time": exit_time, "reason": decision.reason}
@@ -317,6 +317,13 @@ class TradingEngine:
 
         self._last_processed_candle_at[market] = latest_time
         return True
+
+    def _reset_position_exit_state(self, market: str) -> None:
+        state = self._position_exit_states.get(market)
+        if state is None:
+            return
+        state.reset_after_full_exit()
+        self._position_exit_states.pop(market, None)
 
     def _is_strategy_data_healthy(self, data: dict[str, list[dict]]) -> bool:
         max_missing_rate = max(0.0, float(self.config.max_candle_missing_rate))
@@ -660,6 +667,7 @@ class TradingEngine:
                 risk_per_unit=max(avg_buy_price - (avg_buy_price * self.config.stop_loss_threshold), 0.0),
             ),
         )
+        state.bars_held = max(0, int(state.bars_held)) + 1
         signal_exit = check_sell(data, avg_buy_price, strategy_params)
         return self.order_policy.evaluate(
             state=state,
@@ -675,6 +683,7 @@ class TradingEngine:
             move_stop_to_breakeven_after_partial=bool(
                 getattr(strategy_params, "move_stop_to_breakeven_after_partial", False)
             ),
+            max_hold_bars=int(getattr(strategy_params, "max_hold_bars", 0)),
         )
 
     def _latest_atr(self, candles_newest: list[dict], period: int) -> float:
