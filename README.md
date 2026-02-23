@@ -100,6 +100,14 @@ TRADING_MAX_HOLDINGS=1
 
 기본값은 `TradingConfig`를 따르며, 상세 키와 로딩/검증 규칙은 `core/config.py`, `core/config_loader.py`를 참고하세요.
 
+주문 진입 하한 관련 핵심 설정:
+
+- `TRADING_MIN_ORDER_KRW`: 거래소 최소 주문금액(및 엔진의 최종 주문 검증 하한).
+- `TRADING_MIN_BUYABLE_KRW`: **추가 현금 버퍼**. 단독 하한으로 쓰이지 않고, 실제 엔진 진입 전 체크는 `max(TRADING_MIN_ORDER_KRW, TRADING_MIN_BUYABLE_KRW)`를 사용합니다.
+  - 기본값 `0`이면 사실상 `TRADING_MIN_ORDER_KRW`만 적용됩니다.
+  - 필요 시 `TRADING_MIN_BUYABLE_KRW`를 올려 과도한 소액 진입 시도를 더 이르게 차단할 수 있습니다.
+
+
 > [!WARNING]
 > `live` 모드 사용 전에는 반드시 **실거래 API 키 권한(주문/출금 제한 포함)** 과 **허용 가능한 손실 범위/리스크 설정**을 재확인하세요.
 

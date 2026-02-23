@@ -19,7 +19,9 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'min_order_krw': 5000,\n"
                 "    'max_holdings': 4,\n"
                 "    'buy_divisor': 5,\n"
-                "    'min_buyable_krw': 20000,\n"
+                "    'position_sizing_mode': 'risk_first',\n"
+                "    'max_order_krw_by_cash_management': 0,\n"
+                "    'min_buyable_krw': 0,\n"
                 "    'risk_per_trade_pct': 0.1,\n"
                 "    'max_daily_loss_pct': 0.05,\n"
                 "    'max_consecutive_losses': 3,\n"
@@ -143,6 +145,19 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertEqual(config.mode, "dry_run")
         self.assertEqual(config.buy_rsi_threshold, 45)
+
+
+    def test_min_buyable_env_override_is_treated_as_dynamic_buffer(self):
+        os.environ["TRADING_MIN_ORDER_KRW"] = "5000"
+        os.environ["TRADING_MIN_BUYABLE_KRW"] = "7000"
+        try:
+            config = load_trading_config()
+        finally:
+            del os.environ["TRADING_MIN_ORDER_KRW"]
+            del os.environ["TRADING_MIN_BUYABLE_KRW"]
+
+        self.assertEqual(config.min_buyable_krw, 7000)
+        self.assertEqual(config.min_effective_buyable_krw, 7000)
 
     def test_invalid_range_raises(self):
         os.environ["TRADING_BUY_RSI_THRESHOLD"] = "120"

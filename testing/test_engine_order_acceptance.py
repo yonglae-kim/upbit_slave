@@ -160,6 +160,35 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "PREFLIGHT_MIN_NOTIONAL")
 
+
+    @patch("core.engine.check_buy", return_value=True)
+    def test_buy_entry_boundary_by_final_order_amount(self, _mock_check_buy):
+        for available_krw, expected_buy in ((8_000, False), (15_000, True), (25_000, True)):
+            with self.subTest(available_krw=available_krw):
+                broker = BuyOnlyBroker()
+                broker.get_accounts = lambda value=available_krw: [
+                    {
+                        "unit_currency": "KRW",
+                        "currency": "KRW",
+                        "balance": str(value),
+                        "locked": "0",
+                        "avg_buy_price": "0",
+                    }
+                ]
+                notifier = DummyNotifier()
+                config = TradingConfig(
+                    do_not_trading=[],
+                    krw_markets=["KRW-BTC"],
+                    min_order_krw=5_000,
+                    min_buyable_krw=0,
+                    buy_divisor=2,
+                )
+                engine = TradingEngine(broker, notifier, config)
+
+                engine.run_once()
+
+                self.assertEqual(len(broker.buy_calls) == 1, expected_buy)
+
     @patch("core.engine.check_buy", return_value=True)
     def test_risk_gate_blocks_buy_on_loss_streak(self, _mock_check_buy):
         broker = BuyOnlyBroker()
