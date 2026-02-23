@@ -627,10 +627,15 @@ class BacktestRunner:
                     entry_price = current_price * (1 + (self.spread_rate / 2) + self.slippage_rate)
                     hold_coin += (amount * (1 - self.config.fee_rate)) / entry_price
                     position_state.avg_buy_price = entry_price
+                    initial_stop_price = entry_price * self.config.stop_loss_threshold
+                    risk_per_unit = max(entry_price - initial_stop_price, 0.0)
                     position_state.exit_state = PositionExitState(
                         peak_price=current_price,
                         entry_atr=current_atr,
                         entry_swing_low=swing_low,
+                        entry_price=entry_price,
+                        initial_stop_price=initial_stop_price,
+                        risk_per_unit=risk_per_unit,
                     )
                     active_trade = {
                         "entry_price": entry_price,
@@ -644,7 +649,14 @@ class BacktestRunner:
                     }
                     amount = 0.0
             else:
-                signal_exit = check_sell(mtf_data, avg_buy_price=position_state.avg_buy_price, params=self.strategy_params)
+                signal_exit = check_sell(
+                    mtf_data,
+                    avg_buy_price=position_state.avg_buy_price,
+                    params=self.strategy_params,
+                    entry_price=position_state.exit_state.entry_price,
+                    initial_stop_price=position_state.exit_state.initial_stop_price,
+                    risk_per_unit=position_state.exit_state.risk_per_unit,
+                )
                 decision = self._resolve_exit_decision(
                     state=position_state,
                     current_price=current_price,

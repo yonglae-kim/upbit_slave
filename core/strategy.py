@@ -636,9 +636,25 @@ def check_buy(data: Any, params: StrategyParams, source_order: str = "newest") -
     return _check_entry(data, params, side="buy", source_order=source_order)
 
 
-def check_sell(data: Any, avg_buy_price: float, params: StrategyParams, source_order: str = "newest") -> bool:
+def check_sell(
+    data: Any,
+    avg_buy_price: float,
+    params: StrategyParams,
+    source_order: str = "newest",
+    *,
+    entry_price: float = 0.0,
+    initial_stop_price: float = 0.0,
+    risk_per_unit: float = 0.0,
+) -> bool:
     if str(params.strategy_name).lower().strip() == "rsi_bb_reversal_long":
-        return should_exit_long(data if isinstance(data, dict) else {}, params, avg_buy_price)
+        # For RSI-BB reversal long, check_sell is a policy-assist signal only.
+        return should_exit_long(
+            data if isinstance(data, dict) else {},
+            params,
+            entry_price=entry_price if entry_price > 0 else avg_buy_price,
+            initial_stop_price=initial_stop_price,
+            risk_per_unit=risk_per_unit,
+        )
     if not _check_entry(data, params, side="sell", source_order=source_order):
         return False
     if not params.sell_requires_profit:
