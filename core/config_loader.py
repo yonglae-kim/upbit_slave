@@ -17,6 +17,8 @@ _ENV_KEY_MAP = {
     "min_order_krw": "TRADING_MIN_ORDER_KRW",
     "max_holdings": "TRADING_MAX_HOLDINGS",
     "buy_divisor": "TRADING_BUY_DIVISOR",
+    "position_sizing_mode": "TRADING_POSITION_SIZING_MODE",
+    "max_order_krw_by_cash_management": "TRADING_MAX_ORDER_KRW_BY_CASH_MANAGEMENT",
     "min_buyable_krw": "TRADING_MIN_BUYABLE_KRW",
     "risk_per_trade_pct": "TRADING_RISK_PER_TRADE_PCT",
     "max_daily_loss_pct": "TRADING_MAX_DAILY_LOSS_PCT",
@@ -143,6 +145,7 @@ def _parse_env_value(key: str, value: str):
         "min_order_krw",
         "max_holdings",
         "buy_divisor",
+        "max_order_krw_by_cash_management",
         "min_buyable_krw",
         "max_concurrent_positions",
         "max_correlated_positions",
@@ -215,6 +218,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "min_order_krw": int,
         "max_holdings": int,
         "buy_divisor": int,
+        "position_sizing_mode": str,
+        "max_order_krw_by_cash_management": int,
         "min_buyable_krw": int,
         "correlation_groups": dict,
         "risk_per_trade_pct": (int, float),
@@ -372,6 +377,10 @@ def _validate_schema(config: dict[str, Any]) -> None:
 
     if not 0 <= config["fee_rate"] < 1:
         raise ConfigValidationError("fee_rate must be in [0, 1)")
+    if config["position_sizing_mode"] not in {"risk_first", "cash_split_first"}:
+        raise ConfigValidationError("position_sizing_mode must be one of: risk_first, cash_split_first")
+    if config["max_order_krw_by_cash_management"] < 0:
+        raise ConfigValidationError("max_order_krw_by_cash_management must be >= 0")
     if not 0 < config["risk_per_trade_pct"] <= 1:
         raise ConfigValidationError("risk_per_trade_pct must be in (0, 1]")
     if not 0 <= config["max_daily_loss_pct"] <= 1:
