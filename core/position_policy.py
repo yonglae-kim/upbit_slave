@@ -136,6 +136,10 @@ class PositionOrderPolicy:
             return ExitDecision(True, 1.0, "trailing_stop")
 
         if signal_exit:
+            if strategy_mode and state.risk_per_unit > 0:
+                min_full_exit_price = state.entry_price + (state.risk_per_unit * 2.0)
+                if current_price < min_full_exit_price:
+                    return ExitDecision(False)
             return ExitDecision(True, 1.0, "strategy_signal")
 
         return ExitDecision(False)

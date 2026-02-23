@@ -702,7 +702,14 @@ class TradingEngine:
             ),
         )
         state.bars_held = max(0, int(state.bars_held)) + 1
-        signal_exit = check_sell(data, avg_buy_price, strategy_params)
+        signal_exit = check_sell(
+            data,
+            avg_buy_price,
+            strategy_params,
+            entry_price=state.entry_price,
+            initial_stop_price=state.initial_stop_price,
+            risk_per_unit=state.risk_per_unit,
+        )
         return self.order_policy.evaluate(
             state=state,
             avg_buy_price=avg_buy_price,

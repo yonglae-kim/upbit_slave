@@ -291,13 +291,28 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     return ReversalSignal(filter_pass, setup_pass, trigger_pass, final_pass, "ok" if final_pass else "rule_fail", diag)
 
 
-def should_exit_long(data: dict[str, list[dict[str, Any]]], params: Any, avg_buy_price: float) -> bool:
+def should_exit_long(
+    data: dict[str, list[dict[str, Any]]],
+    params: Any,
+    *,
+    entry_price: float,
+    initial_stop_price: float,
+    risk_per_unit: float,
+) -> bool:
     candles = list(data.get("1m", []))
-    if not candles or avg_buy_price <= 0:
+    if not candles or entry_price <= 0:
         return False
+
+    # Policy-assist signal only: derive R-distance from entry-time risk snapshot
+    # instead of using a percent proxy on current avg price.
+    resolved_risk = max(float(risk_per_unit), 0.0)
+    if resolved_risk <= 0 and initial_stop_price > 0:
+        resolved_risk = max(float(entry_price) - float(initial_stop_price), 0.0)
+    if resolved_risk <= 0:
+        return False
+
     close_now = _price(candles[0], "trade_price")
-    # Strategy-level conservative TP proxy; broker/policy exits remain authoritative.
-    return close_now >= avg_buy_price * (1.0 + max(0.0, (params.take_profit_r * 0.01)))
+    return close_now >= float(entry_price) + resolved_risk
 
 
 def compute_stop_price_for_test(candles_newest: list[dict[str, Any]], lower_band: list[float], idx_oldest: int, mode: str) -> float:
