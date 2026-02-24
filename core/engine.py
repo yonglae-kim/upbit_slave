@@ -231,7 +231,8 @@ class TradingEngine:
             if risk_sized_order_krw <= 0:
                 continue
 
-            cash_split_order_krw = (available_krw / self.config.buy_divisor) * (1 - self.config.fee_rate)
+            cash_split_divisor = max(1, int(self.config.max_holdings))
+            cash_split_order_krw = (available_krw / cash_split_divisor) * (1 - self.config.fee_rate)
             hard_cash_limit_krw = available_krw * (1 - self.config.fee_rate)
             configured_cash_management_cap_krw = float(self.config.max_order_krw_by_cash_management)
             if configured_cash_management_cap_krw <= 0:
@@ -298,7 +299,8 @@ class TradingEngine:
                     f"final_order_krw={int(final_order_krw)}",
                 )
                 continue
-            if available_krw - final_order_krw < self.config.min_order_krw:
+            residual_slots_after_buy = max(int(self.config.max_holdings) - (len(held_markets) + 1), 0)
+            if residual_slots_after_buy > 0 and available_krw - final_order_krw < self.config.min_order_krw:
                 print(
                     "BUY_SIZING_SKIPPED",
                     market,
