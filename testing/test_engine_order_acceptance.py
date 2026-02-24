@@ -181,7 +181,7 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
                     krw_markets=["KRW-BTC"],
                     min_order_krw=5_000,
                     min_buyable_krw=0,
-                    buy_divisor=2,
+                    max_holdings=2,
                 )
                 engine = TradingEngine(broker, notifier, config)
 
