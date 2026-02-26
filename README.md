@@ -122,6 +122,7 @@ TRADING_MAX_HOLDINGS=1
 
 ## 구현 계획 문서
 - 순차 실행 계획: `docs/implementation_plan.md`
+- 빠른 참고/운영 변경 추적: `docs/PROJECT_REFERENCE.md`
 
 ## 백테스트 (최근 1주일)
 
