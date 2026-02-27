@@ -182,6 +182,7 @@ class TradingEngine:
                     self._reset_position_exit_state(market)
                     latest_candle = data.get("1m", [{}])[0]
                     exit_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
+                    exit_time = self._to_utc_aware(exit_time)
                     self._last_exit_snapshot_by_market[market] = {"time": exit_time, "reason": decision.reason}
                     if decision.reason == "strategy_signal":
                         self._last_strategy_exit_snapshot_by_market[market] = {
@@ -229,6 +230,7 @@ class TradingEngine:
                 continue
             latest_candle = data.get("1m", [{}])[0]
             latest_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
+            latest_time = self._to_utc_aware(latest_time)
             if self._is_reentry_cooldown_active(market, latest_time):
                 self.debug_counters["fail_reentry_cooldown"] = self.debug_counters.get("fail_reentry_cooldown", 0) + 1
                 continue
@@ -540,11 +542,16 @@ class TradingEngine:
         return elapsed_bars < cooldown_bars
 
     def _compute_elapsed_bars(self, before_at: datetime, now_at: datetime) -> int:
-        normalized_before = before_at if before_at.tzinfo is not None else before_at.replace(tzinfo=timezone.utc)
-        normalized_now = now_at if now_at.tzinfo is not None else now_at.replace(tzinfo=timezone.utc)
+        normalized_before = self._to_utc_aware(before_at)
+        normalized_now = self._to_utc_aware(now_at)
         elapsed_minutes = max(0.0, (normalized_now - normalized_before).total_seconds() / 60.0)
         bar_minutes = max(1, int(self.config.candle_interval))
         return int(elapsed_minutes // bar_minutes)
+
+    def _to_utc_aware(self, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     def _get_strategy_candles(self, market: str) -> dict[str, list[dict]]:
         intervals = {1: "1m", 5: "5m", 15: "15m"}
@@ -676,6 +683,7 @@ class TradingEngine:
         entry_time = entry_tracking.get("entry_time")
         holding_minutes = 0.0
         if isinstance(entry_time, datetime):
+            entry_time = self._to_utc_aware(entry_time)
             holding_minutes = max(0.0, (now_at - entry_time).total_seconds() / 60.0)
         elif state is not None:
             holding_minutes = float(max(0, int(state.bars_held)) * max(1, int(self.config.candle_interval)))

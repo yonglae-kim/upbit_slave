@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 
@@ -104,10 +104,13 @@ class CandleBuffer:
         if raw is None:
             return None
         if isinstance(raw, (int, float)):
-            return datetime.utcfromtimestamp(float(raw) / 1000.0)
+            return datetime.fromtimestamp(float(raw) / 1000.0, tz=timezone.utc)
         if isinstance(raw, str):
             try:
-                return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    return parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc)
             except ValueError:
                 return None
         return None
