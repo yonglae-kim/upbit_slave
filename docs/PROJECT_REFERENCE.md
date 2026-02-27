@@ -50,7 +50,42 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 - `TRADING_DO_NOT_TRADING`: 제외 심볼/마켓 목록(쉼표 구분)
 - `UPBIT_API_DEBUG`: API 요청/응답 디버그 로그 on/off
 
-## 5) 변경 시 반드시 같이 업데이트할 항목
+## 5) 현재 진입/청산 로직 요약 (rsi_bb_reversal_long 기준)
+
+### 진입(BUY)
+1. **전략 실행 대상 검증 (Engine 레벨)**
+   - 최소 캔들 수/쿨다운/보유 종목 수/가용 KRW 등 사전 조건을 확인한 뒤 전략 평가를 진행합니다.
+2. **필터/셋업/트리거 평가 (`evaluate_long_entry`)**
+   - 필터: RSI 과매도(`rsi_long_threshold`) + 중립구간 필터(`rsi_neutral_*`) 미해당.
+   - 셋업: 하단 볼린저 밴드 터치/이탈(`bb_touch_mode`) + 연속 음봉(`consecutive_bearish_count`) + 더블바텀 검증.
+   - 트리거: 불리시 엔걸핑 캔들.
+   - 예외 진입(special setup): RSI 다이버전스 + MACD bullish cross + 엔걸핑 동시 충족 시 최종 진입 허용.
+3. **주문 리스크/사이징 계산**
+   - `stop_mode_long`으로 초기 손절가를 만들고, `entry_price - stop_price`를 1R로 사용.
+   - 리스크 기반 주문금액 + 현금관리 캡 + (옵션) 시장 댐핑 계수를 적용해 최종 매수 금액을 계산합니다.
+4. **주문 전 검증 후 매수 실행**
+   - 최소 주문금액/잔여 슬롯/잔여 현금/호가 단위 preflight 통과 시 `buy_market` 실행.
+   - 체결 후 포지션 종료 상태(`PositionExitState`)에 진입가, 초기손절가, risk_per_unit 등을 저장합니다.
+
+### 청산(SELL)
+1. **포지션 상태 갱신**
+   - 매 사이클마다 `peak_price`, `bars_held`, ATR/스윙로우 참조값을 갱신합니다.
+2. **정책 기반 청산 우선순위 (`PositionOrderPolicy.evaluate`)**
+   - `time_stop` (최대 보유 봉 수 초과)
+   - `stop_loss` / `partial_stop_loss` (고정 손절 또는 ATR 모드 손절)
+   - `strategy_partial_take_profit` (전략 전용 R 기반 분할익절)
+   - `partial_take_profit` (일반 퍼센트 기반 분할익절)
+   - `trailing_stop` (고정 % 또는 ATR 기반 트레일링)
+   - `strategy_signal` (전략 신호 청산)
+3. **전략 신호 청산(`should_exit_long`) 동작**
+   - 전략 신호는 “보조 신호”로 사용되며, `entry_price + 1R` 도달 여부를 기준으로 True/False를 반환합니다.
+   - 실제 전량 청산은 정책 레이어에서 추가 가드(예: `rsi_bb_reversal_long`은 최소 2R 미만 시 `strategy_signal` 전량 청산 억제)를 거쳐 최종 결정됩니다.
+
+### 청산 사유 기록/재진입 쿨다운
+- 전량 청산 시 마지막 청산 시점/사유를 마켓별로 저장합니다.
+- 설정에 따라 손실성 청산(`trailing_stop`, `stop_loss`)에만 쿨다운을 적용할 수 있습니다.
+
+## 6) 변경 시 반드시 같이 업데이트할 항목
 코드 변경이 아래 영역에 해당하면 본 문서를 함께 업데이트합니다.
 
 1. **파일 구조/역할 변경**
@@ -72,3 +107,4 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 
 ## 최근 업데이트 로그
 - 2026-02-26: 초기 참조 문서 작성
+- 2026-02-26: `rsi_bb_reversal_long` 실운영 기준 진입/청산 플로우 문서화(전략/엔진/포지션 정책 반영).
