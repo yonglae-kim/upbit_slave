@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import math
 import os.path
 from argparse import ArgumentParser
@@ -77,6 +78,11 @@ class TradeLedgerEntry:
     reason: str
     holding_minutes: float
     entry_regime: str = "unknown"
+    entry_score: float = 0.0
+    mfe_r: float = 0.0
+    mae_r: float = 0.0
+    fee_estimate_krw: float = 0.0
+    slippage_estimate_krw: float = 0.0
 
 
 @dataclass
@@ -772,6 +778,27 @@ class BacktestRunner:
                         "exit_fee": 0.0,
                         "net_exit_cash": 0.0,
                     }
+                    print(
+                        json.dumps(
+                            {
+                                "type": "ENTRY_DIAGNOSTICS",
+                                "market": self.market,
+                                "entry_score": float(active_trade["entry_score"]),
+                                "quality_score": float(active_trade["quality_score"]),
+                                "quality_bucket": str(active_trade["quality_bucket"]),
+                                "quality_multiplier": float(active_trade["quality_multiplier"]),
+                                "entry_regime": str(active_trade["entry_regime"]),
+                                "sizing": {
+                                    "base_order_krw": int(base_entry_amount),
+                                    "final_order_krw": int(pre_entry_amount),
+                                    "entry_price": float(entry_price),
+                                    "risk_per_unit": float(risk_per_unit),
+                                },
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                    )
                     amount = max(0.0, amount - pre_entry_amount)
             else:
                 signal_exit = check_sell(
@@ -807,6 +834,7 @@ class BacktestRunner:
                     normalized_reason = "signal_exit" if decision.reason == "strategy_signal" else decision.reason
                     exit_reason_counts[normalized_reason] += 1
                     if hold_coin <= 0:
+                        completed_exit_state = position_state.exit_state
                         hold_coin = 0.0
                         position_state.last_exit_at = test_data[0]["candle_date_time_kst"]
                         position_state.last_exit_reason = normalized_reason
@@ -832,6 +860,30 @@ class BacktestRunner:
                                     reason=normalized_reason,
                                     holding_minutes=float(holding_minutes),
                                     entry_regime=str(active_trade.get("entry_regime", "unknown") or "unknown"),
+                                    entry_score=float(active_trade.get("entry_score", 0.0) or 0.0),
+                                    mfe_r=float(completed_exit_state.highest_r),
+                                    mae_r=abs(min(0.0, float(completed_exit_state.lowest_r))),
+                                    fee_estimate_krw=float(active_trade["entry_fee"]) + float(active_trade["exit_fee"]),
+                                    slippage_estimate_krw=float(active_trade["invested_cash"]) * self.slippage_rate,
+                                )
+                            )
+                            print(
+                                json.dumps(
+                                    {
+                                        "type": "EXIT_DIAGNOSTICS",
+                                        "market": self.market,
+                                        "exit_reason": normalized_reason,
+                                        "holding_minutes": float(holding_minutes),
+                                        "mfe_r": float(completed_exit_state.highest_r),
+                                        "mae_r": abs(min(0.0, float(completed_exit_state.lowest_r))),
+                                        "realized_r": float(r_multiple),
+                                        "fee_estimate_krw": float(active_trade["entry_fee"]) + float(active_trade["exit_fee"]),
+                                        "slippage_estimate_krw": float(active_trade["invested_cash"]) * self.slippage_rate,
+                                        "entry_score": float(active_trade.get("entry_score", 0.0) or 0.0),
+                                        "entry_regime": str(active_trade.get("entry_regime", "unknown") or "unknown"),
+                                    },
+                                    ensure_ascii=False,
+                                    sort_keys=True,
                                 )
                             )
                             trade_score_rows.append((float(active_trade.get("entry_score", 0.0) or 0.0), float(pnl)))

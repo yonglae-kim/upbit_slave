@@ -88,6 +88,38 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 전량 청산 시 마지막 청산 시점/사유를 마켓별로 저장합니다.
 - 설정에 따라 손실성 청산(`trailing_stop`, `stop_loss`)에만 쿨다운을 적용할 수 있습니다.
 
+## 5-1) 실거래/백테스트 공통 로그 스키마
+
+실거래(`core/engine.py`)와 백테스트(`testing/backtest_runner.py`)는 오프라인-온라인 비교를 위해 아래 이벤트 키를 최대한 동일하게 맞춥니다.
+
+### `ENTRY_DIAGNOSTICS`
+- 공통 핵심 필드
+  - `type`: `ENTRY_DIAGNOSTICS`
+  - `market`
+  - `entry_score`, `quality_score`, `quality_bucket`, `quality_multiplier`
+  - `entry_regime`
+  - `sizing.base_order_krw`, `sizing.final_order_krw`, `sizing.entry_price`, `sizing.risk_per_unit`
+- 실거래 추가 필드
+  - `candle_time`, `strategy`, `regime`, `regime_diagnostics`, `strategy_diagnostics`, `market_damping`
+  - `sizing.risk_sized_order_krw`, `sizing.cash_cap_order_krw`, `sizing.stop_price`
+
+### `EXIT_DIAGNOSTICS`
+- 공통 핵심 필드
+  - `type`: `EXIT_DIAGNOSTICS`
+  - `market`, `exit_reason`, `holding_minutes`
+  - `mfe_r`, `mae_r`, `realized_r`
+  - `fee_estimate_krw`, `slippage_estimate_krw`
+  - `entry_score`, `entry_regime`
+- 실거래 추가 필드
+  - `qty_ratio`, `daily_realized_pnl_krw`
+
+## 5-2) 운영자 주간 리뷰 KPI 정의
+- **빈도(Frequency)**: `ENTRY_DIAGNOSTICS` 수, `EXIT_DIAGNOSTICS` 수, 마켓/레짐별 거래수.
+- **승률(Win rate)**: `EXIT_DIAGNOSTICS.realized_r > 0` 비율.
+- **평균 R(Average R)**: `EXIT_DIAGNOSTICS.realized_r` 평균/중앙값, 청산사유별 분해.
+- **손실 꼬리(Loss tail)**: `realized_r` 하위 10%(`p10`), `mae_r` 상위 분위수, `stop_loss`/`trailing_stop` 비중.
+- **온라인-오프라인 일치성**: 동일 기간 `entry_score` 분위수별 승률 및 `quality_bucket` 성과 비교(실거래 로그 vs 백테스트 CSV/로그).
+
 ## 6) 변경 시 반드시 같이 업데이트할 항목
 코드 변경이 아래 영역에 해당하면 본 문서를 함께 업데이트합니다.
 
@@ -138,3 +170,8 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: `testing/backtest_runner.py` 호출 기반의 단계형 튜닝 스크립트(`testing/optimize_walkforward.py`)를 추가. 파라미터 그룹(진입/청산/레짐/사이징)별 coarse→fine 탐색과 다목적 스코어(CAGR + MDD penalty + 거래수/승률 하한)를 적용하고, IS/OOS 괴리 기반 과최적화 조합을 자동 탈락 처리.
 - 영향 파일: `testing/optimize_walkforward.py`, `core/config.py`, `testing/test_optimize_walkforward.py`.
 - 실행/검증 방법 변경 여부: 튜닝 전용 실행 커맨드가 추가됨(`python -m testing.optimize_walkforward ...`). 산출물로 결과 CSV(`--result-csv`)와 상위 조합 패턴 문서(`--pattern-doc`)가 생성됨.
+
+### 변경 요약 (2026-02-27, structured entry/exit diagnostics)
+- 변경 요약: 실거래 엔진에 `ENTRY_DIAGNOSTICS`/`EXIT_DIAGNOSTICS` 구조화 로그를 추가해 진입 진단값, 사이징 근거, 레짐 상태, 청산 reason/보유시간/MFE/MAE/실현 R/비용 추정치를 기록하도록 확장. 알림 포맷을 요약형으로 변경해 핵심 메트릭(진입 score, 청산 R, 당일 누적손익)을 포함.
+- 영향 파일: `core/engine.py`, `core/position_policy.py`, `message/notifier.py`, `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 실행 커맨드는 동일. 로그/알림 포맷이 변경되며, 백테스트에서도 동일 이벤트 키(`ENTRY_DIAGNOSTICS`, `EXIT_DIAGNOSTICS`)를 출력해 오프라인-온라인 비교가 쉬워짐.

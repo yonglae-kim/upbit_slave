@@ -24,6 +24,7 @@ class PositionExitState:
     breakeven_armed: bool = False
     entry_regime: str = "unknown"
     highest_r: float = 0.0
+    lowest_r: float = 0.0
     drawdown_from_peak_r: float = 0.0
 
     def reset_after_full_exit(self) -> None:
@@ -32,6 +33,7 @@ class PositionExitState:
         self.strategy_partial_done = False
         self.breakeven_armed = False
         self.highest_r = 0.0
+        self.lowest_r = 0.0
         self.drawdown_from_peak_r = 0.0
 
 
@@ -105,6 +107,7 @@ class PositionOrderPolicy:
             current_r = (current_price - state.entry_price) / state.risk_per_unit
             peak_r = (state.peak_price - state.entry_price) / state.risk_per_unit
             state.highest_r = max(float(state.highest_r), float(peak_r))
+            state.lowest_r = min(float(state.lowest_r), float(current_r))
             state.drawdown_from_peak_r = max(state.highest_r - current_r, 0.0)
 
         # Exit stage transition conditions
