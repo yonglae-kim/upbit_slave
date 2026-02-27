@@ -59,6 +59,20 @@ class CandleBufferTest(unittest.TestCase):
         self.assertEqual(snapshot[0]["trade_price"], 105)
         self.assertEqual(buffer.contamination_stats["duplicate"], 1)
 
+    def test_parse_candle_time_returns_utc_aware_datetime(self):
+        buffer = CandleBuffer(maxlen_by_interval={1: 10, 5: 10, 15: 10})
+
+        parsed_iso = buffer.parse_candle_time({"candle_date_time_utc": "2024-01-01T00:00:00"})
+        parsed_epoch = buffer.parse_candle_time({"timestamp": 1704067200000})
+
+        self.assertIsNotNone(parsed_iso)
+        self.assertIsNotNone(parsed_epoch)
+        self.assertIsNotNone(parsed_iso.tzinfo)
+        self.assertIsNotNone(parsed_epoch.tzinfo)
+        self.assertEqual(parsed_iso.utcoffset().total_seconds(), 0)
+        self.assertEqual(parsed_epoch.utcoffset().total_seconds(), 0)
+
+
 
 if __name__ == "__main__":
     unittest.main()
