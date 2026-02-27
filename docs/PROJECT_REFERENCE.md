@@ -42,6 +42,10 @@ pytest -q
 # 최근 1주 백테스트
 python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 # (산출 CSV에 exit reason별 mean/median/p10 R 컬럼 포함)
+
+# 단계형 Walk-forward 튜닝(진입/청산/레짐/사이징, coarse→fine)
+python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --result-csv testing/optimize_walkforward_results.csv
+# (산출: 결과 CSV + 상위 조합 패턴 문서 testing/optimize_walkforward_patterns.md)
 ```
 
 ## 4) 환경변수 핵심 포인트
@@ -112,6 +116,8 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 - 2026-02-27: 레짐 분류를 `strong_trend / weak_trend / sideways`로 명시화하고, 레짐별 전략 파라미터 오버라이드(진입 강도/트리거 수/목표 R)를 엔진 진입 시점에 동적으로 적용. 백테스트 세그먼트 CSV에 레짐별 거래수·승률·expectancy 컬럼을 추가.
 - 2026-02-27: 엔트리 `diagnostics`에 표준화된 `quality_score`(divergence 강도/밴드 이탈 강도/레짐 정합도)를 추가하고, 엔진 진입 사이징에 quality multiplier(저/중/고 구간)를 연동. 리스크 매니저에 multiplier 상·하한 및 일일손실 임계 근접 시 동적 캡을 도입. 백테스트 CSV에 quality bucket별 거래수·승률·expectancy 컬럼을 추가.
 
+- 2026-02-27: `testing/optimize_walkforward.py` 추가. 진입/청산/레짐/사이징 4단계에 대해 coarse→fine 탐색, 다목적 스코어(CAGR/MDD penalty/거래수/승률), IS-OOS 괴리(과최적화) 자동 탈락, 결과 CSV 및 상위 조합 패턴 문서 자동 생성 기능을 도입. `core/config.py`에 운영 기본값 반영 게이트(`WALKFORWARD_DEFAULT_UPDATE_CRITERIA`)를 추가.
+
 ### 변경 요약 (2026-02-27)
 - 변경 요약: RSI-BB 리버설 전략의 진입 조건을 불리언 게이트에서 가중치 기반 score 합산으로 변경하고, 설정/백테스트 리포트에 튜닝 지표를 확장.
 - 영향 파일: `core/rsi_bb_reversal_long.py`, `core/strategy.py`, `core/config.py`, `core/config_loader.py`, `config.py`, `testing/backtest_runner.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`.
@@ -126,3 +132,9 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 - 변경 요약: `rsi_bb_reversal_long` 진단값에 quality score를 표준화해 추가하고, `_try_buy`에서 quality 구간별 multiplier로 최종 주문 금액을 조정하도록 확장. 리스크 계층에서 multiplier 상·하한 및 일일 손실 한도 근접 시 동적 캡을 적용해 과도한 증액을 방지.
 - 영향 파일: `core/rsi_bb_reversal_long.py`, `core/engine.py`, `core/risk.py`, `core/config.py`, `core/config_loader.py`, `core/strategy.py`, `config.py`, `testing/backtest_runner.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_risk_and_policy.py`, `testing/test_config_loader.py`, `testing/test_backtest_runner.py`.
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 백테스트 세그먼트 CSV에 quality multiplier 구간 성과 컬럼(`quality_bucket_{low,mid,high}_{trades,win_rate,expectancy}`)이 추가되어 "큰 사이즈가 실제 알파를 내는지"를 구간별 검증 가능.
+
+
+### 변경 요약 (2026-02-27, walk-forward optimizer)
+- 변경 요약: `testing/backtest_runner.py` 호출 기반의 단계형 튜닝 스크립트(`testing/optimize_walkforward.py`)를 추가. 파라미터 그룹(진입/청산/레짐/사이징)별 coarse→fine 탐색과 다목적 스코어(CAGR + MDD penalty + 거래수/승률 하한)를 적용하고, IS/OOS 괴리 기반 과최적화 조합을 자동 탈락 처리.
+- 영향 파일: `testing/optimize_walkforward.py`, `core/config.py`, `testing/test_optimize_walkforward.py`.
+- 실행/검증 방법 변경 여부: 튜닝 전용 실행 커맨드가 추가됨(`python -m testing.optimize_walkforward ...`). 산출물로 결과 CSV(`--result-csv`)와 상위 조합 패턴 문서(`--pattern-doc`)가 생성됨.
