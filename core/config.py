@@ -23,6 +23,31 @@ ZONE_PROFILE_OVERRIDES: dict[str, dict[str, int | float]] = {
 }
 
 
+REGIME_STRATEGY_PARAM_OVERRIDES: dict[str, dict[str, int | float]] = {
+    "strong_trend": {
+        "rsi_long_threshold": 27.0,
+        "bb_std": 2.2,
+        "required_trigger_count": 2,
+        "entry_score_threshold": 2.9,
+        "take_profit_r": 2.6,
+    },
+    "weak_trend": {
+        "rsi_long_threshold": 30.0,
+        "bb_std": 2.0,
+        "required_trigger_count": 1,
+        "entry_score_threshold": 2.5,
+        "take_profit_r": 2.0,
+    },
+    "sideways": {
+        "rsi_long_threshold": 34.0,
+        "bb_std": 1.8,
+        "required_trigger_count": 1,
+        "entry_score_threshold": 2.2,
+        "take_profit_r": 1.6,
+    },
+}
+
+
 @dataclass
 class TradingConfig:
     do_not_trading: list[str]
@@ -151,6 +176,10 @@ class TradingConfig:
     move_stop_to_breakeven_after_partial: bool = True
     max_hold_bars: int = 0
     strategy_cooldown_bars: int = 0
+
+    def regime_strategy_overrides(self, regime: str) -> dict[str, int | float]:
+        key = str(regime or "").strip().lower()
+        return dict(REGIME_STRATEGY_PARAM_OVERRIDES.get(key, {}))
 
     @property
     def min_effective_buyable_krw(self) -> int:

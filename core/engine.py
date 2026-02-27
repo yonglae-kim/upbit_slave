@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 
@@ -12,7 +13,15 @@ from core.position_policy import PositionExitState, PositionOrderPolicy
 from core.portfolio import normalize_accounts
 from core.reconciliation import apply_my_asset_event, apply_my_order_event
 from core.risk import RiskManager
-from core.strategy import check_buy, check_sell, evaluate_long_entry, preprocess_candles, regime_filter_diagnostics
+from core.strategy import (
+    StrategyParams,
+    check_buy,
+    check_sell,
+    classify_market_regime,
+    evaluate_long_entry,
+    preprocess_candles,
+    regime_filter_diagnostics,
+)
 from core.universe import UniverseBuilder
 from infra.upbit_ws_client import UpbitWebSocketClient
 from message.notifier import Notifier
@@ -65,6 +74,7 @@ class TradingEngine:
             swing_lookback=config.swing_lookback,
         )
         self._position_exit_states: dict[str, PositionExitState] = {}
+        self._entry_strategy_params_by_market: dict[str, StrategyParams] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
         self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
         self._last_strategy_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
@@ -136,7 +146,8 @@ class TradingEngine:
                 continue
             current_price = float(data["1m"][0]["trade_price"])
 
-            decision = self._should_exit_position(market, data, avg_buy_price, current_price, strategy_params)
+            effective_strategy_params = self._entry_strategy_params_by_market.get(market, strategy_params)
+            decision = self._should_exit_position(market, data, avg_buy_price, current_price, effective_strategy_params)
             if decision.should_exit:
                 held_volume = float(account["balance"])
                 requested_volume = held_volume * decision.qty_ratio
@@ -193,6 +204,8 @@ class TradingEngine:
                 continue
 
             data = candles_by_market[market]
+            regime = classify_market_regime(data.get("15m", []), strategy_params)
+            effective_strategy_params = self._resolve_strategy_params_for_regime(strategy_params, regime)
             if not self._should_run_strategy(market, data):
                 continue
             latest_candle = data.get("1m", [{}])[0]
@@ -202,14 +215,14 @@ class TradingEngine:
                 continue
 
             strategy_entry_result = None
-            if str(strategy_params.strategy_name).lower().strip() == "rsi_bb_reversal_long":
-                strategy_entry_result = evaluate_long_entry(data, strategy_params)
+            if str(effective_strategy_params.strategy_name).lower().strip() == "rsi_bb_reversal_long":
+                strategy_entry_result = evaluate_long_entry(data, effective_strategy_params)
                 if not strategy_entry_result.final_pass:
                     continue
-            elif not check_buy(data, strategy_params):
+            elif not check_buy(data, effective_strategy_params):
                 continue
 
-            if self._is_strategy_cooldown_active(market, latest_time, strategy_params):
+            if self._is_strategy_cooldown_active(market, latest_time, effective_strategy_params):
                 self.debug_counters["fail_strategy_cooldown"] = self.debug_counters.get("fail_strategy_cooldown", 0) + 1
                 continue
 
@@ -345,8 +358,9 @@ class TradingEngine:
                 entry_price=strategy_entry_price,
                 initial_stop_price=stop_price,
                 risk_per_unit=strategy_risk_per_unit,
-                entry_regime=self._resolve_entry_regime(data, strategy_params),
+                entry_regime=regime,
             )
+            self._entry_strategy_params_by_market[market] = effective_strategy_params
             print(
                 "BUY_ACCEPTED",
                 market,
@@ -493,6 +507,15 @@ class TradingEngine:
             return
         state.reset_after_full_exit()
         self._position_exit_states.pop(market, None)
+        self._entry_strategy_params_by_market.pop(market, None)
+
+    def _resolve_strategy_params_for_regime(self, base_params: StrategyParams, regime: str) -> StrategyParams:
+        overrides = self.config.regime_strategy_overrides(regime)
+        if not overrides:
+            return base_params
+        merged = asdict(base_params)
+        merged.update(overrides)
+        return StrategyParams(**merged)
 
     def _is_strategy_data_healthy(self, data: dict[str, list[dict]]) -> bool:
         max_missing_rate = max(0.0, float(self.config.max_candle_missing_rate))
@@ -873,16 +896,10 @@ class TradingEngine:
 
         if not isinstance(diag, dict):
             return "unknown"
-        if not diag.get("pass", False):
-            return "defensive"
-
-        slope = float(diag.get("slope", 0.0) or 0.0)
-        adx = float(diag.get("adx", 0.0) or 0.0)
-        adx_min = float(diag.get("adx_min", 0.0) or 0.0)
-
-        if slope > 0 and adx >= adx_min:
-            return "bull"
-        return "neutral"
+        regime = str(diag.get("regime", "unknown") or "unknown").strip().lower()
+        if regime in {"strong_trend", "weak_trend", "sideways"}:
+            return regime
+        return "unknown"
 
     def _latest_atr(self, candles_newest: list[dict], period: int) -> float:
         if period <= 0:

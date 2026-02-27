@@ -179,6 +179,14 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.entry_score_threshold, 3.25)
         self.assertEqual(config.macd_cross_weight, 1.7)
 
+    def test_regime_strategy_override_profile_is_available(self):
+        config = load_trading_config()
+        strong = config.regime_strategy_overrides("strong_trend")
+        side = config.regime_strategy_overrides("sideways")
+
+        self.assertGreater(strong.get("entry_score_threshold", 0.0), side.get("entry_score_threshold", 0.0))
+        self.assertGreater(strong.get("take_profit_r", 0.0), side.get("take_profit_r", 0.0))
+
     def test_invalid_range_raises(self):
         os.environ["TRADING_BUY_RSI_THRESHOLD"] = "120"
         try:

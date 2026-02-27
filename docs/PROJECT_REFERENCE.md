@@ -109,9 +109,14 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 - 2026-02-26: `rsi_bb_reversal_long` 실운영 기준 진입/청산 플로우 문서화(전략/엔진/포지션 정책 반영).
 - 2026-02-27: 청산 정책을 3단계(초기 방어/중기 관리/후기 추적)로 재구성하고, strategy signal 가드를 레짐·보유시간·변동성 기반 동적 R 임계값으로 변경. `testing/backtest_runner.py`에 exit reason별 R 분포(mean/median/p10) 리포트를 추가.
 - 2026-02-27: `rsi_bb_reversal_long` 진입 판정을 점수 합산(`entry_score`) 기반으로 전환하고 임계값/가중치(`entry_score_threshold`, `*_weight`)를 설정/환경변수로 노출. 백테스트 세그먼트 리포트에 평균 score 및 score 분위수별 승률 컬럼을 추가.
+- 2026-02-27: 레짐 분류를 `strong_trend / weak_trend / sideways`로 명시화하고, 레짐별 전략 파라미터 오버라이드(진입 강도/트리거 수/목표 R)를 엔진 진입 시점에 동적으로 적용. 백테스트 세그먼트 CSV에 레짐별 거래수·승률·expectancy 컬럼을 추가.
 
 ### 변경 요약 (2026-02-27)
 - 변경 요약: RSI-BB 리버설 전략의 진입 조건을 불리언 게이트에서 가중치 기반 score 합산으로 변경하고, 설정/백테스트 리포트에 튜닝 지표를 확장.
 - 영향 파일: `core/rsi_bb_reversal_long.py`, `core/strategy.py`, `core/config.py`, `core/config_loader.py`, `config.py`, `testing/backtest_runner.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`.
 - 실행/검증 방법 변경 여부: 기본 실행 방법은 동일. 백테스트 CSV에 score 관련 컬럼(`avg_entry_score`, `score_q25/50/75`, `score_win_rate_q1~q4`)이 추가되어 튜닝 검증 지표가 확장됨.
 
+### 변경 요약 (2026-02-27, regime dynamic params)
+- 변경 요약: 전략 레짐 분류를 `strong_trend / weak_trend / sideways`로 표준화하고, 엔진 `_try_buy`에서 레짐별 파라미터 세트를 동적으로 선택하도록 확장. 횡보 레짐은 진입 조건 완화 + 목표 R 축소, 강추세 레짐은 진입 조건 강화 + 목표 R 확대 규칙을 반영.
+- 영향 파일: `core/strategy.py`, `core/config.py`, `core/engine.py`, `core/position_policy.py`, `testing/backtest_runner.py`.
+- 실행/검증 방법 변경 여부: 실행 커맨드는 동일. `testing/backtest_runner.py` 산출 CSV에 레짐별 통계 컬럼(`regime_*_trades`, `regime_*_win_rate`, `regime_*_expectancy`)이 추가되어 레짐 단위 성능 검증이 가능해짐.
