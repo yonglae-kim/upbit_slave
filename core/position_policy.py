@@ -223,6 +223,10 @@ class PositionOrderPolicy:
     def _strategy_signal_required_r(*, entry_regime: str, bars_held: int, current_atr: float, risk_per_unit: float) -> float:
         regime = str(entry_regime).strip().lower()
         regime_base = {
+            "strong_trend": 1.2,
+            "weak_trend": 1.6,
+            "sideways": 2.2,
+            # Backward compatibility
             "bull": 1.2,
             "neutral": 1.6,
             "defensive": 2.2,

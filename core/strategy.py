@@ -43,6 +43,7 @@ class StrategyParams:
     trigger_zone_lookback: int = 5
     trigger_confirm_lookback: int = 3
     trigger_mode: str = "adaptive"
+    required_trigger_count: int = 1
     min_candles_1m: int = 80
     min_candles_5m: int = 120
     min_candles_15m: int = 120
@@ -187,13 +188,14 @@ def _adx(candles_newest: Sequence[dict[str, Any]], period: int) -> float:
 
 def regime_filter_diagnostics(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> dict[str, Any]:
     if not params.regime_filter_enabled:
-        return {"pass": True, "reason": "disabled"}
+        return {"pass": True, "reason": "disabled", "regime": "weak_trend"}
 
     need = max(params.regime_ema_slow, params.regime_adx_period + 1, params.regime_slope_lookback + 1)
     if len(c15_newest) < need:
         return {
             "pass": False,
             "reason": "insufficient_15m_candles",
+            "regime": "unknown",
             "required_15m": int(need),
             "actual_15m": int(len(c15_newest)),
         }
@@ -201,20 +203,23 @@ def regime_filter_diagnostics(c15_newest: Sequence[dict[str, Any]], params: Stra
     fast_ema = _ema_values(c15_newest, params.regime_ema_fast)
     slow_ema = _ema_values(c15_newest, params.regime_ema_slow)
     if len(fast_ema) <= params.regime_slope_lookback or not slow_ema:
-        return {"pass": False, "reason": "ema_unavailable"}
+        return {"pass": False, "reason": "ema_unavailable", "regime": "unknown"}
 
     fast_now = fast_ema[-1]
     slow_now = slow_ema[-1]
     fast_prev = fast_ema[-1 - params.regime_slope_lookback]
     fast_slope = fast_now - fast_prev
     adx = _adx(c15_newest, params.regime_adx_period)
+    regime = classify_market_regime(c15_newest, params)
 
     if fast_now <= slow_now:
         return {
             "pass": False,
             "reason": "ema_trend_fail",
+            "regime": regime,
             "fast_now": float(fast_now),
             "slow_now": float(slow_now),
+            "slope": float(fast_slope),
             "fast_slope": float(fast_slope),
             "adx": float(adx),
         }
@@ -222,8 +227,10 @@ def regime_filter_diagnostics(c15_newest: Sequence[dict[str, Any]], params: Stra
         return {
             "pass": False,
             "reason": "ema_slope_fail",
+            "regime": regime,
             "fast_now": float(fast_now),
             "slow_now": float(slow_now),
+            "slope": float(fast_slope),
             "fast_slope": float(fast_slope),
             "adx": float(adx),
         }
@@ -231,8 +238,10 @@ def regime_filter_diagnostics(c15_newest: Sequence[dict[str, Any]], params: Stra
         return {
             "pass": False,
             "reason": "adx_fail",
+            "regime": regime,
             "fast_now": float(fast_now),
             "slow_now": float(slow_now),
+            "slope": float(fast_slope),
             "fast_slope": float(fast_slope),
             "adx": float(adx),
             "adx_min": float(params.regime_adx_min),
@@ -241,15 +250,44 @@ def regime_filter_diagnostics(c15_newest: Sequence[dict[str, Any]], params: Stra
     return {
         "pass": True,
         "reason": "pass",
+        "regime": regime,
         "fast_now": float(fast_now),
         "slow_now": float(slow_now),
+        "slope": float(fast_slope),
         "fast_slope": float(fast_slope),
         "adx": float(adx),
+        "adx_min": float(params.regime_adx_min),
     }
 
 
 def passes_regime_filter(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> bool:
     return bool(regime_filter_diagnostics(c15_newest, params).get("pass", False))
+
+
+def classify_market_regime(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> str:
+    need = max(params.regime_ema_slow, params.regime_adx_period + 1, params.regime_slope_lookback + 1)
+    if len(c15_newest) < need:
+        return "unknown"
+
+    fast_ema = _ema_values(c15_newest, params.regime_ema_fast)
+    slow_ema = _ema_values(c15_newest, params.regime_ema_slow)
+    if len(fast_ema) <= params.regime_slope_lookback or not slow_ema:
+        return "unknown"
+
+    fast_now = fast_ema[-1]
+    slow_now = slow_ema[-1]
+    fast_prev = fast_ema[-1 - params.regime_slope_lookback]
+    fast_slope = fast_now - fast_prev
+    adx = _adx(c15_newest, params.regime_adx_period)
+    adx_min = max(float(params.regime_adx_min), 1e-9)
+
+    if fast_now <= slow_now or fast_slope <= 0:
+        return "sideways"
+    if adx >= adx_min * 1.15:
+        return "strong_trend"
+    if adx >= adx_min * 0.75:
+        return "weak_trend"
+    return "sideways"
 
 
 def detect_sr_pivots(candles_newest: Sequence[dict[str, Any]], left: int, right: int) -> list[dict[str, Any]]:
@@ -471,6 +509,11 @@ def _is_rejection(candle: dict[str, Any], side: str, params: StrategyParams) -> 
     return wick_ratio >= params.trigger_rejection_wick_ratio
 
 
+def _passes_required_trigger_count(*, zone_touched: bool, breakout: bool, rejection: bool, params: StrategyParams) -> bool:
+    required = max(1, min(3, int(getattr(params, "required_trigger_count", 1) or 1)))
+    return (int(zone_touched) + int(breakout) + int(rejection)) >= required
+
+
 def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str, Any], side: str, params: StrategyParams) -> dict[str, Any]:
     if len(candles_newest) < params.trigger_breakout_lookback + 2:
         return {"pass": False, "fail_code": "trigger_insufficient_candles"}
@@ -478,12 +521,16 @@ def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str
     if params.trigger_mode == "strict":
         latest = candles_newest[0]
         near_zone = _candle_intersects_zone(latest, zone)
+        breakout = _is_breakout(0, candles_newest, side=side, params=params)
+        rejection = _is_rejection(latest, side=side, params=params)
         if not near_zone:
             return {"pass": False, "fail_code": "trigger_strict_zone_miss"}
-        if not _is_breakout(0, candles_newest, side=side, params=params):
+        if not breakout:
             return {"pass": False, "fail_code": "trigger_strict_breakout_miss"}
-        if not _is_rejection(latest, side=side, params=params):
+        if not rejection:
             return {"pass": False, "fail_code": "trigger_strict_rejection_miss"}
+        if not _passes_required_trigger_count(zone_touched=near_zone, breakout=breakout, rejection=rejection, params=params):
+            return {"pass": False, "fail_code": "trigger_required_count_fail"}
         return {"pass": True, "fail_code": "pass"}
 
     if params.trigger_mode == "balanced":
@@ -503,9 +550,16 @@ def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str
 
         for idx in range(confirm_limit):
             candle = candles_newest[idx]
-            if _is_breakout(idx, candles_newest, side=side, params=params):
-                return {"pass": True, "fail_code": "pass"}
-            if _candle_intersects_zone(candle, zone) and _is_rejection(candle, side=side, params=params):
+            breakout = _is_breakout(idx, candles_newest, side=side, params=params)
+            rejection = _candle_intersects_zone(candle, zone) and _is_rejection(candle, side=side, params=params)
+            if breakout or rejection:
+                if not _passes_required_trigger_count(
+                    zone_touched=True,
+                    breakout=breakout,
+                    rejection=rejection,
+                    params=params,
+                ):
+                    continue
                 return {"pass": True, "fail_code": "pass"}
 
         return {"pass": False, "fail_code": "trigger_balanced_confirm_miss"}
@@ -527,9 +581,16 @@ def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str
 
         for idx in range(confirm_limit):
             candle = candles_newest[idx]
-            if _is_breakout(idx, candles_newest, side=side, params=params):
-                return {"pass": True, "fail_code": "pass"}
-            if _candle_intersects_zone(candle, zone) and _is_rejection(candle, side=side, params=params):
+            breakout = _is_breakout(idx, candles_newest, side=side, params=params)
+            rejection = _candle_intersects_zone(candle, zone) and _is_rejection(candle, side=side, params=params)
+            if breakout or rejection:
+                if not _passes_required_trigger_count(
+                    zone_touched=True,
+                    breakout=breakout,
+                    rejection=rejection,
+                    params=params,
+                ):
+                    continue
                 return {"pass": True, "fail_code": "pass"}
 
         return {"pass": False, "fail_code": "trigger_adaptive_confirm_miss"}

@@ -17,6 +17,7 @@ from core.strategy import (
     pick_best_zone,
     score_sr_levels,
     check_trigger_1m,
+    classify_market_regime,
     passes_regime_filter,
 )
 
@@ -96,6 +97,35 @@ class MainSignalValidationTest(unittest.TestCase):
 
     def test_default_trigger_mode_is_adaptive(self):
         self.assertEqual(self.params.trigger_mode, "adaptive")
+
+    def test_required_trigger_count_blocks_balanced_single_signal_entries(self):
+        zone = {"lower": 99.0, "upper": 101.0}
+        candles = [
+            {"opening_price": 103.2, "trade_price": 104.0, "high_price": 104.2, "low_price": 103.0},
+            {"opening_price": 101.5, "trade_price": 101.6, "high_price": 102.0, "low_price": 101.2},
+            {"opening_price": 100.4, "trade_price": 100.0, "high_price": 101.0, "low_price": 99.4},
+            {"opening_price": 100.0, "trade_price": 100.1, "high_price": 100.5, "low_price": 99.6},
+            {"opening_price": 99.8, "trade_price": 99.9, "high_price": 100.4, "low_price": 99.2},
+        ]
+        one_signal = replace(
+            self.params,
+            trigger_mode="balanced",
+            trigger_breakout_lookback=2,
+            trigger_zone_lookback=4,
+            trigger_confirm_lookback=2,
+            trigger_rejection_wick_ratio=0.99,
+            required_trigger_count=1,
+        )
+        two_signals = replace(one_signal, required_trigger_count=3)
+
+        self.assertTrue(check_trigger_1m(candles, zone, side="buy", params=one_signal))
+        self.assertFalse(check_trigger_1m(candles, zone, side="buy", params=two_signals))
+
+    def test_classify_market_regime_returns_sideways_on_non_trending_series(self):
+        params = replace(self.params, regime_ema_fast=5, regime_ema_slow=10, regime_adx_period=5, regime_adx_min=10.0, regime_slope_lookback=2)
+        c15 = [make_candle(100 + ((-1) ** i) * 0.2, spread=2.0, bull=(i % 2 == 0)) for i in range(80)]
+
+        self.assertEqual(classify_market_regime(c15, params), "sideways")
 
 
     def test_regime_filter_passes_when_conditions_are_met(self):

@@ -15,7 +15,7 @@ import apis
 from core.rsi_bb_reversal_long import evaluate_long_entry
 from core.config_loader import load_trading_config
 from core.position_policy import ExitDecision, PositionExitState, PositionOrderPolicy
-from core.strategy import check_buy, check_sell, debug_entry, preprocess_candles, zone_debug_metrics
+from core.strategy import check_buy, check_sell, classify_market_regime, debug_entry, preprocess_candles, zone_debug_metrics
 
 
 @dataclass
@@ -61,6 +61,7 @@ class SegmentResult:
     score_win_rate_q2: float = 0.0
     score_win_rate_q3: float = 0.0
     score_win_rate_q4: float = 0.0
+    regime_trade_stats: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 
@@ -74,6 +75,7 @@ class TradeLedgerEntry:
     r_multiple: float
     reason: str
     holding_minutes: float
+    entry_regime: str = "unknown"
 
 
 @dataclass
@@ -261,24 +263,29 @@ class BacktestRunner:
 
     @staticmethod
     def _resolve_entry_regime(mtf_data: dict[str, list[dict]], strategy_params) -> str:
-        from core.strategy import regime_filter_diagnostics
-
         try:
-            diag = regime_filter_diagnostics(mtf_data.get("15m", []), strategy_params)
+            regime = classify_market_regime(mtf_data.get("15m", []), strategy_params)
         except Exception:
             return "unknown"
+        return regime if regime in {"strong_trend", "weak_trend", "sideways"} else "unknown"
 
-        if not isinstance(diag, dict):
-            return "unknown"
-        if not diag.get("pass", False):
-            return "defensive"
+    @staticmethod
+    def _build_regime_trade_stats(ledger: list[TradeLedgerEntry]) -> dict[str, dict[str, float]]:
+        grouped: dict[str, list[TradeLedgerEntry]] = {"strong_trend": [], "weak_trend": [], "sideways": [], "unknown": []}
+        for trade in ledger:
+            regime = str(getattr(trade, "entry_regime", "unknown") or "unknown").strip().lower()
+            grouped.setdefault(regime, []).append(trade)
 
-        slope = float(diag.get("slope", 0.0) or 0.0)
-        adx = float(diag.get("adx", 0.0) or 0.0)
-        adx_min = float(diag.get("adx_min", 0.0) or 0.0)
-        if slope > 0 and adx >= adx_min:
-            return "bull"
-        return "neutral"
+        summary: dict[str, dict[str, float]] = {}
+        for regime, trades in grouped.items():
+            pnls = [trade.pnl for trade in trades]
+            wins = [pnl for pnl in pnls if pnl > 0]
+            summary[regime] = {
+                "trades": float(len(trades)),
+                "win_rate": float((len(wins) / len(trades) * 100.0) if trades else 0.0),
+                "expectancy": float((sum(pnls) / len(pnls)) if pnls else 0.0),
+            }
+        return summary
 
     @staticmethod
     def _score_win_rates_by_quantile(score_pnl_rows: list[tuple[float, float]]) -> dict[str, float]:
@@ -725,6 +732,7 @@ class BacktestRunner:
                         "invested_cash": pre_entry_amount,
                         "entry_fee": pre_entry_amount * self.config.fee_rate,
                         "entry_score": float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0) if entry_eval else 0.0,
+                        "entry_regime": str(position_state.exit_state.entry_regime or "unknown"),
                         "sold_qty": 0.0,
                         "gross_exit_notional": 0.0,
                         "exit_fee": 0.0,
@@ -789,6 +797,7 @@ class BacktestRunner:
                                     r_multiple=float(r_multiple),
                                     reason=normalized_reason,
                                     holding_minutes=float(holding_minutes),
+                                    entry_regime=str(active_trade.get("entry_regime", "unknown") or "unknown"),
                                 )
                             )
                             trade_score_rows.append((float(active_trade.get("entry_score", 0.0) or 0.0), float(pnl)))
@@ -813,6 +822,7 @@ class BacktestRunner:
         score_q50 = float(pd.Series(entry_scores).quantile(0.50)) if entry_scores else 0.0
         score_q75 = float(pd.Series(entry_scores).quantile(0.75)) if entry_scores else 0.0
         score_win_rates = self._score_win_rates_by_quantile(trade_score_rows)
+        regime_trade_stats = self._build_regime_trade_stats(trade_ledger)
         return SegmentResult(
             segment_id=segment_id,
             insample_start=oldest,
@@ -852,6 +862,7 @@ class BacktestRunner:
             score_win_rate_q2=score_win_rates.get("q2", 0.0),
             score_win_rate_q3=score_win_rates.get("q3", 0.0),
             score_win_rate_q4=score_win_rates.get("q4", 0.0),
+            regime_trade_stats=regime_trade_stats,
         )
 
     def run(self):
@@ -910,6 +921,7 @@ class BacktestRunner:
                 score_win_rate_q2=segment.score_win_rate_q2,
                 score_win_rate_q3=segment.score_win_rate_q3,
                 score_win_rate_q4=segment.score_win_rate_q4,
+                regime_trade_stats=segment.regime_trade_stats,
             )
             results.append(segment)
             segment_id += 1
@@ -941,13 +953,25 @@ class BacktestRunner:
                     "exit_reason_partial_stop_loss_mean_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("mean", 0.0),
                     "exit_reason_partial_stop_loss_median_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("median", 0.0),
                     "exit_reason_partial_stop_loss_p10_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("p10", 0.0),
+                    "regime_strong_trend_trades": row.regime_trade_stats.get("strong_trend", {}).get("trades", 0.0),
+                    "regime_strong_trend_win_rate": row.regime_trade_stats.get("strong_trend", {}).get("win_rate", 0.0),
+                    "regime_strong_trend_expectancy": row.regime_trade_stats.get("strong_trend", {}).get("expectancy", 0.0),
+                    "regime_weak_trend_trades": row.regime_trade_stats.get("weak_trend", {}).get("trades", 0.0),
+                    "regime_weak_trend_win_rate": row.regime_trade_stats.get("weak_trend", {}).get("win_rate", 0.0),
+                    "regime_weak_trend_expectancy": row.regime_trade_stats.get("weak_trend", {}).get("expectancy", 0.0),
+                    "regime_sideways_trades": row.regime_trade_stats.get("sideways", {}).get("trades", 0.0),
+                    "regime_sideways_win_rate": row.regime_trade_stats.get("sideways", {}).get("win_rate", 0.0),
+                    "regime_sideways_expectancy": row.regime_trade_stats.get("sideways", {}).get("expectancy", 0.0),
                 }
                 for row in results
             ]
         )
         fail_df = pd.DataFrame([self._build_fail_summary(row.entry_fail_counts) for row in results])
         if not reason_df.empty:
-            df = pd.concat([df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts"], errors="ignore"), reason_df], axis=1)
+            df = pd.concat(
+                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "regime_trade_stats"], errors="ignore"), reason_df],
+                axis=1,
+            )
         if not fail_df.empty:
             df = pd.concat([df, fail_df], axis=1)
         if not df.empty:
