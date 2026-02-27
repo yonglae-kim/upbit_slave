@@ -48,6 +48,14 @@ REGIME_STRATEGY_PARAM_OVERRIDES: dict[str, dict[str, int | float]] = {
 }
 
 
+WALKFORWARD_DEFAULT_UPDATE_CRITERIA: dict[str, float | int] = {
+    "min_oos_trades": 8,
+    "min_oos_win_rate": 38.0,
+    "max_overfit_gap_pct": 40.0,
+    "max_efficiency_gap": 1.2,
+}
+
+
 @dataclass
 class TradingConfig:
     do_not_trading: list[str]
