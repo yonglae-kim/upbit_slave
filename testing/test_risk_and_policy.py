@@ -122,7 +122,7 @@ class RiskAndPolicyTest(unittest.TestCase):
             partial_take_profit_ratio=0.5,
             partial_stop_loss_ratio=1.0,
         )
-        state = PositionExitState(peak_price=100.0)
+        state = PositionExitState(peak_price=100.0, bars_held=8)
 
         partial = policy.evaluate(state=state, avg_buy_price=100.0, current_price=103.0, signal_exit=False)
         self.assertTrue(partial.should_exit)
@@ -179,7 +179,7 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertEqual(fixed_decision.reason, "stop_loss")
         self.assertFalse(atr_decision.should_exit)
 
-    def test_strategy_signal_does_not_force_full_exit_before_2r(self):
+    def test_strategy_signal_uses_dynamic_r_guard(self):
         policy = PositionOrderPolicy(
             stop_loss_threshold=0.97,
             trailing_stop_pct=0.0,
@@ -187,31 +187,44 @@ class RiskAndPolicyTest(unittest.TestCase):
             partial_take_profit_ratio=0.0,
             partial_stop_loss_ratio=1.0,
         )
-        state = PositionExitState(
-            peak_price=101.0,
+
+        defensive_state = PositionExitState(
+            peak_price=105.0,
             entry_price=100.0,
             initial_stop_price=95.0,
             risk_per_unit=5.0,
+            entry_regime="defensive",
+            bars_held=1,
         )
-
-        before_2r = policy.evaluate(
-            state=state,
-            avg_buy_price=100.0,
-            current_price=109.0,
-            signal_exit=True,
-            strategy_name="rsi_bb_reversal_long",
-        )
-        at_2r = policy.evaluate(
-            state=state,
+        defensive_blocked = policy.evaluate(
+            state=defensive_state,
             avg_buy_price=100.0,
             current_price=110.0,
             signal_exit=True,
+            current_atr=6.0,
             strategy_name="rsi_bb_reversal_long",
         )
 
-        self.assertFalse(before_2r.should_exit)
-        self.assertTrue(at_2r.should_exit)
-        self.assertEqual(at_2r.reason, "strategy_signal")
+        bull_state = PositionExitState(
+            peak_price=106.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="bull",
+            bars_held=30,
+        )
+        bull_allowed = policy.evaluate(
+            state=bull_state,
+            avg_buy_price=100.0,
+            current_price=107.0,
+            signal_exit=True,
+            current_atr=1.0,
+            strategy_name="rsi_bb_reversal_long",
+        )
+
+        self.assertFalse(defensive_blocked.should_exit)
+        self.assertTrue(bull_allowed.should_exit)
+        self.assertEqual(bull_allowed.reason, "strategy_signal")
 
     def test_strategy_partial_take_profit_arms_breakeven_stop(self):
         policy = PositionOrderPolicy(

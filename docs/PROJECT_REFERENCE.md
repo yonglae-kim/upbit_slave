@@ -41,6 +41,7 @@ pytest -q
 
 # 최근 1주 백테스트
 python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
+# (산출 CSV에 exit reason별 mean/median/p10 R 컬럼 포함)
 ```
 
 ## 4) 환경변수 핵심 포인트
@@ -70,16 +71,14 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 ### 청산(SELL)
 1. **포지션 상태 갱신**
    - 매 사이클마다 `peak_price`, `bars_held`, ATR/스윙로우 참조값을 갱신합니다.
-2. **정책 기반 청산 우선순위 (`PositionOrderPolicy.evaluate`)**
-   - `time_stop` (최대 보유 봉 수 초과)
-   - `stop_loss` / `partial_stop_loss` (고정 손절 또는 ATR 모드 손절)
-   - `strategy_partial_take_profit` (전략 전용 R 기반 분할익절)
-   - `partial_take_profit` (일반 퍼센트 기반 분할익절)
-   - `trailing_stop` (고정 % 또는 ATR 기반 트레일링)
-   - `strategy_signal` (전략 신호 청산)
-3. **전략 신호 청산(`should_exit_long`) 동작**
-   - 전략 신호는 “보조 신호”로 사용되며, `entry_price + 1R` 도달 여부를 기준으로 True/False를 반환합니다.
-   - 실제 전량 청산은 정책 레이어에서 추가 가드(예: `rsi_bb_reversal_long`은 최소 2R 미만 시 `strategy_signal` 전량 청산 억제)를 거쳐 최종 결정됩니다.
+   - `PositionExitState`에 `entry_regime`, `highest_r`, `drawdown_from_peak_r`를 유지해 레짐/성과/되돌림 기반 청산 판단을 수행합니다.
+2. **3단계 정책 기반 청산 (`PositionOrderPolicy.evaluate`)**
+   - **초기 방어 (`initial_defense`)**: `highest_r < 1.0` && `bars_held < 8` 구간. 손절을 더 엄격하게 적용하고(엔트리 대비 약 `0.85R`), 분할익절은 대기.
+   - **중기 관리 (`mid_management`)**: `highest_r >= 1.0` 또는 `bars_held >= 8` 이후. 분할익절 허용 + 본절 이동(브레이크이븐) 활성화.
+   - **후기 추적 (`late_trailing`)**: `highest_r >= 2.0` 또는 `bars_held >= 24` 이후. 트레일링 스탑을 강화해 이익 잠금 비중을 높임.
+3. **전략 신호 청산(`strategy_signal`) 가드**
+   - 기존 고정 2R 대신 `entry_regime + bars_held + ATR/risk_per_unit` 조합으로 최소 R 임계값을 동적으로 계산합니다.
+   - 고변동/방어적 레짐일수록 요구 R을 높이고, 장기 보유 포지션은 임계값을 완화해 청산 유연성을 높입니다.
 
 ### 청산 사유 기록/재진입 쿨다운
 - 전량 청산 시 마지막 청산 시점/사유를 마켓별로 저장합니다.
@@ -108,3 +107,5 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 ## 최근 업데이트 로그
 - 2026-02-26: 초기 참조 문서 작성
 - 2026-02-26: `rsi_bb_reversal_long` 실운영 기준 진입/청산 플로우 문서화(전략/엔진/포지션 정책 반영).
+- 2026-02-27: 청산 정책을 3단계(초기 방어/중기 관리/후기 추적)로 재구성하고, strategy signal 가드를 레짐·보유시간·변동성 기반 동적 R 임계값으로 변경. `testing/backtest_runner.py`에 exit reason별 R 분포(mean/median/p10) 리포트를 추가.
+
