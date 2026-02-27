@@ -22,6 +22,8 @@ class RiskManager:
         max_correlated_positions: int,
         correlation_groups: dict[str, str] | None,
         min_order_krw: float,
+        quality_multiplier_min_bound: float = 0.7,
+        quality_multiplier_max_bound: float = 1.2,
     ):
         self.risk_per_trade_pct = max(0.0, float(risk_per_trade_pct))
         self.max_daily_loss_pct = max(0.0, float(max_daily_loss_pct))
@@ -30,6 +32,8 @@ class RiskManager:
         self.max_correlated_positions = max(1, int(max_correlated_positions))
         self.correlation_groups = correlation_groups or {}
         self.min_order_krw = float(min_order_krw)
+        self.quality_multiplier_min_bound = max(0.1, float(quality_multiplier_min_bound))
+        self.quality_multiplier_max_bound = max(self.quality_multiplier_min_bound, float(quality_multiplier_max_bound))
 
         # Baseline policy:
         # - Keep one baseline equity snapshot per UTC day.
@@ -87,6 +91,25 @@ class RiskManager:
             return False
         max_daily_loss = self._baseline_equity * self.max_daily_loss_pct
         return -self._realized_pnl_today >= max_daily_loss > 0
+
+    def clamp_quality_multiplier(self, quality_multiplier: float) -> float:
+        clamped = min(self.quality_multiplier_max_bound, max(self.quality_multiplier_min_bound, float(quality_multiplier)))
+        if self._baseline_equity is None or self._baseline_equity <= 0 or self.max_daily_loss_pct <= 0:
+            return clamped
+
+        max_daily_loss = self._baseline_equity * self.max_daily_loss_pct
+        if max_daily_loss <= 0:
+            return clamped
+
+        remaining_loss_budget = max_daily_loss + self._realized_pnl_today
+        remaining_ratio = remaining_loss_budget / max_daily_loss
+        dynamic_cap = self.quality_multiplier_max_bound
+        if remaining_ratio <= 0.1:
+            dynamic_cap = min(dynamic_cap, 0.8)
+        elif remaining_ratio <= 0.2:
+            dynamic_cap = min(dynamic_cap, 1.0)
+
+        return min(dynamic_cap, max(self.quality_multiplier_min_bound, clamped))
 
     def compute_risk_sized_order_krw(self, *, available_krw: float, entry_price: float, stop_price: float) -> float:
         if available_krw <= 0 or entry_price <= 0 or stop_price <= 0 or entry_price <= stop_price:

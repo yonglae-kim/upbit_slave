@@ -83,6 +83,11 @@ class StrategyParams:
     macd_cross_weight: float = 0.8
     engulfing_weight: float = 1.0
     band_deviation_weight: float = 0.8
+    quality_score_low_threshold: float = 0.35
+    quality_score_high_threshold: float = 0.7
+    quality_multiplier_low: float = 0.7
+    quality_multiplier_mid: float = 1.0
+    quality_multiplier_high: float = 1.15
     entry_mode: str = "close"
     stop_mode_long: str = "swing_low"
     take_profit_r: float = 2.0

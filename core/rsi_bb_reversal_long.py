@@ -222,6 +222,26 @@ def _compute_stop_price(candles_oldest: list[dict[str, Any]], lower_band: list[f
     return swing_low
 
 
+def _regime_alignment_score(candles_15m_newest: list[dict[str, Any]]) -> float:
+    candles = list(reversed(candles_15m_newest))
+    if len(candles) < 30:
+        return 0.5
+
+    closes = [_price(c, "trade_price") for c in candles]
+    fast = _ema(closes, 20)
+    slow = _ema(closes, 50)
+    if len(fast) < 4 or len(slow) < 4:
+        return 0.5
+
+    trend_up = fast[-1] > slow[-1]
+    slope_up = fast[-1] > fast[-4]
+    if trend_up and slope_up:
+        return 1.0
+    if trend_up or slope_up:
+        return 0.6
+    return 0.2
+
+
 def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> ReversalSignal:
     candles_newest = list(data.get("1m", []))
     candles_oldest = list(reversed(candles_newest))
@@ -283,6 +303,17 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     macd_cross = is_macd_bullish_cross(macd_line, signal_line, hist, eval_idx, params.macd_histogram_filter_enabled)
     special_setup = params.divergence_signal_enabled and div.get("pass", False) and macd_cross and engulfing
 
+    divergence_strength = 0.0
+    if int(div.get("p1", -1)) >= 0 and int(div.get("p2", -1)) >= 0:
+        price_drop = max(float(div.get("low1", 0.0)) - float(div.get("low2", 0.0)), 0.0)
+        rsi_rise = max(float(div.get("rsi2", 0.0)) - float(div.get("rsi1", 0.0)), 0.0)
+        norm_price_drop = price_drop / max(float(div.get("low1", 1e-9)), 1e-9)
+        norm_rsi_rise = rsi_rise / 100.0
+        divergence_strength = min(1.0, (norm_price_drop * 12.0) + (norm_rsi_rise * 3.0))
+
+    regime_alignment = _regime_alignment_score(list(data.get("15m", [])))
+    quality_score = max(0.0, min(1.0, (divergence_strength * 0.4) + (band_breakout_strength * 0.35) + (regime_alignment * 0.25)))
+
     entry_score = (
         (float(params.rsi_oversold_weight) * rsi_oversold_strength)
         + (float(params.bb_touch_weight) * bb_touch_strength)
@@ -318,6 +349,12 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
             "macd_cross": 1.0 if macd_cross else 0.0,
             "engulfing": 1.0 if engulfing else 0.0,
             "band_deviation": float(band_breakout_strength),
+        },
+        "quality_score": float(quality_score),
+        "quality_components": {
+            "divergence_strength": float(divergence_strength),
+            "band_breakout_strength": float(band_breakout_strength),
+            "regime_alignment": float(regime_alignment),
         },
         "score_weights": {
             "rsi_oversold_weight": float(params.rsi_oversold_weight),

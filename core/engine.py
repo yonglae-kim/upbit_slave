@@ -60,6 +60,8 @@ class TradingEngine:
             max_correlated_positions=config.max_correlated_positions,
             correlation_groups=config.correlation_groups,
             min_order_krw=config.min_order_krw,
+            quality_multiplier_min_bound=config.quality_multiplier_min_bound,
+            quality_multiplier_max_bound=config.quality_multiplier_max_bound,
         )
         self.order_policy = PositionOrderPolicy(
             stop_loss_threshold=config.stop_loss_threshold,
@@ -259,7 +261,19 @@ class TradingEngine:
                 cash_cap_order_krw = min(hard_cash_limit_krw, configured_cash_management_cap_krw)
 
             base_order_krw = min(risk_sized_order_krw, cash_cap_order_krw)
-            final_order_krw = base_order_krw
+            diagnostics = strategy_entry_result.diagnostics if strategy_entry_result is not None and isinstance(strategy_entry_result.diagnostics, dict) else {}
+            quality_score = float(diagnostics.get("quality_score", 0.0) or 0.0)
+            if quality_score >= float(self.config.quality_score_high_threshold):
+                quality_bucket = "high"
+                raw_quality_multiplier = float(self.config.quality_multiplier_high)
+            elif quality_score >= float(self.config.quality_score_low_threshold):
+                quality_bucket = "mid"
+                raw_quality_multiplier = float(self.config.quality_multiplier_mid)
+            else:
+                quality_bucket = "low"
+                raw_quality_multiplier = float(self.config.quality_multiplier_low)
+            quality_multiplier = self.risk.clamp_quality_multiplier(raw_quality_multiplier)
+            final_order_krw = base_order_krw * quality_multiplier
             damping_log = None
             if self.config.market_damping_enabled:
                 liquidity_factor, volatility_factor, damping_reasons = self._compute_market_damping_factors(
@@ -267,7 +281,7 @@ class TradingEngine:
                     candles_1m=data.get("1m", []),
                 )
                 damping_factor = min(liquidity_factor, volatility_factor)
-                final_order_krw = base_order_krw * damping_factor
+                final_order_krw = base_order_krw * quality_multiplier * damping_factor
                 damping_log = {
                     "liquidity_factor": liquidity_factor,
                     "volatility_factor": volatility_factor,
@@ -283,6 +297,9 @@ class TradingEngine:
                     f"risk_sized_order_krw={int(risk_sized_order_krw)}",
                     f"cash_cap_order_krw={int(cash_cap_order_krw)}",
                     f"final_order_krw={int(final_order_krw)}",
+                    f"quality_score={quality_score:.3f}",
+                    f"quality_bucket={quality_bucket}",
+                    f"quality_multiplier={quality_multiplier:.2f}",
                 )
                 continue
 
@@ -299,6 +316,9 @@ class TradingEngine:
                     f"risk_sized_order_krw={int(risk_sized_order_krw)}",
                     f"cash_cap_order_krw={int(cash_cap_order_krw)}",
                     f"final_order_krw={int(final_order_krw)}",
+                    f"quality_score={quality_score:.3f}",
+                    f"quality_bucket={quality_bucket}",
+                    f"quality_multiplier={quality_multiplier:.2f}",
                 )
                 continue
 
@@ -310,6 +330,9 @@ class TradingEngine:
                     f"risk_sized_order_krw={int(risk_sized_order_krw)}",
                     f"cash_cap_order_krw={int(cash_cap_order_krw)}",
                     f"final_order_krw={int(final_order_krw)}",
+                    f"quality_score={quality_score:.3f}",
+                    f"quality_bucket={quality_bucket}",
+                    f"quality_multiplier={quality_multiplier:.2f}",
                 )
                 continue
             residual_slots_after_buy = max(int(self.config.max_holdings) - (len(held_markets) + 1), 0)
@@ -321,6 +344,9 @@ class TradingEngine:
                     f"risk_sized_order_krw={int(risk_sized_order_krw)}",
                     f"cash_cap_order_krw={int(cash_cap_order_krw)}",
                     f"final_order_krw={int(final_order_krw)}",
+                    f"quality_score={quality_score:.3f}",
+                    f"quality_bucket={quality_bucket}",
+                    f"quality_multiplier={quality_multiplier:.2f}",
                 )
                 continue
 
@@ -370,13 +396,19 @@ class TradingEngine:
                 f"cash_cap_order_krw={int(cash_cap_order_krw)}",
                 f"base_order_krw={int(base_order_krw)}",
                 f"final_order_krw={int(final_order_krw)}",
+                f"quality_score={quality_score:.3f}",
+                f"quality_bucket={quality_bucket}",
+                f"quality_multiplier={quality_multiplier:.2f}",
             )
             self.notifier.send(
                 f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']} "
                 f"risk_sized_order_krw={int(risk_sized_order_krw)} "
                 f"cash_cap_order_krw={int(cash_cap_order_krw)} "
                 f"base_order_krw={int(base_order_krw)} "
-                f"final_order_krw={int(final_order_krw)}"
+                f"final_order_krw={int(final_order_krw)} "
+                f"quality_score={quality_score:.3f} "
+                f"quality_bucket={quality_bucket} "
+                f"quality_multiplier={quality_multiplier:.2f}"
             )
             break
 

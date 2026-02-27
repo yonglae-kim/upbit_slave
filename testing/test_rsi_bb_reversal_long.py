@@ -132,6 +132,8 @@ class RsiBbReversalLongTests(unittest.TestCase):
         result = evaluate_long_entry(data, params)
         self.assertIn("entry_score", result.diagnostics)
         self.assertIn("score_components", result.diagnostics)
+        self.assertIn("quality_score", result.diagnostics)
+        self.assertIn("quality_components", result.diagnostics)
 
     def test_entry_score_threshold_blocks_entry(self):
         candles = [candle(10, 10.2, 9.8, 10.0) for _ in range(90)]

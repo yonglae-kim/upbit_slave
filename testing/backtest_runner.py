@@ -62,6 +62,7 @@ class SegmentResult:
     score_win_rate_q3: float = 0.0
     score_win_rate_q4: float = 0.0
     regime_trade_stats: dict[str, dict[str, float]] = field(default_factory=dict)
+    quality_bucket_stats: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 
@@ -286,6 +287,23 @@ class BacktestRunner:
                 "expectancy": float((sum(pnls) / len(pnls)) if pnls else 0.0),
             }
         return summary
+
+    @staticmethod
+    def _build_quality_bucket_stats(rows: list[tuple[str, float]]) -> dict[str, dict[str, float]]:
+        grouped: dict[str, list[float]] = {"low": [], "mid": [], "high": []}
+        for bucket, pnl in rows:
+            key = str(bucket or "low").strip().lower()
+            grouped.setdefault(key, []).append(float(pnl))
+
+        result: dict[str, dict[str, float]] = {}
+        for bucket, pnls in grouped.items():
+            wins = [p for p in pnls if p > 0]
+            result[bucket] = {
+                "trades": float(len(pnls)),
+                "win_rate": float((len(wins) / len(pnls) * 100.0) if pnls else 0.0),
+                "expectancy": float((sum(pnls) / len(pnls)) if pnls else 0.0),
+            }
+        return result
 
     @staticmethod
     def _score_win_rates_by_quantile(score_pnl_rows: list[tuple[float, float]]) -> dict[str, float]:
@@ -655,6 +673,7 @@ class BacktestRunner:
         trade_ledger: list[TradeLedgerEntry] = []
         entry_scores: list[float] = []
         trade_score_rows: list[tuple[float, float]] = []
+        trade_quality_rows: list[tuple[str, float]] = []
         active_trade: dict[str, float | str] | None = None
         required_window_size = max(
             int(self.buffer_cnt),
@@ -711,9 +730,21 @@ class BacktestRunner:
                 if buy_signal:
                     triggered_entries += 1
                     entries += 1
-                    pre_entry_amount = amount
+                    quality_score = float(entry_eval.diagnostics.get("quality_score", 0.0) or 0.0) if entry_eval else 0.0
+                    if quality_score >= float(self.config.quality_score_high_threshold):
+                        quality_bucket = "high"
+                        quality_multiplier = float(self.config.quality_multiplier_high)
+                    elif quality_score >= float(self.config.quality_score_low_threshold):
+                        quality_bucket = "mid"
+                        quality_multiplier = float(self.config.quality_multiplier_mid)
+                    else:
+                        quality_bucket = "low"
+                        quality_multiplier = float(self.config.quality_multiplier_low)
+                    quality_multiplier = min(float(self.config.quality_multiplier_max_bound), max(float(self.config.quality_multiplier_min_bound), quality_multiplier))
+                    base_entry_amount = amount * 0.8
+                    pre_entry_amount = min(amount, base_entry_amount * quality_multiplier)
                     entry_price = current_price * (1 + (self.spread_rate / 2) + self.slippage_rate)
-                    hold_coin += (amount * (1 - self.config.fee_rate)) / entry_price
+                    hold_coin += (pre_entry_amount * (1 - self.config.fee_rate)) / entry_price
                     position_state.avg_buy_price = entry_price
                     initial_stop_price = entry_price * self.config.stop_loss_threshold
                     risk_per_unit = max(entry_price - initial_stop_price, 0.0)
@@ -732,13 +763,16 @@ class BacktestRunner:
                         "invested_cash": pre_entry_amount,
                         "entry_fee": pre_entry_amount * self.config.fee_rate,
                         "entry_score": float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0) if entry_eval else 0.0,
+                        "quality_score": quality_score,
+                        "quality_bucket": quality_bucket,
+                        "quality_multiplier": quality_multiplier,
                         "entry_regime": str(position_state.exit_state.entry_regime or "unknown"),
                         "sold_qty": 0.0,
                         "gross_exit_notional": 0.0,
                         "exit_fee": 0.0,
                         "net_exit_cash": 0.0,
                     }
-                    amount = 0.0
+                    amount = max(0.0, amount - pre_entry_amount)
             else:
                 signal_exit = check_sell(
                     mtf_data,
@@ -801,6 +835,7 @@ class BacktestRunner:
                                 )
                             )
                             trade_score_rows.append((float(active_trade.get("entry_score", 0.0) or 0.0), float(pnl)))
+                            trade_quality_rows.append((str(active_trade.get("quality_bucket", "low") or "low"), float(pnl)))
                         active_trade = None
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
@@ -823,6 +858,7 @@ class BacktestRunner:
         score_q75 = float(pd.Series(entry_scores).quantile(0.75)) if entry_scores else 0.0
         score_win_rates = self._score_win_rates_by_quantile(trade_score_rows)
         regime_trade_stats = self._build_regime_trade_stats(trade_ledger)
+        quality_bucket_stats = self._build_quality_bucket_stats(trade_quality_rows)
         return SegmentResult(
             segment_id=segment_id,
             insample_start=oldest,
@@ -863,6 +899,7 @@ class BacktestRunner:
             score_win_rate_q3=score_win_rates.get("q3", 0.0),
             score_win_rate_q4=score_win_rates.get("q4", 0.0),
             regime_trade_stats=regime_trade_stats,
+            quality_bucket_stats=quality_bucket_stats,
         )
 
     def run(self):
@@ -922,6 +959,7 @@ class BacktestRunner:
                 score_win_rate_q3=segment.score_win_rate_q3,
                 score_win_rate_q4=segment.score_win_rate_q4,
                 regime_trade_stats=segment.regime_trade_stats,
+                quality_bucket_stats=segment.quality_bucket_stats,
             )
             results.append(segment)
             segment_id += 1
@@ -962,6 +1000,15 @@ class BacktestRunner:
                     "regime_sideways_trades": row.regime_trade_stats.get("sideways", {}).get("trades", 0.0),
                     "regime_sideways_win_rate": row.regime_trade_stats.get("sideways", {}).get("win_rate", 0.0),
                     "regime_sideways_expectancy": row.regime_trade_stats.get("sideways", {}).get("expectancy", 0.0),
+                    "quality_bucket_low_trades": row.quality_bucket_stats.get("low", {}).get("trades", 0.0),
+                    "quality_bucket_low_win_rate": row.quality_bucket_stats.get("low", {}).get("win_rate", 0.0),
+                    "quality_bucket_low_expectancy": row.quality_bucket_stats.get("low", {}).get("expectancy", 0.0),
+                    "quality_bucket_mid_trades": row.quality_bucket_stats.get("mid", {}).get("trades", 0.0),
+                    "quality_bucket_mid_win_rate": row.quality_bucket_stats.get("mid", {}).get("win_rate", 0.0),
+                    "quality_bucket_mid_expectancy": row.quality_bucket_stats.get("mid", {}).get("expectancy", 0.0),
+                    "quality_bucket_high_trades": row.quality_bucket_stats.get("high", {}).get("trades", 0.0),
+                    "quality_bucket_high_win_rate": row.quality_bucket_stats.get("high", {}).get("win_rate", 0.0),
+                    "quality_bucket_high_expectancy": row.quality_bucket_stats.get("high", {}).get("expectancy", 0.0),
                 }
                 for row in results
             ]
@@ -969,7 +1016,7 @@ class BacktestRunner:
         fail_df = pd.DataFrame([self._build_fail_summary(row.entry_fail_counts) for row in results])
         if not reason_df.empty:
             df = pd.concat(
-                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "regime_trade_stats"], errors="ignore"), reason_df],
+                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "regime_trade_stats", "quality_bucket_stats"], errors="ignore"), reason_df],
                 axis=1,
             )
         if not fail_df.empty:
