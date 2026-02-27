@@ -86,6 +86,24 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "max_daily_loss")
 
+    def test_quality_multiplier_clamp_respects_bounds_and_daily_loss_budget(self):
+        risk = RiskManager(
+            risk_per_trade_pct=0.01,
+            max_daily_loss_pct=0.05,
+            max_consecutive_losses=3,
+            max_concurrent_positions=4,
+            max_correlated_positions=1,
+            correlation_groups={},
+            min_order_krw=5000,
+            quality_multiplier_min_bound=0.7,
+            quality_multiplier_max_bound=1.2,
+        )
+        risk.set_baseline_equity(1_000_000)
+        self.assertEqual(risk.clamp_quality_multiplier(1.5), 1.2)
+
+        risk.record_trade_result(-45_000)
+        self.assertEqual(risk.clamp_quality_multiplier(1.2), 0.8)
+
     def test_daily_loss_limit_uses_coin_heavy_total_equity_and_resets_on_utc_rollover(self):
         risk = RiskManager(
             risk_per_trade_pct=0.01,

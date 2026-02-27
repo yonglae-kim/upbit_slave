@@ -114,6 +114,13 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'macd_cross_weight': 0.8,\n"
                 "    'engulfing_weight': 1.0,\n"
                 "    'band_deviation_weight': 0.8,\n"
+                "    'quality_score_low_threshold': 0.35,\n"
+                "    'quality_score_high_threshold': 0.7,\n"
+                "    'quality_multiplier_low': 0.7,\n"
+                "    'quality_multiplier_mid': 1.0,\n"
+                "    'quality_multiplier_high': 1.15,\n"
+                "    'quality_multiplier_min_bound': 0.7,\n"
+                "    'quality_multiplier_max_bound': 1.2,\n"
                 "    'entry_mode': 'close',\n"
                 "    'stop_mode_long': 'swing_low',\n"
                 "    'take_profit_r': 2.0,\n"
@@ -170,14 +177,17 @@ class ConfigLoaderTest(unittest.TestCase):
     def test_entry_score_env_override(self):
         os.environ["TRADING_ENTRY_SCORE_THRESHOLD"] = "3.25"
         os.environ["TRADING_MACD_CROSS_WEIGHT"] = "1.7"
+        os.environ["TRADING_QUALITY_MULTIPLIER_HIGH"] = "1.3"
         try:
             config = load_trading_config()
         finally:
             del os.environ["TRADING_ENTRY_SCORE_THRESHOLD"]
             del os.environ["TRADING_MACD_CROSS_WEIGHT"]
+            del os.environ["TRADING_QUALITY_MULTIPLIER_HIGH"]
 
         self.assertEqual(config.entry_score_threshold, 3.25)
         self.assertEqual(config.macd_cross_weight, 1.7)
+        self.assertEqual(config.quality_multiplier_high, 1.3)
 
     def test_regime_strategy_override_profile_is_available(self):
         config = load_trading_config()

@@ -167,6 +167,13 @@ class TradingConfig:
     macd_cross_weight: float = 0.8
     engulfing_weight: float = 1.0
     band_deviation_weight: float = 0.8
+    quality_score_low_threshold: float = 0.35
+    quality_score_high_threshold: float = 0.7
+    quality_multiplier_low: float = 0.7
+    quality_multiplier_mid: float = 1.0
+    quality_multiplier_high: float = 1.15
+    quality_multiplier_min_bound: float = 0.7
+    quality_multiplier_max_bound: float = 1.2
     entry_mode: str = "close"
     stop_mode_long: str = "swing_low"
     take_profit_r: float = 2.0
@@ -234,6 +241,11 @@ class TradingConfig:
             "macd_cross_weight": self.macd_cross_weight,
             "engulfing_weight": self.engulfing_weight,
             "band_deviation_weight": self.band_deviation_weight,
+            "quality_score_low_threshold": self.quality_score_low_threshold,
+            "quality_score_high_threshold": self.quality_score_high_threshold,
+            "quality_multiplier_low": self.quality_multiplier_low,
+            "quality_multiplier_mid": self.quality_multiplier_mid,
+            "quality_multiplier_high": self.quality_multiplier_high,
             "entry_mode": self.entry_mode,
             "stop_mode_long": self.stop_mode_long,
             "take_profit_r": self.take_profit_r,
