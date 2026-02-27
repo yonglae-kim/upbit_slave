@@ -50,17 +50,17 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 - `TRADING_MIN_BUYABLE_KRW`: 추가 버퍼(엔진 하한 계산 시 `max` 적용)
 - `TRADING_DO_NOT_TRADING`: 제외 심볼/마켓 목록(쉼표 구분)
 - `UPBIT_API_DEBUG`: API 요청/응답 디버그 로그 on/off
+- `TRADING_ENTRY_SCORE_THRESHOLD`, `TRADING_*_WEIGHT`: RSI-BB 리버설 전략의 진입 점수 임계값/가중치 튜닝
 
 ## 5) 현재 진입/청산 로직 요약 (rsi_bb_reversal_long 기준)
 
 ### 진입(BUY)
 1. **전략 실행 대상 검증 (Engine 레벨)**
    - 최소 캔들 수/쿨다운/보유 종목 수/가용 KRW 등 사전 조건을 확인한 뒤 전략 평가를 진행합니다.
-2. **필터/셋업/트리거 평가 (`evaluate_long_entry`)**
-   - 필터: RSI 과매도(`rsi_long_threshold`) + 중립구간 필터(`rsi_neutral_*`) 미해당.
-   - 셋업: 하단 볼린저 밴드 터치/이탈(`bb_touch_mode`) + 연속 음봉(`consecutive_bearish_count`) + 더블바텀 검증.
-   - 트리거: 불리시 엔걸핑 캔들.
-   - 예외 진입(special setup): RSI 다이버전스 + MACD bullish cross + 엔걸핑 동시 충족 시 최종 진입 허용.
+2. **점수 기반 진입 평가 (`evaluate_long_entry`)**
+   - 기존 필터/셋업/트리거 불리언 게이트를 시그널별 강도 점수 합산으로 분리했습니다.
+   - `entry_score = Σ(signal_strength × weight)` 구조를 사용하며, 신호는 RSI 과매도, BB 터치 강도, RSI 다이버전스, MACD 크로스, 엔걸핑, 최근 변동성 대비 밴드 이탈폭을 포함합니다.
+   - 최종 진입은 `entry_score >= entry_score_threshold` 조건으로 판단하고, 최소 안전장치(최소 캔들 수, 유효 손절 거리)는 유지합니다.
 3. **주문 리스크/사이징 계산**
    - `stop_mode_long`으로 초기 손절가를 만들고, `entry_price - stop_price`를 1R로 사용.
    - 리스크 기반 주문금액 + 현금관리 캡 + (옵션) 시장 댐핑 계수를 적용해 최종 매수 금액을 계산합니다.
@@ -108,4 +108,10 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 - 2026-02-26: 초기 참조 문서 작성
 - 2026-02-26: `rsi_bb_reversal_long` 실운영 기준 진입/청산 플로우 문서화(전략/엔진/포지션 정책 반영).
 - 2026-02-27: 청산 정책을 3단계(초기 방어/중기 관리/후기 추적)로 재구성하고, strategy signal 가드를 레짐·보유시간·변동성 기반 동적 R 임계값으로 변경. `testing/backtest_runner.py`에 exit reason별 R 분포(mean/median/p10) 리포트를 추가.
+- 2026-02-27: `rsi_bb_reversal_long` 진입 판정을 점수 합산(`entry_score`) 기반으로 전환하고 임계값/가중치(`entry_score_threshold`, `*_weight`)를 설정/환경변수로 노출. 백테스트 세그먼트 리포트에 평균 score 및 score 분위수별 승률 컬럼을 추가.
+
+### 변경 요약 (2026-02-27)
+- 변경 요약: RSI-BB 리버설 전략의 진입 조건을 불리언 게이트에서 가중치 기반 score 합산으로 변경하고, 설정/백테스트 리포트에 튜닝 지표를 확장.
+- 영향 파일: `core/rsi_bb_reversal_long.py`, `core/strategy.py`, `core/config.py`, `core/config_loader.py`, `config.py`, `testing/backtest_runner.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`.
+- 실행/검증 방법 변경 여부: 기본 실행 방법은 동일. 백테스트 CSV에 score 관련 컬럼(`avg_entry_score`, `score_q25/50/75`, `score_win_rate_q1~q4`)이 추가되어 튜닝 검증 지표가 확장됨.
 

@@ -75,6 +75,13 @@ class StrategyParams:
     require_band_reentry_on_second_bottom: bool = True
     require_neckline_break: bool = False
     divergence_signal_enabled: bool = True
+    entry_score_threshold: float = 2.5
+    rsi_oversold_weight: float = 1.0
+    bb_touch_weight: float = 1.0
+    divergence_weight: float = 0.8
+    macd_cross_weight: float = 0.8
+    engulfing_weight: float = 1.0
+    band_deviation_weight: float = 0.8
     entry_mode: str = "close"
     stop_mode_long: str = "swing_low"
     take_profit_r: float = 2.0

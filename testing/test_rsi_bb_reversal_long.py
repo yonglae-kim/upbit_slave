@@ -121,6 +121,33 @@ class RsiBbReversalLongTests(unittest.TestCase):
         self.assertIn("entry_price", close_result.diagnostics)
         self.assertIn("entry_price", next_result.diagnostics)
 
+
+    def test_entry_score_diagnostics_present(self):
+        candles_oldest = [
+            candle(100 - i * 0.2, 101 - i * 0.2, 99 - i * 0.25, 100 - i * 0.25)
+            for i in range(80)
+        ]
+        data = {"1m": list(reversed(candles_oldest))}
+        params = replace(self.params, rsi_period=2, bb_period=2, pivot_left=1, pivot_right=1, entry_score_threshold=0.0)
+        result = evaluate_long_entry(data, params)
+        self.assertIn("entry_score", result.diagnostics)
+        self.assertIn("score_components", result.diagnostics)
+
+    def test_entry_score_threshold_blocks_entry(self):
+        candles = [candle(10, 10.2, 9.8, 10.0) for _ in range(90)]
+        data = {"1m": list(reversed(candles))}
+        params = replace(
+            self.params,
+            rsi_period=2,
+            bb_period=2,
+            pivot_left=1,
+            pivot_right=1,
+            entry_score_threshold=999.0,
+        )
+        result = evaluate_long_entry(data, params)
+        self.assertFalse(result.final_pass)
+        self.assertEqual(result.reason, "score_below_threshold")
+
     def test_stop_mode_price_calculation(self):
         candles_oldest = [
             candle(100, 101, 99, 100),

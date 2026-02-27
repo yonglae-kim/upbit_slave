@@ -243,7 +243,11 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
 
     rsi_value = rsi_series[eval_idx]
     neutral_block = params.rsi_neutral_filter_enabled and params.rsi_neutral_low <= rsi_value <= params.rsi_neutral_high
-    filter_pass = (rsi_value <= params.rsi_long_threshold) and (not neutral_block)
+    raw_rsi_oversold_strength = 0.0
+    if rsi_value <= params.rsi_long_threshold and params.rsi_long_threshold > 0:
+        raw_rsi_oversold_strength = min(1.0, (params.rsi_long_threshold - rsi_value) / params.rsi_long_threshold)
+    rsi_oversold_strength = 0.0 if neutral_block else raw_rsi_oversold_strength
+    filter_pass = rsi_oversold_strength > 0.0
 
     bb_event = match_bb_touch_mode(candles_oldest[eval_idx], bb_low[eval_idx], params.bb_touch_mode)
     bearish_ok = has_consecutive_bearish(candles_newest, eval_idx, params.consecutive_bearish_count)
@@ -257,6 +261,19 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
         params.require_neckline_break,
         eval_idx,
     )
+    bb_width = max(_bb_up[eval_idx] - bb_low[eval_idx], 1e-9)
+    bb_touch_depth = max(0.0, bb_low[eval_idx] - _price(candles_oldest[eval_idx], "low_price"))
+    bb_touch_strength = min(1.0, bb_touch_depth / bb_width)
+    if bb_event:
+        bb_touch_strength = max(bb_touch_strength, 0.5)
+
+    recent_window = candles_oldest[max(0, eval_idx - 20) : eval_idx + 1]
+    recent_ranges = [_price(c, "high_price") - _price(c, "low_price") for c in recent_window]
+    avg_recent_range = (sum(recent_ranges) / len(recent_ranges)) if recent_ranges else 0.0
+    band_breakout_strength = 0.0
+    if avg_recent_range > 0:
+        band_breakout_strength = min(1.0, bb_touch_depth / avg_recent_range)
+
     setup_pass = bb_event and bearish_ok and bool(db.get("pass", False))
 
     engulfing = is_bullish_engulfing(candles_newest, eval_idx, strict=params.engulfing_strict, include_wick=params.engulfing_include_wick)
@@ -266,18 +283,50 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     macd_cross = is_macd_bullish_cross(macd_line, signal_line, hist, eval_idx, params.macd_histogram_filter_enabled)
     special_setup = params.divergence_signal_enabled and div.get("pass", False) and macd_cross and engulfing
 
-    final_pass = (filter_pass and setup_pass and trigger_pass) or special_setup
+    entry_score = (
+        (float(params.rsi_oversold_weight) * rsi_oversold_strength)
+        + (float(params.bb_touch_weight) * bb_touch_strength)
+        + (float(params.divergence_weight) * (1.0 if div.get("pass", False) else 0.0))
+        + (float(params.macd_cross_weight) * (1.0 if macd_cross else 0.0))
+        + (float(params.engulfing_weight) * (1.0 if engulfing else 0.0))
+        + (float(params.band_deviation_weight) * band_breakout_strength)
+    )
 
     entry_price = _price(candles_oldest[n - 1 if params.entry_mode == "next_open" else eval_idx], "trade_price")
     stop_price = _compute_stop_price(candles_oldest, bb_low, eval_idx, params.stop_mode_long)
     risk = max(entry_price - stop_price, 1e-9)
     tp_price = entry_price + (risk * params.take_profit_r)
+    stop_valid = stop_price < entry_price
+    risk_valid = risk > 1e-9
+    safety_pass = stop_valid and risk_valid
+    score_pass = entry_score >= float(params.entry_score_threshold)
+
+    final_pass = safety_pass and score_pass
 
     diag = {
-        "state": {"filter": filter_pass, "setup": setup_pass, "trigger": trigger_pass, "special": special_setup},
+        "state": {"filter": filter_pass, "setup": setup_pass, "trigger": trigger_pass, "special": special_setup, "safety": safety_pass},
         "symbol": str(data.get("symbol", "UNKNOWN")),
         "rsi": rsi_value,
         "bb_lower": bb_low[eval_idx],
+        "bb_width": bb_width,
+        "score_threshold": float(params.entry_score_threshold),
+        "entry_score": float(entry_score),
+        "score_components": {
+            "rsi_oversold": float(rsi_oversold_strength),
+            "bb_touch": float(bb_touch_strength),
+            "divergence": 1.0 if div.get("pass", False) else 0.0,
+            "macd_cross": 1.0 if macd_cross else 0.0,
+            "engulfing": 1.0 if engulfing else 0.0,
+            "band_deviation": float(band_breakout_strength),
+        },
+        "score_weights": {
+            "rsi_oversold_weight": float(params.rsi_oversold_weight),
+            "bb_touch_weight": float(params.bb_touch_weight),
+            "divergence_weight": float(params.divergence_weight),
+            "macd_cross_weight": float(params.macd_cross_weight),
+            "engulfing_weight": float(params.engulfing_weight),
+            "band_deviation_weight": float(params.band_deviation_weight),
+        },
         "bb_event": bb_event,
         "engulfing": engulfing,
         "double_bottom": db,
@@ -287,8 +336,11 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
         "stop_price": stop_price,
         "tp_price": tp_price,
         "r_value": risk,
+        "stop_valid": stop_valid,
+        "risk_valid": risk_valid,
     }
-    return ReversalSignal(filter_pass, setup_pass, trigger_pass, final_pass, "ok" if final_pass else "rule_fail", diag)
+    reason = "ok" if final_pass else ("safety_fail" if not safety_pass else "score_below_threshold")
+    return ReversalSignal(filter_pass, setup_pass, trigger_pass, final_pass, reason, diag)
 
 
 def should_exit_long(

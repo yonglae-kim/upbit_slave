@@ -135,6 +135,13 @@ class TradingConfig:
     require_band_reentry_on_second_bottom: bool = True
     require_neckline_break: bool = False
     divergence_signal_enabled: bool = True
+    entry_score_threshold: float = 2.5
+    rsi_oversold_weight: float = 1.0
+    bb_touch_weight: float = 1.0
+    divergence_weight: float = 0.8
+    macd_cross_weight: float = 0.8
+    engulfing_weight: float = 1.0
+    band_deviation_weight: float = 0.8
     entry_mode: str = "close"
     stop_mode_long: str = "swing_low"
     take_profit_r: float = 2.0
@@ -191,6 +198,13 @@ class TradingConfig:
             "require_band_reentry_on_second_bottom": self.require_band_reentry_on_second_bottom,
             "require_neckline_break": self.require_neckline_break,
             "divergence_signal_enabled": self.divergence_signal_enabled,
+            "entry_score_threshold": self.entry_score_threshold,
+            "rsi_oversold_weight": self.rsi_oversold_weight,
+            "bb_touch_weight": self.bb_touch_weight,
+            "divergence_weight": self.divergence_weight,
+            "macd_cross_weight": self.macd_cross_weight,
+            "engulfing_weight": self.engulfing_weight,
+            "band_deviation_weight": self.band_deviation_weight,
             "entry_mode": self.entry_mode,
             "stop_mode_long": self.stop_mode_long,
             "take_profit_r": self.take_profit_r,

@@ -104,6 +104,13 @@ _ENV_KEY_MAP = {
     "require_band_reentry_on_second_bottom": "TRADING_REQUIRE_BAND_REENTRY_ON_SECOND_BOTTOM",
     "require_neckline_break": "TRADING_REQUIRE_NECKLINE_BREAK",
     "divergence_signal_enabled": "TRADING_DIVERGENCE_SIGNAL_ENABLED",
+    "entry_score_threshold": "TRADING_ENTRY_SCORE_THRESHOLD",
+    "rsi_oversold_weight": "TRADING_RSI_OVERSOLD_WEIGHT",
+    "bb_touch_weight": "TRADING_BB_TOUCH_WEIGHT",
+    "divergence_weight": "TRADING_DIVERGENCE_WEIGHT",
+    "macd_cross_weight": "TRADING_MACD_CROSS_WEIGHT",
+    "engulfing_weight": "TRADING_ENGULFING_WEIGHT",
+    "band_deviation_weight": "TRADING_BAND_DEVIATION_WEIGHT",
     "entry_mode": "TRADING_ENTRY_MODE",
     "stop_mode_long": "TRADING_STOP_MODE_LONG",
     "take_profit_r": "TRADING_TAKE_PROFIT_R",
@@ -193,7 +200,7 @@ def _parse_env_value(key: str, value: str):
         "strategy_cooldown_bars",
     }:
         return int(value)
-    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min", "rsi_long_threshold", "rsi_neutral_low", "rsi_neutral_high", "bb_std", "double_bottom_tolerance_pct", "take_profit_r", "partial_take_profit_r", "partial_take_profit_size"}:
+    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min", "rsi_long_threshold", "rsi_neutral_low", "rsi_neutral_high", "bb_std", "double_bottom_tolerance_pct", "entry_score_threshold", "rsi_oversold_weight", "bb_touch_weight", "divergence_weight", "macd_cross_weight", "engulfing_weight", "band_deviation_weight", "take_profit_r", "partial_take_profit_r", "partial_take_profit_size"}:
         return float(value)
     if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only", "rsi_neutral_filter_enabled", "macd_histogram_filter_enabled", "engulfing_strict", "engulfing_include_wick", "require_band_reentry_on_second_bottom", "require_neckline_break", "divergence_signal_enabled", "partial_take_profit_enabled", "move_stop_to_breakeven_after_partial"}:
         return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -306,6 +313,13 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "require_band_reentry_on_second_bottom": bool,
         "require_neckline_break": bool,
         "divergence_signal_enabled": bool,
+        "entry_score_threshold": (int, float),
+        "rsi_oversold_weight": (int, float),
+        "bb_touch_weight": (int, float),
+        "divergence_weight": (int, float),
+        "macd_cross_weight": (int, float),
+        "engulfing_weight": (int, float),
+        "band_deviation_weight": (int, float),
         "entry_mode": str,
         "stop_mode_long": str,
         "take_profit_r": (int, float),
@@ -463,6 +477,18 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("macd_fast must be smaller than macd_slow")
     if config["double_bottom_tolerance_pct"] < 0:
         raise ConfigValidationError("double_bottom_tolerance_pct must be >= 0")
+    if config["entry_score_threshold"] < 0:
+        raise ConfigValidationError("entry_score_threshold must be >= 0")
+    for weight_key in (
+        "rsi_oversold_weight",
+        "bb_touch_weight",
+        "divergence_weight",
+        "macd_cross_weight",
+        "engulfing_weight",
+        "band_deviation_weight",
+    ):
+        if config[weight_key] < 0:
+            raise ConfigValidationError(f"{weight_key} must be >= 0")
     if config["entry_mode"] not in {"close", "next_open"}:
         raise ConfigValidationError("entry_mode must be one of: close, next_open")
     if config["stop_mode_long"] not in {"swing_low", "lower_band", "conservative"}:

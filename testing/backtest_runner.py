@@ -12,6 +12,7 @@ import openpyxl  # noqa: F401
 import pandas as pd
 
 import apis
+from core.rsi_bb_reversal_long import evaluate_long_entry
 from core.config_loader import load_trading_config
 from core.position_policy import ExitDecision, PositionExitState, PositionOrderPolicy
 from core.strategy import check_buy, check_sell, debug_entry, preprocess_candles, zone_debug_metrics
@@ -52,6 +53,14 @@ class SegmentResult:
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
     exit_reason_r_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     entry_fail_counts: dict[str, int] = field(default_factory=dict)
+    avg_entry_score: float = 0.0
+    score_q25: float = 0.0
+    score_q50: float = 0.0
+    score_q75: float = 0.0
+    score_win_rate_q1: float = 0.0
+    score_win_rate_q2: float = 0.0
+    score_win_rate_q3: float = 0.0
+    score_win_rate_q4: float = 0.0
 
 
 
@@ -270,6 +279,23 @@ class BacktestRunner:
         if slope > 0 and adx >= adx_min:
             return "bull"
         return "neutral"
+
+    @staticmethod
+    def _score_win_rates_by_quantile(score_pnl_rows: list[tuple[float, float]]) -> dict[str, float]:
+        if not score_pnl_rows:
+            return {"q1": 0.0, "q2": 0.0, "q3": 0.0, "q4": 0.0}
+
+        df = pd.DataFrame(score_pnl_rows, columns=["score", "pnl"])
+        if df["score"].nunique(dropna=True) < 2:
+            win_rate = float((df["pnl"] > 0).mean() * 100.0)
+            return {"q1": win_rate, "q2": win_rate, "q3": win_rate, "q4": win_rate}
+
+        df["bucket"] = pd.qcut(df["score"], q=4, labels=["q1", "q2", "q3", "q4"], duplicates="drop")
+        result = {"q1": 0.0, "q2": 0.0, "q3": 0.0, "q4": 0.0}
+        grouped = df.dropna(subset=["bucket"]).groupby("bucket", observed=False)["pnl"]
+        for bucket, pnl_series in grouped:
+            result[str(bucket)] = float((pnl_series > 0).mean() * 100.0)
+        return result
 
     @staticmethod
     def _build_exit_reason_r_stats(ledger: list[TradeLedgerEntry]) -> dict[str, dict[str, float]]:
@@ -620,6 +646,8 @@ class BacktestRunner:
         exit_reason_counts: Counter[str] = Counter()
         entry_fail_counts: Counter[str] = Counter()
         trade_ledger: list[TradeLedgerEntry] = []
+        entry_scores: list[float] = []
+        trade_score_rows: list[tuple[float, float]] = []
         active_trade: dict[str, float | str] | None = None
         required_window_size = max(
             int(self.buffer_cnt),
@@ -640,6 +668,11 @@ class BacktestRunner:
             swing_low = self._latest_swing_low(test_data, self.config.swing_lookback)
 
             if hold_coin == 0:
+                strategy_name = str(getattr(self.strategy_params, "strategy_name", "")).lower().strip()
+                entry_eval = evaluate_long_entry(mtf_data, self.strategy_params) if strategy_name == "rsi_bb_reversal_long" else None
+                if entry_eval is not None:
+                    entry_scores.append(float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0))
+
                 debug = debug_entry(mtf_data, self.strategy_params, side="buy")
                 zones_total, zones_active, has_candidate_entry = zone_debug_metrics(debug)
                 if has_candidate_entry:
@@ -691,6 +724,7 @@ class BacktestRunner:
                         "entry_time": str(test_data[0]["candle_date_time_kst"]),
                         "invested_cash": pre_entry_amount,
                         "entry_fee": pre_entry_amount * self.config.fee_rate,
+                        "entry_score": float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0) if entry_eval else 0.0,
                         "sold_qty": 0.0,
                         "gross_exit_notional": 0.0,
                         "exit_fee": 0.0,
@@ -757,6 +791,7 @@ class BacktestRunner:
                                     holding_minutes=float(holding_minutes),
                                 )
                             )
+                            trade_score_rows.append((float(active_trade.get("entry_score", 0.0) or 0.0), float(pnl)))
                         active_trade = None
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
@@ -774,6 +809,10 @@ class BacktestRunner:
         newest = data_newest[0]["candle_date_time_kst"]
         avg_zones_total = zones_total_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
         avg_zones_active = zones_active_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
+        score_q25 = float(pd.Series(entry_scores).quantile(0.25)) if entry_scores else 0.0
+        score_q50 = float(pd.Series(entry_scores).quantile(0.50)) if entry_scores else 0.0
+        score_q75 = float(pd.Series(entry_scores).quantile(0.75)) if entry_scores else 0.0
+        score_win_rates = self._score_win_rates_by_quantile(trade_score_rows)
         return SegmentResult(
             segment_id=segment_id,
             insample_start=oldest,
@@ -805,6 +844,14 @@ class BacktestRunner:
             exit_reason_counts=dict(exit_reason_counts),
             exit_reason_r_stats=exit_reason_r_stats,
             entry_fail_counts=dict(entry_fail_counts),
+            avg_entry_score=(sum(entry_scores) / len(entry_scores)) if entry_scores else 0.0,
+            score_q25=score_q25,
+            score_q50=score_q50,
+            score_q75=score_q75,
+            score_win_rate_q1=score_win_rates.get("q1", 0.0),
+            score_win_rate_q2=score_win_rates.get("q2", 0.0),
+            score_win_rate_q3=score_win_rates.get("q3", 0.0),
+            score_win_rate_q4=score_win_rates.get("q4", 0.0),
         )
 
     def run(self):
@@ -855,6 +902,14 @@ class BacktestRunner:
                 exit_reason_counts=segment.exit_reason_counts,
                 exit_reason_r_stats=segment.exit_reason_r_stats,
                 entry_fail_counts=segment.entry_fail_counts,
+                avg_entry_score=segment.avg_entry_score,
+                score_q25=segment.score_q25,
+                score_q50=segment.score_q50,
+                score_q75=segment.score_q75,
+                score_win_rate_q1=segment.score_win_rate_q1,
+                score_win_rate_q2=segment.score_win_rate_q2,
+                score_win_rate_q3=segment.score_win_rate_q3,
+                score_win_rate_q4=segment.score_win_rate_q4,
             )
             results.append(segment)
             segment_id += 1

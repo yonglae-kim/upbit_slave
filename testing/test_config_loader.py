@@ -107,6 +107,13 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'require_band_reentry_on_second_bottom': True,\n"
                 "    'require_neckline_break': False,\n"
                 "    'divergence_signal_enabled': True,\n"
+                "    'entry_score_threshold': 2.5,\n"
+                "    'rsi_oversold_weight': 1.0,\n"
+                "    'bb_touch_weight': 1.0,\n"
+                "    'divergence_weight': 0.8,\n"
+                "    'macd_cross_weight': 0.8,\n"
+                "    'engulfing_weight': 1.0,\n"
+                "    'band_deviation_weight': 0.8,\n"
                 "    'entry_mode': 'close',\n"
                 "    'stop_mode_long': 'swing_low',\n"
                 "    'take_profit_r': 2.0,\n"
@@ -158,6 +165,19 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertEqual(config.min_buyable_krw, 7000)
         self.assertEqual(config.min_effective_buyable_krw, 7000)
+
+
+    def test_entry_score_env_override(self):
+        os.environ["TRADING_ENTRY_SCORE_THRESHOLD"] = "3.25"
+        os.environ["TRADING_MACD_CROSS_WEIGHT"] = "1.7"
+        try:
+            config = load_trading_config()
+        finally:
+            del os.environ["TRADING_ENTRY_SCORE_THRESHOLD"]
+            del os.environ["TRADING_MACD_CROSS_WEIGHT"]
+
+        self.assertEqual(config.entry_score_threshold, 3.25)
+        self.assertEqual(config.macd_cross_weight, 1.7)
 
     def test_invalid_range_raises(self):
         os.environ["TRADING_BUY_RSI_THRESHOLD"] = "120"
