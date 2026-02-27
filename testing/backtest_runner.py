@@ -50,6 +50,7 @@ class SegmentResult:
     segment_return_std: float = 0.0
     segment_return_median: float = 0.0
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
+    exit_reason_r_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     entry_fail_counts: dict[str, int] = field(default_factory=dict)
 
 
@@ -249,6 +250,46 @@ class BacktestRunner:
         )
         return max(requirements)
 
+    @staticmethod
+    def _resolve_entry_regime(mtf_data: dict[str, list[dict]], strategy_params) -> str:
+        from core.strategy import regime_filter_diagnostics
+
+        try:
+            diag = regime_filter_diagnostics(mtf_data.get("15m", []), strategy_params)
+        except Exception:
+            return "unknown"
+
+        if not isinstance(diag, dict):
+            return "unknown"
+        if not diag.get("pass", False):
+            return "defensive"
+
+        slope = float(diag.get("slope", 0.0) or 0.0)
+        adx = float(diag.get("adx", 0.0) or 0.0)
+        adx_min = float(diag.get("adx_min", 0.0) or 0.0)
+        if slope > 0 and adx >= adx_min:
+            return "bull"
+        return "neutral"
+
+    @staticmethod
+    def _build_exit_reason_r_stats(ledger: list[TradeLedgerEntry]) -> dict[str, dict[str, float]]:
+        by_reason: dict[str, list[float]] = {}
+        for entry in ledger:
+            by_reason.setdefault(str(entry.reason), []).append(float(entry.r_multiple))
+
+        result: dict[str, dict[str, float]] = {}
+        for reason, values in by_reason.items():
+            ordered = sorted(values)
+            if not ordered:
+                continue
+            q10_index = max(0, int((len(ordered) - 1) * 0.1))
+            result[reason] = {
+                "mean": float(sum(ordered) / len(ordered)),
+                "median": float(median(ordered)),
+                "p10": float(ordered[q10_index]),
+            }
+        return result
+
     def _resolve_exit_decision(
         self,
         *,
@@ -258,13 +299,22 @@ class BacktestRunner:
         current_atr: float = 0.0,
         swing_low: float = 0.0,
     ) -> ExitDecision:
+        policy_signal_exit = signal_exit if self.sell_decision_rule != "and" else False
         policy_decision = self.order_policy.evaluate(
             state=state.exit_state,
             avg_buy_price=state.avg_buy_price,
             current_price=current_price,
-            signal_exit=False,
+            signal_exit=policy_signal_exit,
             current_atr=current_atr,
             swing_low=swing_low,
+            strategy_name=str(getattr(self.strategy_params, "strategy_name", "")),
+            partial_take_profit_enabled=bool(getattr(self.strategy_params, "partial_take_profit_enabled", False)),
+            partial_take_profit_r=float(getattr(self.strategy_params, "partial_take_profit_r", 1.0)),
+            partial_take_profit_size=float(getattr(self.strategy_params, "partial_take_profit_size", 0.0)),
+            move_stop_to_breakeven_after_partial=bool(
+                getattr(self.strategy_params, "move_stop_to_breakeven_after_partial", False)
+            ),
+            max_hold_bars=int(getattr(self.strategy_params, "max_hold_bars", 0)),
         )
         if self.sell_decision_rule == "and":
             if signal_exit and policy_decision.should_exit:
@@ -273,8 +323,6 @@ class BacktestRunner:
 
         if policy_decision.should_exit:
             return policy_decision
-        if signal_exit:
-            return ExitDecision(should_exit=True, qty_ratio=1.0, reason="signal_exit")
         return ExitDecision(should_exit=False)
 
 
@@ -636,6 +684,7 @@ class BacktestRunner:
                         entry_price=entry_price,
                         initial_stop_price=initial_stop_price,
                         risk_per_unit=risk_per_unit,
+                        entry_regime=self._resolve_entry_regime(mtf_data, self.strategy_params),
                     )
                     active_trade = {
                         "entry_price": entry_price,
@@ -720,6 +769,7 @@ class BacktestRunner:
             triggered_entries,
         )
         win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy = self._calc_trade_stats(trade_ledger)
+        exit_reason_r_stats = self._build_exit_reason_r_stats(trade_ledger)
         oldest = data_newest[-1]["candle_date_time_kst"]
         newest = data_newest[0]["candle_date_time_kst"]
         avg_zones_total = zones_total_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
@@ -753,6 +803,7 @@ class BacktestRunner:
             profit_loss_ratio=profit_loss_ratio,
             expectancy=expectancy,
             exit_reason_counts=dict(exit_reason_counts),
+            exit_reason_r_stats=exit_reason_r_stats,
             entry_fail_counts=dict(entry_fail_counts),
         )
 
@@ -802,6 +853,7 @@ class BacktestRunner:
                 profit_loss_ratio=segment.profit_loss_ratio,
                 expectancy=segment.expectancy,
                 exit_reason_counts=segment.exit_reason_counts,
+                exit_reason_r_stats=segment.exit_reason_r_stats,
                 entry_fail_counts=segment.entry_fail_counts,
             )
             results.append(segment)
@@ -819,13 +871,28 @@ class BacktestRunner:
                     "exit_reason_trailing_stop": row.exit_reason_counts.get("trailing_stop", 0),
                     "exit_reason_partial_take_profit": row.exit_reason_counts.get("partial_take_profit", 0),
                     "exit_reason_partial_stop_loss": row.exit_reason_counts.get("partial_stop_loss", 0),
+                    "exit_reason_signal_exit_mean_r": row.exit_reason_r_stats.get("signal_exit", {}).get("mean", 0.0),
+                    "exit_reason_signal_exit_median_r": row.exit_reason_r_stats.get("signal_exit", {}).get("median", 0.0),
+                    "exit_reason_signal_exit_p10_r": row.exit_reason_r_stats.get("signal_exit", {}).get("p10", 0.0),
+                    "exit_reason_stop_loss_mean_r": row.exit_reason_r_stats.get("stop_loss", {}).get("mean", 0.0),
+                    "exit_reason_stop_loss_median_r": row.exit_reason_r_stats.get("stop_loss", {}).get("median", 0.0),
+                    "exit_reason_stop_loss_p10_r": row.exit_reason_r_stats.get("stop_loss", {}).get("p10", 0.0),
+                    "exit_reason_trailing_stop_mean_r": row.exit_reason_r_stats.get("trailing_stop", {}).get("mean", 0.0),
+                    "exit_reason_trailing_stop_median_r": row.exit_reason_r_stats.get("trailing_stop", {}).get("median", 0.0),
+                    "exit_reason_trailing_stop_p10_r": row.exit_reason_r_stats.get("trailing_stop", {}).get("p10", 0.0),
+                    "exit_reason_partial_take_profit_mean_r": row.exit_reason_r_stats.get("partial_take_profit", {}).get("mean", 0.0),
+                    "exit_reason_partial_take_profit_median_r": row.exit_reason_r_stats.get("partial_take_profit", {}).get("median", 0.0),
+                    "exit_reason_partial_take_profit_p10_r": row.exit_reason_r_stats.get("partial_take_profit", {}).get("p10", 0.0),
+                    "exit_reason_partial_stop_loss_mean_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("mean", 0.0),
+                    "exit_reason_partial_stop_loss_median_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("median", 0.0),
+                    "exit_reason_partial_stop_loss_p10_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("p10", 0.0),
                 }
                 for row in results
             ]
         )
         fail_df = pd.DataFrame([self._build_fail_summary(row.entry_fail_counts) for row in results])
         if not reason_df.empty:
-            df = pd.concat([df.drop(columns=["exit_reason_counts", "entry_fail_counts"], errors="ignore"), reason_df], axis=1)
+            df = pd.concat([df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts"], errors="ignore"), reason_df], axis=1)
         if not fail_df.empty:
             df = pd.concat([df, fail_df], axis=1)
         if not df.empty:

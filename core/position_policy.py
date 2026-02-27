@@ -22,12 +22,17 @@ class PositionExitState:
     bars_held: int = 0
     strategy_partial_done: bool = False
     breakeven_armed: bool = False
+    entry_regime: str = "unknown"
+    highest_r: float = 0.0
+    drawdown_from_peak_r: float = 0.0
 
     def reset_after_full_exit(self) -> None:
         self.bars_held = 0
         self.partial_take_profit_done = False
         self.strategy_partial_done = False
         self.breakeven_armed = False
+        self.highest_r = 0.0
+        self.drawdown_from_peak_r = 0.0
 
 
 class PositionOrderPolicy:
@@ -95,10 +100,32 @@ class PositionOrderPolicy:
             fallback_stop = state.initial_stop_price if state.initial_stop_price > 0 else avg_buy_price * self.stop_loss_threshold
             state.risk_per_unit = max(state.entry_price - fallback_stop, 0.0)
 
+        current_r = 0.0
+        if state.risk_per_unit > 0 and state.entry_price > 0:
+            current_r = (current_price - state.entry_price) / state.risk_per_unit
+            peak_r = (state.peak_price - state.entry_price) / state.risk_per_unit
+            state.highest_r = max(float(state.highest_r), float(peak_r))
+            state.drawdown_from_peak_r = max(state.highest_r - current_r, 0.0)
+
+        # Exit stage transition conditions
+        # 1) initial_defense -> mid_management: highest_r >= 1.0 or bars_held >= 8
+        # 2) mid_management -> late_trailing: highest_r >= 2.0 or bars_held >= 24
+        exit_stage = "initial_defense"
+        if state.highest_r >= 1.0 or state.bars_held >= 8:
+            exit_stage = "mid_management"
+        if state.highest_r >= 2.0 or state.bars_held >= 24:
+            exit_stage = "late_trailing"
+
         if self.exit_mode == "atr":
             hard_stop_price = self._atr_stop_price(state, avg_buy_price, current_atr, swing_low)
         else:
             hard_stop_price = avg_buy_price * self.stop_loss_threshold
+
+        if state.risk_per_unit > 0 and state.entry_price > 0:
+            if exit_stage == "initial_defense":
+                hard_stop_price = max(hard_stop_price, state.entry_price - (state.risk_per_unit * 0.85))
+            elif exit_stage in {"mid_management", "late_trailing"} and (state.breakeven_armed or state.highest_r >= 1.0):
+                hard_stop_price = max(hard_stop_price, state.entry_price)
 
         if strategy_partial_enabled and state.breakeven_armed and move_stop_to_breakeven_after_partial:
             hard_stop_price = max(hard_stop_price, state.entry_price)
@@ -109,7 +136,7 @@ class PositionOrderPolicy:
                 return ExitDecision(True, self.partial_stop_loss_ratio, "partial_stop_loss")
             return ExitDecision(True, 1.0, "stop_loss")
 
-        if strategy_partial_enabled and not state.strategy_partial_done:
+        if strategy_partial_enabled and exit_stage != "initial_defense" and not state.strategy_partial_done:
             target_price = state.entry_price + (state.risk_per_unit * partial_take_profit_r)
             if state.risk_per_unit > 0 and current_price >= target_price:
                 state.strategy_partial_done = True
@@ -119,6 +146,7 @@ class PositionOrderPolicy:
 
         if (
             not strategy_partial_enabled
+            and exit_stage != "initial_defense"
             and not state.partial_take_profit_done
             and self.partial_take_profit_ratio > 0
             and current_price >= avg_buy_price * self.partial_take_profit_threshold
@@ -132,13 +160,21 @@ class PositionOrderPolicy:
         elif self.trailing_stop_pct > 0:
             trailing_floor = state.peak_price * (1 - self.trailing_stop_pct)
 
+        if trailing_floor > 0 and state.risk_per_unit > 0 and exit_stage == "late_trailing":
+            trailing_floor = max(trailing_floor, state.peak_price - (state.risk_per_unit * 0.7))
+
         if trailing_floor > 0 and current_price <= trailing_floor:
             return ExitDecision(True, 1.0, "trailing_stop")
 
         if signal_exit:
             if strategy_mode and state.risk_per_unit > 0:
-                min_full_exit_price = state.entry_price + (state.risk_per_unit * 2.0)
-                if current_price < min_full_exit_price:
+                required_r = self._strategy_signal_required_r(
+                    entry_regime=state.entry_regime,
+                    bars_held=state.bars_held,
+                    current_atr=current_atr,
+                    risk_per_unit=state.risk_per_unit,
+                )
+                if current_r < required_r:
                     return ExitDecision(False)
             return ExitDecision(True, 1.0, "strategy_signal")
 
@@ -182,3 +218,30 @@ class PositionOrderPolicy:
             state.entry_swing_low = float(swing_low)
             return state.entry_swing_low
         return 0.0
+
+    @staticmethod
+    def _strategy_signal_required_r(*, entry_regime: str, bars_held: int, current_atr: float, risk_per_unit: float) -> float:
+        regime = str(entry_regime).strip().lower()
+        regime_base = {
+            "bull": 1.2,
+            "neutral": 1.6,
+            "defensive": 2.2,
+        }.get(regime, 1.8)
+
+        hold_adjust = 0.0
+        if bars_held >= 48:
+            hold_adjust = -0.6
+        elif bars_held >= 24:
+            hold_adjust = -0.3
+
+        vol_adjust = 0.0
+        if risk_per_unit > 0 and current_atr > 0:
+            atr_to_risk = current_atr / risk_per_unit
+            if atr_to_risk >= 1.2:
+                vol_adjust = 0.6
+            elif atr_to_risk >= 0.8:
+                vol_adjust = 0.3
+            elif atr_to_risk <= 0.4:
+                vol_adjust = -0.2
+
+        return min(3.0, max(1.0, regime_base + hold_adjust + vol_adjust))

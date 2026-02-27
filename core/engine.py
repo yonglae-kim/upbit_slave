@@ -12,7 +12,7 @@ from core.position_policy import PositionExitState, PositionOrderPolicy
 from core.portfolio import normalize_accounts
 from core.reconciliation import apply_my_asset_event, apply_my_order_event
 from core.risk import RiskManager
-from core.strategy import check_buy, check_sell, evaluate_long_entry, preprocess_candles
+from core.strategy import check_buy, check_sell, evaluate_long_entry, preprocess_candles, regime_filter_diagnostics
 from core.universe import UniverseBuilder
 from infra.upbit_ws_client import UpbitWebSocketClient
 from message.notifier import Notifier
@@ -345,6 +345,7 @@ class TradingEngine:
                 entry_price=strategy_entry_price,
                 initial_stop_price=stop_price,
                 risk_per_unit=strategy_risk_per_unit,
+                entry_regime=self._resolve_entry_regime(data, strategy_params),
             )
             print(
                 "BUY_ACCEPTED",
@@ -833,6 +834,7 @@ class TradingEngine:
                 entry_price=avg_buy_price,
                 initial_stop_price=avg_buy_price * self.config.stop_loss_threshold,
                 risk_per_unit=max(avg_buy_price - (avg_buy_price * self.config.stop_loss_threshold), 0.0),
+                entry_regime=self._resolve_entry_regime(data, strategy_params),
             ),
         )
         state.bars_held = max(0, int(state.bars_held)) + 1
@@ -860,6 +862,27 @@ class TradingEngine:
             ),
             max_hold_bars=int(getattr(strategy_params, "max_hold_bars", 0)),
         )
+
+    @staticmethod
+    def _resolve_entry_regime(data: dict[str, list[dict]], strategy_params) -> str:
+        c15 = data.get("15m", []) if isinstance(data, dict) else []
+        try:
+            diag = regime_filter_diagnostics(c15, strategy_params)
+        except Exception:
+            return "unknown"
+
+        if not isinstance(diag, dict):
+            return "unknown"
+        if not diag.get("pass", False):
+            return "defensive"
+
+        slope = float(diag.get("slope", 0.0) or 0.0)
+        adx = float(diag.get("adx", 0.0) or 0.0)
+        adx_min = float(diag.get("adx_min", 0.0) or 0.0)
+
+        if slope > 0 and adx >= adx_min:
+            return "bull"
+        return "neutral"
 
     def _latest_atr(self, candles_newest: list[dict], period: int) -> float:
         if period <= 0:
