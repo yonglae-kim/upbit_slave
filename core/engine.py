@@ -24,7 +24,7 @@ from core.strategy import (
 )
 from core.universe import UniverseBuilder
 from infra.upbit_ws_client import UpbitWebSocketClient
-from message.notifier import Notifier
+from message.notifier import Notifier, format_entry_summary, format_exit_summary
 
 
 class TradingEngine:
@@ -76,6 +76,7 @@ class TradingEngine:
             swing_lookback=config.swing_lookback,
         )
         self._position_exit_states: dict[str, PositionExitState] = {}
+        self._entry_tracking_by_market: dict[str, dict[str, float | str | datetime]] = {}
         self._entry_strategy_params_by_market: dict[str, StrategyParams] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
         self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
@@ -170,6 +171,13 @@ class TradingEngine:
                 print("SELL_ACCEPTED", market, str(account["balance"]) + account["currency"], current_price)
                 delta = ((current_price - avg_buy_price) / avg_buy_price) * 100
                 self.risk.record_trade_result((current_price - avg_buy_price) * requested_volume)
+                self._log_exit_diagnostics(
+                    market=market,
+                    decision=decision,
+                    avg_buy_price=avg_buy_price,
+                    current_price=current_price,
+                    sold_volume=preflight["order_value"],
+                )
                 if decision.qty_ratio >= 1.0:
                     self._reset_position_exit_state(market)
                     latest_candle = data.get("1m", [{}])[0]
@@ -180,7 +188,15 @@ class TradingEngine:
                             "time": exit_time,
                             "reason": decision.reason,
                         }
-                self.notifier.send(f"SELL_ACCEPTED {market} {current_price} {delta}% reason={decision.reason}")
+                self.notifier.send(
+                    format_exit_summary(
+                        market=market,
+                        exit_price=current_price,
+                        reason=decision.reason,
+                        realized_r=self._compute_realized_r(market=market, current_price=current_price, avg_buy_price=avg_buy_price),
+                        daily_pnl_krw=self._daily_realized_pnl_krw(),
+                    )
+                )
 
         self._print_runtime_status(stage="evaluating_entries", portfolio=portfolio)
         self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
@@ -208,6 +224,7 @@ class TradingEngine:
             data = candles_by_market[market]
             regime = classify_market_regime(data.get("15m", []), strategy_params)
             effective_strategy_params = self._resolve_strategy_params_for_regime(strategy_params, regime)
+            regime_diag = regime_filter_diagnostics(data.get("15m", []), effective_strategy_params)
             if not self._should_run_strategy(market, data):
                 continue
             latest_candle = data.get("1m", [{}])[0]
@@ -386,6 +403,39 @@ class TradingEngine:
                 risk_per_unit=strategy_risk_per_unit,
                 entry_regime=regime,
             )
+            self._entry_tracking_by_market[market] = {
+                "entry_time": latest_time,
+                "entry_price": strategy_entry_price,
+                "risk_per_unit": strategy_risk_per_unit,
+                "entry_score": float(diagnostics.get("entry_score", 0.0) or 0.0),
+                "quality_score": quality_score,
+                "quality_bucket": quality_bucket,
+                "quality_multiplier": quality_multiplier,
+                "regime": regime,
+                "risk_sized_order_krw": risk_sized_order_krw,
+                "cash_cap_order_krw": cash_cap_order_krw,
+                "base_order_krw": base_order_krw,
+                "final_order_krw": final_order_krw,
+            }
+            self._log_entry_diagnostics(
+                market=market,
+                latest_time=latest_time,
+                regime=regime,
+                effective_strategy_params=effective_strategy_params,
+                diagnostics=diagnostics,
+                risk_sized_order_krw=risk_sized_order_krw,
+                cash_cap_order_krw=cash_cap_order_krw,
+                base_order_krw=base_order_krw,
+                final_order_krw=final_order_krw,
+                strategy_entry_price=strategy_entry_price,
+                stop_price=stop_price,
+                strategy_risk_per_unit=strategy_risk_per_unit,
+                quality_score=quality_score,
+                quality_bucket=quality_bucket,
+                quality_multiplier=quality_multiplier,
+                damping_log=damping_log,
+                regime_diag=regime_diag,
+            )
             self._entry_strategy_params_by_market[market] = effective_strategy_params
             print(
                 "BUY_ACCEPTED",
@@ -401,14 +451,13 @@ class TradingEngine:
                 f"quality_multiplier={quality_multiplier:.2f}",
             )
             self.notifier.send(
-                f"BUY_ACCEPTED {market} {data['1m'][0]['trade_price']} "
-                f"risk_sized_order_krw={int(risk_sized_order_krw)} "
-                f"cash_cap_order_krw={int(cash_cap_order_krw)} "
-                f"base_order_krw={int(base_order_krw)} "
-                f"final_order_krw={int(final_order_krw)} "
-                f"quality_score={quality_score:.3f} "
-                f"quality_bucket={quality_bucket} "
-                f"quality_multiplier={quality_multiplier:.2f}"
+                format_entry_summary(
+                    market=market,
+                    entry_price=float(data["1m"][0]["trade_price"]),
+                    entry_score=float(diagnostics.get("entry_score", 0.0) or 0.0),
+                    quality_bucket=quality_bucket,
+                    final_order_krw=final_order_krw,
+                )
             )
             break
 
@@ -539,7 +588,124 @@ class TradingEngine:
             return
         state.reset_after_full_exit()
         self._position_exit_states.pop(market, None)
+        self._entry_tracking_by_market.pop(market, None)
         self._entry_strategy_params_by_market.pop(market, None)
+
+    def _emit_structured_log(self, event_type: str, **fields) -> None:
+        event = {"type": event_type, **fields}
+        print(json.dumps(event, ensure_ascii=False, sort_keys=True, default=str))
+
+    def _log_entry_diagnostics(
+        self,
+        *,
+        market: str,
+        latest_time: datetime,
+        regime: str,
+        effective_strategy_params: StrategyParams,
+        diagnostics: dict,
+        risk_sized_order_krw: float,
+        cash_cap_order_krw: float,
+        base_order_krw: float,
+        final_order_krw: float,
+        strategy_entry_price: float,
+        stop_price: float,
+        strategy_risk_per_unit: float,
+        quality_score: float,
+        quality_bucket: str,
+        quality_multiplier: float,
+        damping_log: dict | None,
+        regime_diag: dict,
+    ) -> None:
+        self._emit_structured_log(
+            "ENTRY_DIAGNOSTICS",
+            market=market,
+            candle_time=latest_time.isoformat(),
+            regime=regime,
+            strategy=str(getattr(effective_strategy_params, "strategy_name", "")),
+            entry_score=float(diagnostics.get("entry_score", 0.0) or 0.0),
+            quality_score=quality_score,
+            quality_bucket=quality_bucket,
+            quality_multiplier=quality_multiplier,
+            sizing={
+                "risk_sized_order_krw": int(risk_sized_order_krw),
+                "cash_cap_order_krw": int(cash_cap_order_krw),
+                "base_order_krw": int(base_order_krw),
+                "final_order_krw": int(final_order_krw),
+                "entry_price": strategy_entry_price,
+                "stop_price": stop_price,
+                "risk_per_unit": strategy_risk_per_unit,
+            },
+            regime_diagnostics=regime_diag,
+            strategy_diagnostics=diagnostics,
+            market_damping=damping_log or {},
+        )
+
+    def _compute_realized_r(self, *, market: str, current_price: float, avg_buy_price: float) -> float:
+        state = self._position_exit_states.get(market)
+        if state and state.risk_per_unit > 0 and state.entry_price > 0:
+            return (current_price - state.entry_price) / state.risk_per_unit
+        fallback_risk = max(avg_buy_price - (avg_buy_price * self.config.stop_loss_threshold), 0.0)
+        if fallback_risk <= 0:
+            return 0.0
+        return (current_price - avg_buy_price) / fallback_risk
+
+    def _estimate_exit_costs(self, *, market: str, sold_volume: float, current_price: float) -> tuple[float, float]:
+        notional = max(0.0, sold_volume * current_price)
+        fee_estimate = notional * float(self.config.fee_rate)
+        tickers = self.broker.get_ticker(market)
+        bid = ask = 0.0
+        if isinstance(tickers, list) and tickers:
+            bid = self._safe_float(tickers[0].get("bid_price"))
+            ask = self._safe_float(tickers[0].get("ask_price"))
+        rel_spread = ((ask - bid) / current_price) if bid > 0 and ask > 0 and current_price > 0 else 0.0
+        slippage_estimate = notional * max(0.0, rel_spread / 2)
+        return fee_estimate, slippage_estimate
+
+    def _log_exit_diagnostics(
+        self,
+        *,
+        market: str,
+        decision,
+        avg_buy_price: float,
+        current_price: float,
+        sold_volume: float,
+    ) -> None:
+        entry_tracking = self._entry_tracking_by_market.get(market, {})
+        state = self._position_exit_states.get(market)
+        now_at = datetime.now(timezone.utc)
+        entry_time = entry_tracking.get("entry_time")
+        holding_minutes = 0.0
+        if isinstance(entry_time, datetime):
+            holding_minutes = max(0.0, (now_at - entry_time).total_seconds() / 60.0)
+        elif state is not None:
+            holding_minutes = float(max(0, int(state.bars_held)) * max(1, int(self.config.candle_interval)))
+        mfe_r = float(state.highest_r) if state is not None else 0.0
+        lowest_r = float(state.lowest_r) if state is not None else 0.0
+        mae_r = abs(min(0.0, lowest_r))
+        realized_r = self._compute_realized_r(market=market, current_price=current_price, avg_buy_price=avg_buy_price)
+        fee_estimate, slippage_estimate = self._estimate_exit_costs(
+            market=market,
+            sold_volume=sold_volume,
+            current_price=current_price,
+        )
+        self._emit_structured_log(
+            "EXIT_DIAGNOSTICS",
+            market=market,
+            exit_reason=decision.reason,
+            qty_ratio=float(decision.qty_ratio),
+            holding_minutes=holding_minutes,
+            mfe_r=mfe_r,
+            mae_r=mae_r,
+            realized_r=realized_r,
+            fee_estimate_krw=fee_estimate,
+            slippage_estimate_krw=slippage_estimate,
+            entry_score=float(entry_tracking.get("entry_score", 0.0) or 0.0),
+            entry_regime=str(entry_tracking.get("regime", "unknown") or "unknown"),
+            daily_realized_pnl_krw=self._daily_realized_pnl_krw(),
+        )
+
+    def _daily_realized_pnl_krw(self) -> float:
+        return float(getattr(self.risk, "_realized_pnl_today", 0.0))
 
     def _resolve_strategy_params_for_regime(self, base_params: StrategyParams, regime: str) -> StrategyParams:
         overrides = self.config.regime_strategy_overrides(regime)
