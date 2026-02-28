@@ -376,6 +376,7 @@ class BacktestRunnerTest(unittest.TestCase):
         df = pd.read_csv("/tmp/segments.csv")
         self.assertIn("exit_reason_signal_exit", df.columns)
         self.assertIn("exit_reason_trailing_stop", df.columns)
+        self.assertIn("exit_reason_stop_loss_early_bar_share_pct", df.columns)
 
     def test_segment_csv_includes_fail_columns_when_trades_are_zero(self):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2, path="/tmp/not_used_fail.xlsx", segment_report_path="/tmp/segments_fail.csv")

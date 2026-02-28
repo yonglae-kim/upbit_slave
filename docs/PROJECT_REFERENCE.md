@@ -41,7 +41,8 @@ pytest -q
 
 # 최근 1주 백테스트
 python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
-# (산출 CSV에 exit reason별 mean/median/p10 R 컬럼 포함)
+# (산출 CSV에 exit reason별 mean/median/p10 R + 보유 bar 통계 컬럼 포함)
+# (추가 산출: stop_loss/partial_stop_loss 진단 CSV, 기본값 backtest_stop_loss_diagnostics.csv)
 
 # 단계형 Walk-forward 튜닝(진입/청산/레짐/사이징, coarse→fine)
 python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --result-csv testing/optimize_walkforward_results.csv
@@ -80,6 +81,15 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
    - **초기 방어 (`initial_defense`)**: `highest_r < 1.0` && `bars_held < 8` 구간. 손절을 더 엄격하게 적용하고(엔트리 대비 약 `0.85R`), 분할익절은 대기.
    - **중기 관리 (`mid_management`)**: `highest_r >= 1.0` 또는 `bars_held >= 8` 이후. 분할익절 허용 + 본절 이동(브레이크이븐) 활성화.
    - **후기 추적 (`late_trailing`)**: `highest_r >= 2.0` 또는 `bars_held >= 24` 이후. 트레일링 스탑을 강화해 이익 잠금 비중을 높임.
+#### 하드 스탑 기준선 (초기 0.85R 타이트닝 + ATR/swing max 규칙)
+| 구간 | 기준식 | 최종 hard stop 산식 |
+| --- | --- | --- |
+| ATR 모드 기본 | `atr_stop = entry - ATR×atr_stop_mult`, `swing_base = entry_swing_low` | `max(atr_stop, swing_base)` (둘 다 0 이하이면 `entry×stop_loss_threshold`) |
+| 초기 방어 (`initial_defense`) | 기본 스탑 + `entry - 0.85R` | `max(기본 스탑, entry - 0.85R)` |
+| 중기/후기 (`mid/late`) | 기본 스탑 + 본절 가드 | `max(기본 스탑, entry)` (`breakeven_armed` 또는 `highest_r>=1.0`) |
+
+- 따라서 **hard_stop_price가 가장 높아지는 조건은** `mid_management/late_trailing`에서 본절 가드가 활성화되고, ATR/swing 기반 스탑이 엔트리보다 낮을 때입니다(최종값이 `entry_price`로 상향 고정).
+
 3. **전략 신호 청산(`strategy_signal`) 가드**
    - 기존 고정 2R 대신 `entry_regime + bars_held + ATR/risk_per_unit` 조합으로 최소 R 임계값을 동적으로 계산합니다.
    - 고변동/방어적 레짐일수록 요구 R을 높이고, 장기 보유 포지션은 임계값을 완화해 청산 유연성을 높입니다.
@@ -181,3 +191,9 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: candle/entry/exit timestamp timezone 처리 통일. `candle_date_time_utc`/`timestamp` 파싱 결과를 UTC aware `datetime`으로 고정하고, 엔진의 `entry_time`/`latest_time`/`exit_time` 저장 경로 및 `EXIT_DIAGNOSTICS` 계산 구간에 UTC 정규화 가드를 추가.
 - 영향 파일: `core/candle_buffer.py`, `core/engine.py`.
 - 실행/검증 방법 변경 여부: 실행 커맨드 변경 없음. 로그 기반 검증 포인트로 **SELL_ACCEPTED 이후 `EXIT_DIAGNOSTICS` 로그가 정상 출력되고 `TypeError`(naive/aware datetime 연산)가 발생하지 않는지** 확인 필요.
+
+### 변경 요약 (2026-02-28, stop-loss diagnostics 강화)
+- 변경 요약: `PositionOrderPolicy.evaluate`에서 stop 계열 결정 시 `exit_stage/hard_stop_price/entry_price/risk_per_unit/atr_to_risk` 진단값을 함께 반환하고, 백테스트에서 `stop_loss/partial_stop_loss` 이벤트 분포 CSV를 별도 저장하도록 확장. 또한 `exit_reason_r_stats`에 reason별 보유 bar 통계를 추가해 stop_loss의 초기 보유 구간 집중 여부를 확인 가능하게 함.
+- 영향 파일: `core/position_policy.py`, `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: `python -m testing.backtest_runner ...` 실행 시 기본 세그먼트 CSV 외에 stop 이벤트 진단 CSV(`--stop-diagnostics-path`, 기본 `backtest_stop_loss_diagnostics.csv`)가 추가 생성됨.
+

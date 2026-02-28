@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 
 
 @dataclass
@@ -8,6 +9,7 @@ class ExitDecision:
     should_exit: bool
     qty_ratio: float = 0.0
     reason: str = "hold"
+    diagnostics: dict[str, float | str] = field(default_factory=dict)
 
 
 @dataclass
@@ -133,11 +135,25 @@ class PositionOrderPolicy:
         if strategy_partial_enabled and state.breakeven_armed and move_stop_to_breakeven_after_partial:
             hard_stop_price = max(hard_stop_price, state.entry_price)
 
+        atr_to_risk = 0.0
+        if state.risk_per_unit > 0 and current_atr > 0:
+            atr_to_risk = current_atr / state.risk_per_unit
+
+        stop_diagnostics: dict[str, float | str] = {
+            "exit_stage": exit_stage,
+            "hard_stop_price": float(hard_stop_price),
+            "entry_price": float(state.entry_price),
+            "risk_per_unit": float(state.risk_per_unit),
+            "atr_to_risk": float(atr_to_risk),
+            "bars_held": float(max(0, int(state.bars_held))),
+            "highest_r": float(state.highest_r),
+        }
+
         if current_price <= hard_stop_price:
             if not state.partial_take_profit_done and self.partial_stop_loss_ratio < 1.0:
                 state.partial_take_profit_done = True
-                return ExitDecision(True, self.partial_stop_loss_ratio, "partial_stop_loss")
-            return ExitDecision(True, 1.0, "stop_loss")
+                return ExitDecision(True, self.partial_stop_loss_ratio, "partial_stop_loss", diagnostics=stop_diagnostics)
+            return ExitDecision(True, 1.0, "stop_loss", diagnostics=stop_diagnostics)
 
         if strategy_partial_enabled and exit_stage != "initial_defense" and not state.strategy_partial_done:
             target_price = state.entry_price + (state.risk_per_unit * partial_take_profit_r)
