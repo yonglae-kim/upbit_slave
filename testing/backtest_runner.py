@@ -83,6 +83,7 @@ class TradeLedgerEntry:
     mae_r: float = 0.0
     fee_estimate_krw: float = 0.0
     slippage_estimate_krw: float = 0.0
+    exit_bars_held: int = 0
 
 
 @dataclass
@@ -114,6 +115,7 @@ class BacktestRunner:
         sell_decision_rule: str = "or",
         debug_mode: bool = False,
         debug_report_path: str = "backtest_entry_failures.csv",
+        stop_diagnostics_path: str = "backtest_stop_loss_diagnostics.csv",
         zone_profile: str | None = None,
         zone_expiry_bars_5m: int | None = None,
         fvg_min_width_atr_mult: float | None = None,
@@ -156,6 +158,8 @@ class BacktestRunner:
         self.sell_decision_rule = str(sell_decision_rule).lower().strip()
         self.debug_mode = bool(debug_mode)
         self.debug_report_path = debug_report_path
+        self.stop_diagnostics_path = stop_diagnostics_path
+        self.stop_event_rows: list[dict[str, float | int | str]] = []
         self.required_base_bars_for_regime = self._required_base_bars_for_regime()
         self.required_base_bars_for_mtf_minimums = self._required_base_bars_for_mtf_minimums()
         if self.sell_decision_rule not in {"or", "and"}:
@@ -331,8 +335,10 @@ class BacktestRunner:
     @staticmethod
     def _build_exit_reason_r_stats(ledger: list[TradeLedgerEntry]) -> dict[str, dict[str, float]]:
         by_reason: dict[str, list[float]] = {}
+        by_reason_bars_held: dict[str, list[int]] = {}
         for entry in ledger:
             by_reason.setdefault(str(entry.reason), []).append(float(entry.r_multiple))
+            by_reason_bars_held.setdefault(str(entry.reason), []).append(max(0, int(entry.exit_bars_held)))
 
         result: dict[str, dict[str, float]] = {}
         for reason, values in by_reason.items():
@@ -345,6 +351,17 @@ class BacktestRunner:
                 "median": float(median(ordered)),
                 "p10": float(ordered[q10_index]),
             }
+            bars = sorted(by_reason_bars_held.get(reason, []))
+            if bars:
+                early_bar_cut = 8
+                result[reason].update(
+                    {
+                        "bars_held_mean": float(sum(bars) / len(bars)),
+                        "bars_held_median": float(median(bars)),
+                        "bars_held_p75": float(bars[max(0, int((len(bars) - 1) * 0.75))]),
+                        "early_bar_share_pct": float(sum(1 for value in bars if value <= early_bar_cut) / len(bars) * 100.0),
+                    }
+                )
         return result
 
     def _resolve_exit_decision(
@@ -801,6 +818,7 @@ class BacktestRunner:
                     )
                     amount = max(0.0, amount - pre_entry_amount)
             else:
+                position_state.exit_state.bars_held = max(0, int(position_state.exit_state.bars_held)) + 1
                 signal_exit = check_sell(
                     mtf_data,
                     avg_buy_price=position_state.avg_buy_price,
@@ -833,6 +851,20 @@ class BacktestRunner:
                         active_trade["net_exit_cash"] = float(active_trade["net_exit_cash"]) + (gross_notional - exit_fee)
                     normalized_reason = "signal_exit" if decision.reason == "strategy_signal" else decision.reason
                     exit_reason_counts[normalized_reason] += 1
+                    if normalized_reason in {"stop_loss", "partial_stop_loss"}:
+                        stop_diag = {
+                            "segment_id": int(segment_id),
+                            "reason": normalized_reason,
+                            "exit_stage": str(decision.diagnostics.get("exit_stage", "unknown")),
+                            "hard_stop_price": float(decision.diagnostics.get("hard_stop_price", 0.0) or 0.0),
+                            "entry_price": float(decision.diagnostics.get("entry_price", 0.0) or 0.0),
+                            "risk_per_unit": float(decision.diagnostics.get("risk_per_unit", 0.0) or 0.0),
+                            "atr_to_risk": float(decision.diagnostics.get("atr_to_risk", 0.0) or 0.0),
+                            "bars_held": int(float(decision.diagnostics.get("bars_held", 0.0) or 0.0)),
+                            "highest_r": float(decision.diagnostics.get("highest_r", 0.0) or 0.0),
+                            "price_at_exit": float(current_price),
+                        }
+                        self.stop_event_rows.append(stop_diag)
                     if hold_coin <= 0:
                         completed_exit_state = position_state.exit_state
                         hold_coin = 0.0
@@ -865,6 +897,7 @@ class BacktestRunner:
                                     mae_r=abs(min(0.0, float(completed_exit_state.lowest_r))),
                                     fee_estimate_krw=float(active_trade["entry_fee"]) + float(active_trade["exit_fee"]),
                                     slippage_estimate_krw=float(active_trade["invested_cash"]) * self.slippage_rate,
+                                    exit_bars_held=max(0, int(completed_exit_state.bars_held)),
                                 )
                             )
                             print(
@@ -955,6 +988,7 @@ class BacktestRunner:
         )
 
     def run(self):
+        self.stop_event_rows = []
         raw_data, shortage_count = self._load_or_create_data()
         raw_data = self._filter_recent_days(raw_data)
         init_amount = float(self.config.paper_initial_krw)
@@ -1034,6 +1068,9 @@ class BacktestRunner:
                     "exit_reason_stop_loss_mean_r": row.exit_reason_r_stats.get("stop_loss", {}).get("mean", 0.0),
                     "exit_reason_stop_loss_median_r": row.exit_reason_r_stats.get("stop_loss", {}).get("median", 0.0),
                     "exit_reason_stop_loss_p10_r": row.exit_reason_r_stats.get("stop_loss", {}).get("p10", 0.0),
+                    "exit_reason_stop_loss_bars_held_mean": row.exit_reason_r_stats.get("stop_loss", {}).get("bars_held_mean", 0.0),
+                    "exit_reason_stop_loss_bars_held_median": row.exit_reason_r_stats.get("stop_loss", {}).get("bars_held_median", 0.0),
+                    "exit_reason_stop_loss_early_bar_share_pct": row.exit_reason_r_stats.get("stop_loss", {}).get("early_bar_share_pct", 0.0),
                     "exit_reason_trailing_stop_mean_r": row.exit_reason_r_stats.get("trailing_stop", {}).get("mean", 0.0),
                     "exit_reason_trailing_stop_median_r": row.exit_reason_r_stats.get("trailing_stop", {}).get("median", 0.0),
                     "exit_reason_trailing_stop_p10_r": row.exit_reason_r_stats.get("trailing_stop", {}).get("p10", 0.0),
@@ -1043,6 +1080,9 @@ class BacktestRunner:
                     "exit_reason_partial_stop_loss_mean_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("mean", 0.0),
                     "exit_reason_partial_stop_loss_median_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("median", 0.0),
                     "exit_reason_partial_stop_loss_p10_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("p10", 0.0),
+                    "exit_reason_partial_stop_loss_bars_held_mean": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("bars_held_mean", 0.0),
+                    "exit_reason_partial_stop_loss_bars_held_median": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("bars_held_median", 0.0),
+                    "exit_reason_partial_stop_loss_early_bar_share_pct": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("early_bar_share_pct", 0.0),
                     "regime_strong_trend_trades": row.regime_trade_stats.get("strong_trend", {}).get("trades", 0.0),
                     "regime_strong_trend_win_rate": row.regime_trade_stats.get("strong_trend", {}).get("win_rate", 0.0),
                     "regime_strong_trend_expectancy": row.regime_trade_stats.get("strong_trend", {}).get("expectancy", 0.0),
@@ -1080,6 +1120,10 @@ class BacktestRunner:
             df["segment_return_std"] = float(period_returns.std(ddof=0))
             df["segment_return_median"] = float(period_returns.median())
         df.to_csv(self.segment_report_path, index=False)
+
+        stop_diag_df = pd.DataFrame(self.stop_event_rows)
+        if not stop_diag_df.empty:
+            stop_diag_df.to_csv(self.stop_diagnostics_path, index=False)
 
         for row in results:
             if row.trades > 0 or not row.entry_fail_counts:
@@ -1124,6 +1168,8 @@ class BacktestRunner:
         )
         print(f"synthetic shortage candles applied: {shortage_count}")
         print(f"walk-forward segments saved: {self.segment_report_path}")
+        if not stop_diag_df.empty:
+            print(f"stop-loss diagnostics saved: {self.stop_diagnostics_path}")
         if self.debug_mode:
             print(f"entry failure debug saved: {self.debug_report_path}")
         if not abnormal_cagr_rows.empty:
@@ -1149,6 +1195,7 @@ if __name__ == "__main__":
     parser.add_argument("--sell-decision-rule", choices=["or", "and"], default="or")
     parser.add_argument("--debug-mode", action="store_true")
     parser.add_argument("--debug-report-path", default="backtest_entry_failures.csv")
+    parser.add_argument("--stop-diagnostics-path", default="backtest_stop_loss_diagnostics.csv")
     parser.add_argument(
         "--zone-profile",
         choices=["conservative", "balanced", "aggressive", "krw_eth_relaxed"],
@@ -1172,6 +1219,7 @@ if __name__ == "__main__":
         sell_decision_rule=args.sell_decision_rule,
         debug_mode=args.debug_mode,
         debug_report_path=args.debug_report_path,
+        stop_diagnostics_path=args.stop_diagnostics_path,
         zone_profile=args.zone_profile,
         zone_expiry_bars_5m=args.zone_expiry_bars_5m,
         fvg_min_width_atr_mult=args.fvg_min_width_atr_mult,
