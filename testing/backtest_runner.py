@@ -14,6 +14,7 @@ import pandas as pd
 
 import apis
 from core.rsi_bb_reversal_long import evaluate_long_entry
+from core.config import TradingConfig
 from core.config_loader import load_trading_config
 from core.position_policy import ExitDecision, PositionExitState, PositionOrderPolicy
 from core.strategy import check_buy, check_sell, classify_market_regime, debug_entry, preprocess_candles, zone_debug_metrics
@@ -101,6 +102,7 @@ class BacktestRunner:
     MIN_CAGR_OBSERVATION_DAYS = 90
     ABNORMAL_CAGR_THRESHOLD_PCT = 500
     STOP_EXIT_REASONS = {"stop_loss", "partial_stop_loss", "trailing_stop"}
+    EXIT_REASON_R_COMPARE_TARGETS = ("strategy_signal", "trailing_stop", "partial_stop_loss", "stop_loss")
     STOP_RECOVERY_WINDOWS = (3, 5, 10)
 
     def __init__(
@@ -368,7 +370,57 @@ class BacktestRunner:
                         "early_bar_share_pct": float(sum(1 for value in bars if value <= early_bar_cut) / len(bars) * 100.0),
                     }
                 )
+                for hold_bars in range(1, early_bar_cut + 1):
+                    result[reason][f"early_bar_share_{hold_bars}_pct"] = float(
+                        sum(1 for value in bars if value <= hold_bars) / len(bars) * 100.0
+                    )
         return result
+
+    @staticmethod
+    def _build_exit_reason_r_comparison(exit_reason_r_stats: dict[str, dict[str, float]]) -> dict[str, float]:
+        comparison: dict[str, float] = {}
+        for reason in BacktestRunner.EXIT_REASON_R_COMPARE_TARGETS:
+            reason_stats = exit_reason_r_stats.get(reason, {})
+            comparison[f"exit_reason_compare_{reason}_mean_r"] = float(reason_stats.get("mean", 0.0) or 0.0)
+            comparison[f"exit_reason_compare_{reason}_median_r"] = float(reason_stats.get("median", 0.0) or 0.0)
+            comparison[f"exit_reason_compare_{reason}_p10_r"] = float(reason_stats.get("p10", 0.0) or 0.0)
+        return comparison
+
+    def _print_config_default_vs_effective(self) -> None:
+        default_config = TradingConfig(do_not_trading=[])
+        tracked_env_fields = {
+            "stop_loss_threshold": "TRADING_STOP_LOSS_THRESHOLD",
+            "trailing_stop_pct": "TRADING_TRAILING_STOP_PCT",
+            "partial_take_profit_threshold": "TRADING_PARTIAL_TAKE_PROFIT_THRESHOLD",
+            "partial_take_profit_ratio": "TRADING_PARTIAL_TAKE_PROFIT_RATIO",
+            "partial_stop_loss_ratio": "TRADING_PARTIAL_STOP_LOSS_RATIO",
+            "exit_mode": "TRADING_EXIT_MODE",
+            "atr_period": "TRADING_ATR_PERIOD",
+            "atr_stop_mult": "TRADING_ATR_STOP_MULT",
+            "atr_trailing_mult": "TRADING_ATR_TRAILING_MULT",
+            "swing_lookback": "TRADING_SWING_LOOKBACK",
+        }
+
+        overrides: dict[str, dict[str, float | str | bool | int | None]] = {}
+        for field_name, env_key in tracked_env_fields.items():
+            overrides[field_name] = {
+                "default": getattr(default_config, field_name),
+                "effective": getattr(self.config, field_name),
+                "env_key": env_key,
+                "env_raw": os.getenv(env_key),
+                "env_applied": os.getenv(env_key) is not None,
+            }
+        print(
+            json.dumps(
+                {
+                    "type": "BACKTEST_CONFIG_DEFAULT_VS_EFFECTIVE",
+                    "market": self.market,
+                    "config": overrides,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
 
     @classmethod
     def _calc_post_exit_recovery(
@@ -901,7 +953,7 @@ class BacktestRunner:
                         active_trade["gross_exit_notional"] = float(active_trade["gross_exit_notional"]) + gross_notional
                         active_trade["exit_fee"] = float(active_trade["exit_fee"]) + exit_fee
                         active_trade["net_exit_cash"] = float(active_trade["net_exit_cash"]) + (gross_notional - exit_fee)
-                    normalized_reason = "signal_exit" if decision.reason == "strategy_signal" else decision.reason
+                    normalized_reason = str(decision.reason)
                     exit_reason_counts[normalized_reason] += 1
                     if normalized_reason in self.STOP_EXIT_REASONS:
                         stop_diag = {
@@ -963,6 +1015,7 @@ class BacktestRunner:
                                     {
                                         "segment_id": int(segment_id),
                                         "reason": normalized_reason,
+                                        "exit_stage": str(decision.diagnostics.get("exit_stage", "unknown") or "unknown"),
                                         "entry_score": float(active_trade.get("entry_score", 0.0) or 0.0),
                                         "entry_regime": str(active_trade.get("entry_regime", "unknown") or "unknown"),
                                         "bars_held": max(0, int(completed_exit_state.bars_held)),
@@ -976,6 +1029,9 @@ class BacktestRunner:
                                         "type": "EXIT_DIAGNOSTICS",
                                         "market": self.market,
                                         "exit_reason": normalized_reason,
+                                        "reason": normalized_reason,
+                                        "exit_stage": str(decision.diagnostics.get("exit_stage", "unknown") or "unknown"),
+                                        "bars_held_at_exit": max(0, int(completed_exit_state.bars_held)),
                                         "holding_minutes": float(holding_minutes),
                                         "mfe_r": float(completed_exit_state.highest_r),
                                         "mae_r": abs(min(0.0, float(completed_exit_state.lowest_r))),
@@ -1064,6 +1120,7 @@ class BacktestRunner:
     def run(self):
         self.stop_event_rows = []
         self.stop_recovery_rows = []
+        self._print_config_default_vs_effective()
         raw_data, shortage_count = self._load_or_create_data()
         raw_data = self._filter_recent_days(raw_data)
         init_amount = float(self.config.paper_initial_krw)
@@ -1134,13 +1191,17 @@ class BacktestRunner:
             [
                 {
                     "exit_reason_signal_exit": row.exit_reason_counts.get("signal_exit", 0),
+                    "exit_reason_strategy_signal": row.exit_reason_counts.get("strategy_signal", 0),
                     "exit_reason_stop_loss": row.exit_reason_counts.get("stop_loss", 0),
                     "exit_reason_trailing_stop": row.exit_reason_counts.get("trailing_stop", 0),
                     "exit_reason_partial_take_profit": row.exit_reason_counts.get("partial_take_profit", 0),
                     "exit_reason_partial_stop_loss": row.exit_reason_counts.get("partial_stop_loss", 0),
                     "exit_reason_signal_exit_mean_r": row.exit_reason_r_stats.get("signal_exit", {}).get("mean", 0.0),
+                    "exit_reason_strategy_signal_mean_r": row.exit_reason_r_stats.get("strategy_signal", {}).get("mean", 0.0),
                     "exit_reason_signal_exit_median_r": row.exit_reason_r_stats.get("signal_exit", {}).get("median", 0.0),
+                    "exit_reason_strategy_signal_median_r": row.exit_reason_r_stats.get("strategy_signal", {}).get("median", 0.0),
                     "exit_reason_signal_exit_p10_r": row.exit_reason_r_stats.get("signal_exit", {}).get("p10", 0.0),
+                    "exit_reason_strategy_signal_p10_r": row.exit_reason_r_stats.get("strategy_signal", {}).get("p10", 0.0),
                     "exit_reason_stop_loss_mean_r": row.exit_reason_r_stats.get("stop_loss", {}).get("mean", 0.0),
                     "exit_reason_stop_loss_median_r": row.exit_reason_r_stats.get("stop_loss", {}).get("median", 0.0),
                     "exit_reason_stop_loss_p10_r": row.exit_reason_r_stats.get("stop_loss", {}).get("p10", 0.0),
@@ -1159,6 +1220,31 @@ class BacktestRunner:
                     "exit_reason_partial_stop_loss_bars_held_mean": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("bars_held_mean", 0.0),
                     "exit_reason_partial_stop_loss_bars_held_median": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("bars_held_median", 0.0),
                     "exit_reason_partial_stop_loss_early_bar_share_pct": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("early_bar_share_pct", 0.0),
+                    **{
+                        f"exit_reason_strategy_signal_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get("strategy_signal", {}).get(
+                            f"early_bar_share_{bars}_pct", 0.0
+                        )
+                        for bars in range(1, 9)
+                    },
+                    **{
+                        f"exit_reason_trailing_stop_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get("trailing_stop", {}).get(
+                            f"early_bar_share_{bars}_pct", 0.0
+                        )
+                        for bars in range(1, 9)
+                    },
+                    **{
+                        f"exit_reason_partial_stop_loss_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get("partial_stop_loss", {}).get(
+                            f"early_bar_share_{bars}_pct", 0.0
+                        )
+                        for bars in range(1, 9)
+                    },
+                    **{
+                        f"exit_reason_stop_loss_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get("stop_loss", {}).get(
+                            f"early_bar_share_{bars}_pct", 0.0
+                        )
+                        for bars in range(1, 9)
+                    },
+                    **self._build_exit_reason_r_comparison(row.exit_reason_r_stats),
                     "regime_strong_trend_trades": row.regime_trade_stats.get("strong_trend", {}).get("trades", 0.0),
                     "regime_strong_trend_win_rate": row.regime_trade_stats.get("strong_trend", {}).get("win_rate", 0.0),
                     "regime_strong_trend_expectancy": row.regime_trade_stats.get("strong_trend", {}).get("expectancy", 0.0),

@@ -44,11 +44,19 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 # (산출 CSV에 exit reason별 mean/median/p10 R + 보유 bar 통계 컬럼 포함)
 # (추가 산출: stop_loss/partial_stop_loss/trailing_stop 진단 CSV, 기본값 backtest_stop_loss_diagnostics.csv)
 # (추가 산출: stop 청산 후 재상승 진단 CSV, 기본값 backtest_stop_recovery_diagnostics.csv)
+# (로그: BACKTEST_CONFIG_DEFAULT_VS_EFFECTIVE 로 코드 기본값 vs 환경변수 적용값 동시 출력)
 
 # 단계형 Walk-forward 튜닝(진입/청산/레짐/사이징, coarse→fine)
 python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --result-csv testing/optimize_walkforward_results.csv
 # (산출: 결과 CSV + 상위 조합 패턴 문서 testing/optimize_walkforward_patterns.md)
 ```
+
+
+### reason별 조기청산 기여도 확인 절차
+1. 백테스트를 실행하고 표준 출력에서 `BACKTEST_CONFIG_DEFAULT_VS_EFFECTIVE` 로그를 먼저 확인합니다. 특히 `TRADING_PARTIAL_STOP_LOSS_RATIO`의 `default / effective / env_raw / env_applied` 값을 함께 검토해 “코드 기본값 vs 실행값” 혼동을 제거합니다.
+2. `backtest_walkforward_segments.csv`에서 `exit_reason_compare_{strategy_signal,trailing_stop,partial_stop_loss,stop_loss}_{mean,median,p10}_r` 컬럼을 비교해 reason별 R 분포를 한 번에 비교합니다.
+3. 같은 CSV의 `exit_reason_{reason}_early_bar_share_1_pct`~`exit_reason_{reason}_early_bar_share_8_pct`를 확인해 각 reason이 초반(1~8 bars)에서 얼마나 조기 청산에 기여했는지 누적 비율로 판단합니다.
+4. 세부 근거는 `backtest_stop_loss_diagnostics.csv`(stop 이벤트 시점)와 `backtest_stop_recovery_diagnostics.csv`(청산 후 3/5/10 bars 재상승)에서 `reason`, `exit_stage`, `bars_held`, `realized_r`를 교차 검증합니다.
 
 ## 4) 환경변수 핵심 포인트
 - `TRADING_MODE`: `live | paper | dry_run`
@@ -204,3 +212,10 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: 백테스트에서 손절성 청산(`stop_loss`, `partial_stop_loss`, `trailing_stop`) 거래를 식별해 청산 후 N bars(3/5/10) 최대 상승폭(MFE)과 1R 회복 여부를 계산/저장하도록 확장. `entry_regime`, `entry_score`, `bars_held`를 함께 기록해 노이즈 손절 구간 분석이 가능하도록 개선.
 - 영향 파일: `testing/backtest_runner.py`, `testing/test_backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: `python -m testing.backtest_runner ...` 실행 시 별도 재상승 진단 CSV(`--stop-recovery-path`, 기본 `backtest_stop_recovery_diagnostics.csv`)가 추가 생성되고, 세그먼트 CSV에 stop reason별 `mfe_r_3/5/10` 평균 및 `recovered_1r_3/5/10` 비율 컬럼이 포함됨.
+
+
+### 변경 요약 (2026-03-01, reason별 조기청산 기여도/설정 오버라이드 가시화)
+- 변경 요약: 백테스트 거래 로그(`EXIT_DIAGNOSTICS`)에 `reason`, `exit_stage`, `bars_held_at_exit`, `realized_r`를 고정 포함하도록 강화하고, reason별 1~8 bar 조기청산 누적 비율 및 `strategy_signal/trailing_stop/partial_stop_loss/stop_loss`의 평균/중앙값/p10 R 비교 컬럼을 세그먼트 CSV에 추가.
+- 영향 파일: `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 실행 커맨드는 동일. 실행 시 `BACKTEST_CONFIG_DEFAULT_VS_EFFECTIVE` 로그가 추가되어 코드 기본값과 환경변수 적용값(특히 `TRADING_PARTIAL_STOP_LOSS_RATIO`)을 동시에 확인 가능.
+
