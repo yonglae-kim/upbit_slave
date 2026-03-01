@@ -64,6 +64,7 @@ class SegmentResult:
     score_win_rate_q4: float = 0.0
     regime_trade_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     quality_bucket_stats: dict[str, dict[str, float]] = field(default_factory=dict)
+    stop_recovery_stats: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 
@@ -99,6 +100,8 @@ class BacktestRunner:
     MAX_CANDLE_LIMIT = 200
     MIN_CAGR_OBSERVATION_DAYS = 90
     ABNORMAL_CAGR_THRESHOLD_PCT = 500
+    STOP_EXIT_REASONS = {"stop_loss", "partial_stop_loss", "trailing_stop"}
+    STOP_RECOVERY_WINDOWS = (3, 5, 10)
 
     def __init__(
         self,
@@ -116,6 +119,7 @@ class BacktestRunner:
         debug_mode: bool = False,
         debug_report_path: str = "backtest_entry_failures.csv",
         stop_diagnostics_path: str = "backtest_stop_loss_diagnostics.csv",
+        stop_recovery_path: str = "backtest_stop_recovery_diagnostics.csv",
         zone_profile: str | None = None,
         zone_expiry_bars_5m: int | None = None,
         fvg_min_width_atr_mult: float | None = None,
@@ -159,7 +163,9 @@ class BacktestRunner:
         self.debug_mode = bool(debug_mode)
         self.debug_report_path = debug_report_path
         self.stop_diagnostics_path = stop_diagnostics_path
+        self.stop_recovery_path = stop_recovery_path
         self.stop_event_rows: list[dict[str, float | int | str]] = []
+        self.stop_recovery_rows: list[dict[str, float | int | str]] = []
         self.required_base_bars_for_regime = self._required_base_bars_for_regime()
         self.required_base_bars_for_mtf_minimums = self._required_base_bars_for_mtf_minimums()
         if self.sell_decision_rule not in {"or", "and"}:
@@ -363,6 +369,52 @@ class BacktestRunner:
                     }
                 )
         return result
+
+    @classmethod
+    def _calc_post_exit_recovery(
+        cls,
+        *,
+        data_newest: list[dict],
+        exit_index: int,
+        exit_price: float,
+        risk_per_unit: float,
+    ) -> dict[str, float | int]:
+        safe_exit_price = max(0.0, float(exit_price))
+        safe_risk = max(float(risk_per_unit), 0.0)
+        result: dict[str, float | int] = {}
+        for window in cls.STOP_RECOVERY_WINDOWS:
+            start = max(0, int(exit_index) - int(window))
+            forward_bars = data_newest[start:int(exit_index)]
+            max_high = max(
+                (float(bar.get("high_price", bar.get("trade_price", safe_exit_price)) or safe_exit_price) for bar in forward_bars),
+                default=safe_exit_price,
+            )
+            mfe_r = ((max_high - safe_exit_price) / safe_risk) if safe_risk > 0 else 0.0
+            result[f"mfe_r_{window}"] = float(max(0.0, mfe_r))
+            result[f"recovered_1r_{window}"] = int(1 if safe_risk > 0 and max_high >= (safe_exit_price + safe_risk) else 0)
+            result[f"bars_available_{window}"] = int(len(forward_bars))
+        return result
+
+    @classmethod
+    def _build_stop_recovery_stats(cls, rows: list[dict[str, float | int | str]]) -> dict[str, dict[str, float]]:
+        if not rows:
+            return {}
+        df = pd.DataFrame(rows)
+        summary: dict[str, dict[str, float]] = {}
+        for reason in cls.STOP_EXIT_REASONS:
+            subset = df[df["reason"] == reason] if "reason" in df.columns else pd.DataFrame()
+            if subset.empty:
+                continue
+            reason_summary: dict[str, float] = {"count": float(len(subset))}
+            for window in cls.STOP_RECOVERY_WINDOWS:
+                mfe_col = f"mfe_r_{window}"
+                rec_col = f"recovered_1r_{window}"
+                reason_summary[f"mfe_r_{window}_mean"] = float(pd.to_numeric(subset.get(mfe_col, 0.0), errors="coerce").fillna(0.0).mean())
+                reason_summary[f"recovered_1r_{window}_share_pct"] = float(
+                    pd.to_numeric(subset.get(rec_col, 0.0), errors="coerce").fillna(0.0).mean() * 100.0
+                )
+            summary[reason] = reason_summary
+        return summary
 
     def _resolve_exit_decision(
         self,
@@ -851,7 +903,7 @@ class BacktestRunner:
                         active_trade["net_exit_cash"] = float(active_trade["net_exit_cash"]) + (gross_notional - exit_fee)
                     normalized_reason = "signal_exit" if decision.reason == "strategy_signal" else decision.reason
                     exit_reason_counts[normalized_reason] += 1
-                    if normalized_reason in {"stop_loss", "partial_stop_loss"}:
+                    if normalized_reason in self.STOP_EXIT_REASONS:
                         stop_diag = {
                             "segment_id": int(segment_id),
                             "reason": normalized_reason,
@@ -900,6 +952,24 @@ class BacktestRunner:
                                     exit_bars_held=max(0, int(completed_exit_state.bars_held)),
                                 )
                             )
+                            if normalized_reason in self.STOP_EXIT_REASONS:
+                                stop_recovery = self._calc_post_exit_recovery(
+                                    data_newest=data_newest,
+                                    exit_index=current_index,
+                                    exit_price=float(avg_exit_price),
+                                    risk_per_unit=float(completed_exit_state.risk_per_unit),
+                                )
+                                self.stop_recovery_rows.append(
+                                    {
+                                        "segment_id": int(segment_id),
+                                        "reason": normalized_reason,
+                                        "entry_score": float(active_trade.get("entry_score", 0.0) or 0.0),
+                                        "entry_regime": str(active_trade.get("entry_regime", "unknown") or "unknown"),
+                                        "bars_held": max(0, int(completed_exit_state.bars_held)),
+                                        "realized_r": float(r_multiple),
+                                        **stop_recovery,
+                                    }
+                                )
                             print(
                                 json.dumps(
                                     {
@@ -944,6 +1014,9 @@ class BacktestRunner:
         score_win_rates = self._score_win_rates_by_quantile(trade_score_rows)
         regime_trade_stats = self._build_regime_trade_stats(trade_ledger)
         quality_bucket_stats = self._build_quality_bucket_stats(trade_quality_rows)
+        stop_recovery_stats = self._build_stop_recovery_stats(
+            [row for row in self.stop_recovery_rows if int(row.get("segment_id", -1)) == int(segment_id)]
+        )
         return SegmentResult(
             segment_id=segment_id,
             insample_start=oldest,
@@ -985,10 +1058,12 @@ class BacktestRunner:
             score_win_rate_q4=score_win_rates.get("q4", 0.0),
             regime_trade_stats=regime_trade_stats,
             quality_bucket_stats=quality_bucket_stats,
+            stop_recovery_stats=stop_recovery_stats,
         )
 
     def run(self):
         self.stop_event_rows = []
+        self.stop_recovery_rows = []
         raw_data, shortage_count = self._load_or_create_data()
         raw_data = self._filter_recent_days(raw_data)
         init_amount = float(self.config.paper_initial_krw)
@@ -1046,6 +1121,7 @@ class BacktestRunner:
                 score_win_rate_q4=segment.score_win_rate_q4,
                 regime_trade_stats=segment.regime_trade_stats,
                 quality_bucket_stats=segment.quality_bucket_stats,
+                stop_recovery_stats=segment.stop_recovery_stats,
             )
             results.append(segment)
             segment_id += 1
@@ -1101,6 +1177,27 @@ class BacktestRunner:
                     "quality_bucket_high_trades": row.quality_bucket_stats.get("high", {}).get("trades", 0.0),
                     "quality_bucket_high_win_rate": row.quality_bucket_stats.get("high", {}).get("win_rate", 0.0),
                     "quality_bucket_high_expectancy": row.quality_bucket_stats.get("high", {}).get("expectancy", 0.0),
+                    "stop_recovery_stop_loss_count": row.stop_recovery_stats.get("stop_loss", {}).get("count", 0.0),
+                    "stop_recovery_stop_loss_mfe_r_3_mean": row.stop_recovery_stats.get("stop_loss", {}).get("mfe_r_3_mean", 0.0),
+                    "stop_recovery_stop_loss_mfe_r_5_mean": row.stop_recovery_stats.get("stop_loss", {}).get("mfe_r_5_mean", 0.0),
+                    "stop_recovery_stop_loss_mfe_r_10_mean": row.stop_recovery_stats.get("stop_loss", {}).get("mfe_r_10_mean", 0.0),
+                    "stop_recovery_stop_loss_recovered_1r_3_share_pct": row.stop_recovery_stats.get("stop_loss", {}).get("recovered_1r_3_share_pct", 0.0),
+                    "stop_recovery_stop_loss_recovered_1r_5_share_pct": row.stop_recovery_stats.get("stop_loss", {}).get("recovered_1r_5_share_pct", 0.0),
+                    "stop_recovery_stop_loss_recovered_1r_10_share_pct": row.stop_recovery_stats.get("stop_loss", {}).get("recovered_1r_10_share_pct", 0.0),
+                    "stop_recovery_partial_stop_loss_count": row.stop_recovery_stats.get("partial_stop_loss", {}).get("count", 0.0),
+                    "stop_recovery_partial_stop_loss_mfe_r_3_mean": row.stop_recovery_stats.get("partial_stop_loss", {}).get("mfe_r_3_mean", 0.0),
+                    "stop_recovery_partial_stop_loss_mfe_r_5_mean": row.stop_recovery_stats.get("partial_stop_loss", {}).get("mfe_r_5_mean", 0.0),
+                    "stop_recovery_partial_stop_loss_mfe_r_10_mean": row.stop_recovery_stats.get("partial_stop_loss", {}).get("mfe_r_10_mean", 0.0),
+                    "stop_recovery_partial_stop_loss_recovered_1r_3_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_3_share_pct", 0.0),
+                    "stop_recovery_partial_stop_loss_recovered_1r_5_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_5_share_pct", 0.0),
+                    "stop_recovery_partial_stop_loss_recovered_1r_10_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_10_share_pct", 0.0),
+                    "stop_recovery_trailing_stop_count": row.stop_recovery_stats.get("trailing_stop", {}).get("count", 0.0),
+                    "stop_recovery_trailing_stop_mfe_r_3_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_3_mean", 0.0),
+                    "stop_recovery_trailing_stop_mfe_r_5_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_5_mean", 0.0),
+                    "stop_recovery_trailing_stop_mfe_r_10_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_10_mean", 0.0),
+                    "stop_recovery_trailing_stop_recovered_1r_3_share_pct": row.stop_recovery_stats.get("trailing_stop", {}).get("recovered_1r_3_share_pct", 0.0),
+                    "stop_recovery_trailing_stop_recovered_1r_5_share_pct": row.stop_recovery_stats.get("trailing_stop", {}).get("recovered_1r_5_share_pct", 0.0),
+                    "stop_recovery_trailing_stop_recovered_1r_10_share_pct": row.stop_recovery_stats.get("trailing_stop", {}).get("recovered_1r_10_share_pct", 0.0),
                 }
                 for row in results
             ]
@@ -1108,7 +1205,7 @@ class BacktestRunner:
         fail_df = pd.DataFrame([self._build_fail_summary(row.entry_fail_counts) for row in results])
         if not reason_df.empty:
             df = pd.concat(
-                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "regime_trade_stats", "quality_bucket_stats"], errors="ignore"), reason_df],
+                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "regime_trade_stats", "quality_bucket_stats", "stop_recovery_stats"], errors="ignore"), reason_df],
                 axis=1,
             )
         if not fail_df.empty:
@@ -1124,6 +1221,9 @@ class BacktestRunner:
         stop_diag_df = pd.DataFrame(self.stop_event_rows)
         if not stop_diag_df.empty:
             stop_diag_df.to_csv(self.stop_diagnostics_path, index=False)
+        stop_recovery_df = pd.DataFrame(self.stop_recovery_rows)
+        if not stop_recovery_df.empty:
+            stop_recovery_df.to_csv(self.stop_recovery_path, index=False)
 
         for row in results:
             if row.trades > 0 or not row.entry_fail_counts:
@@ -1170,6 +1270,8 @@ class BacktestRunner:
         print(f"walk-forward segments saved: {self.segment_report_path}")
         if not stop_diag_df.empty:
             print(f"stop-loss diagnostics saved: {self.stop_diagnostics_path}")
+        if not stop_recovery_df.empty:
+            print(f"stop recovery diagnostics saved: {self.stop_recovery_path}")
         if self.debug_mode:
             print(f"entry failure debug saved: {self.debug_report_path}")
         if not abnormal_cagr_rows.empty:
@@ -1196,6 +1298,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug-mode", action="store_true")
     parser.add_argument("--debug-report-path", default="backtest_entry_failures.csv")
     parser.add_argument("--stop-diagnostics-path", default="backtest_stop_loss_diagnostics.csv")
+    parser.add_argument("--stop-recovery-path", default="backtest_stop_recovery_diagnostics.csv")
     parser.add_argument(
         "--zone-profile",
         choices=["conservative", "balanced", "aggressive", "krw_eth_relaxed"],
@@ -1220,6 +1323,7 @@ if __name__ == "__main__":
         debug_mode=args.debug_mode,
         debug_report_path=args.debug_report_path,
         stop_diagnostics_path=args.stop_diagnostics_path,
+        stop_recovery_path=args.stop_recovery_path,
         zone_profile=args.zone_profile,
         zone_expiry_bars_5m=args.zone_expiry_bars_5m,
         fvg_min_width_atr_mult=args.fvg_min_width_atr_mult,
