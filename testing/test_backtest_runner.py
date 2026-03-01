@@ -548,5 +548,49 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertFalse(runner.strategy_params.sell_requires_profit)
 
 
+
+    def test_classify_structure_ignore_case_returns_expected_labels(self):
+        runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
+
+        self.assertEqual(
+            runner._classify_structure_ignore_case(
+                stop_mode_long="lower_band",
+                entry_stop_price=95.0,
+                entry_swing_low=94.0,
+                hard_stop_price=96.0,
+                entry_price=100.0,
+                risk_per_unit=5.0,
+            ),
+            "entry_lower_band_mode",
+        )
+        self.assertEqual(
+            runner._classify_structure_ignore_case(
+                stop_mode_long="swing_low",
+                entry_stop_price=95.0,
+                entry_swing_low=95.0,
+                hard_stop_price=101.0,
+                entry_price=100.0,
+                risk_per_unit=5.0,
+            ),
+            "breakeven_or_higher",
+        )
+
+    def test_build_stop_gap_deterioration_stats_splits_large_gap_group(self):
+        rows = [
+            {"pnl": -10000.0, "stop_gap_from_entry_r": 1.2},
+            {"pnl": -5000.0, "stop_gap_from_entry_r": 0.8},
+            {"pnl": 3000.0, "stop_gap_from_entry_r": 0.2},
+            {"pnl": 2000.0, "stop_gap_from_entry_r": 0.1},
+        ]
+
+        stats = BacktestRunner._build_stop_gap_deterioration_stats(rows)
+
+        self.assertGreater(stats.get("large_gap_threshold_r", 0.0), 0.0)
+        self.assertGreaterEqual(stats.get("large_gap_trades", 0.0), 1.0)
+        self.assertIn("large_gap_win_rate", stats)
+        self.assertIn("large_gap_expectancy", stats)
+        self.assertIn("large_gap_avg_loss", stats)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -222,6 +222,23 @@ def _compute_stop_price(candles_oldest: list[dict[str, Any]], lower_band: list[f
     return swing_low
 
 
+def _compute_stop_context(candles_oldest: list[dict[str, Any]], lower_band: list[float], idx: int, stop_mode: str) -> dict[str, float | str]:
+    swing_low = min(_price(c, "low_price") for c in candles_oldest[max(0, idx - 5) : idx + 1])
+    lb = lower_band[idx]
+    if stop_mode == "lower_band":
+        stop_price = lb
+    elif stop_mode == "conservative":
+        stop_price = min(lb, swing_low)
+    else:
+        stop_price = swing_low
+    return {
+        "stop_price": float(stop_price),
+        "stop_mode_long": str(stop_mode),
+        "entry_swing_low": float(swing_low),
+        "entry_lower_band": float(lb),
+    }
+
+
 def _regime_alignment_score(candles_15m_newest: list[dict[str, Any]]) -> float:
     candles = list(reversed(candles_15m_newest))
     if len(candles) < 30:
@@ -324,7 +341,8 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     )
 
     entry_price = _price(candles_oldest[n - 1 if params.entry_mode == "next_open" else eval_idx], "trade_price")
-    stop_price = _compute_stop_price(candles_oldest, bb_low, eval_idx, params.stop_mode_long)
+    stop_context = _compute_stop_context(candles_oldest, bb_low, eval_idx, params.stop_mode_long)
+    stop_price = float(stop_context["stop_price"])
     risk = max(entry_price - stop_price, 1e-9)
     tp_price = entry_price + (risk * params.take_profit_r)
     stop_valid = stop_price < entry_price
@@ -371,6 +389,9 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
         "macd_cross": macd_cross,
         "entry_price": entry_price,
         "stop_price": stop_price,
+        "stop_mode_long": str(stop_context["stop_mode_long"]),
+        "entry_swing_low": float(stop_context["entry_swing_low"]),
+        "entry_lower_band": float(stop_context["entry_lower_band"]),
         "tp_price": tp_price,
         "r_value": risk,
         "stop_valid": stop_valid,

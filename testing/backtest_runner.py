@@ -86,6 +86,9 @@ class TradeLedgerEntry:
     fee_estimate_krw: float = 0.0
     slippage_estimate_krw: float = 0.0
     exit_bars_held: int = 0
+    stop_gap_from_entry: float = 0.0
+    stop_gap_from_entry_r: float = 0.0
+    structure_ignore_case: str = "not_applicable"
 
 
 @dataclass
@@ -168,6 +171,7 @@ class BacktestRunner:
         self.stop_recovery_path = stop_recovery_path
         self.stop_event_rows: list[dict[str, float | int | str]] = []
         self.stop_recovery_rows: list[dict[str, float | int | str]] = []
+        self.stop_gap_trade_rows: list[dict[str, float | int | str]] = []
         self.required_base_bars_for_regime = self._required_base_bars_for_regime()
         self.required_base_bars_for_mtf_minimums = self._required_base_bars_for_mtf_minimums()
         if self.sell_decision_rule not in {"or", "and"}:
@@ -467,6 +471,64 @@ class BacktestRunner:
                 )
             summary[reason] = reason_summary
         return summary
+
+    @staticmethod
+    def _classify_structure_ignore_case(
+        *,
+        stop_mode_long: str,
+        entry_stop_price: float,
+        entry_swing_low: float,
+        hard_stop_price: float,
+        entry_price: float,
+        risk_per_unit: float,
+    ) -> str:
+        mode = str(stop_mode_long or "unknown").strip().lower()
+        if mode == "lower_band":
+            return "entry_lower_band_mode"
+        if hard_stop_price >= entry_price > 0:
+            return "breakeven_or_higher"
+        if risk_per_unit > 0 and hard_stop_price >= (entry_price - (risk_per_unit * 0.85)):
+            return "initial_defense_tightening"
+        if entry_swing_low > 0 and hard_stop_price > entry_swing_low:
+            return "atr_or_policy_overrides_swing"
+        if hard_stop_price > entry_stop_price:
+            return "entry_stop_lifted"
+        return "structure_respected"
+
+    @staticmethod
+    def _build_stop_gap_deterioration_stats(rows: list[dict[str, float | int | str]]) -> dict[str, float]:
+        if not rows:
+            return {}
+        df = pd.DataFrame(rows)
+        if df.empty:
+            return {}
+        df["stop_gap_from_entry_r"] = pd.to_numeric(df.get("stop_gap_from_entry_r", 0.0), errors="coerce").fillna(0.0)
+        df["pnl"] = pd.to_numeric(df.get("pnl", 0.0), errors="coerce").fillna(0.0)
+        df["large_gap"] = False
+
+        positive_gaps = df[df["stop_gap_from_entry_r"] > 0]["stop_gap_from_entry_r"]
+        threshold = float(positive_gaps.quantile(0.75)) if not positive_gaps.empty else 0.0
+        if threshold > 0:
+            df["large_gap"] = df["stop_gap_from_entry_r"] >= threshold
+
+        result: dict[str, float] = {
+            "large_gap_threshold_r": float(threshold),
+            "large_gap_trades": float(df["large_gap"].sum()),
+            "non_large_gap_trades": float((~df["large_gap"]).sum()),
+        }
+
+        for label, mask in (("large_gap", df["large_gap"]), ("non_large_gap", ~df["large_gap"])):
+            subset = df[mask]
+            if subset.empty:
+                result[f"{label}_win_rate"] = 0.0
+                result[f"{label}_expectancy"] = 0.0
+                result[f"{label}_avg_loss"] = 0.0
+                continue
+            losses = subset[subset["pnl"] < 0]["pnl"]
+            result[f"{label}_win_rate"] = float((subset["pnl"] > 0).mean() * 100.0)
+            result[f"{label}_expectancy"] = float(subset["pnl"].mean())
+            result[f"{label}_avg_loss"] = float(losses.mean()) if not losses.empty else 0.0
+        return result
 
     def _resolve_exit_decision(
         self,
@@ -894,6 +956,10 @@ class BacktestRunner:
                         "quality_bucket": quality_bucket,
                         "quality_multiplier": quality_multiplier,
                         "entry_regime": str(position_state.exit_state.entry_regime or "unknown"),
+                        "stop_mode_long": str(entry_eval.diagnostics.get("stop_mode_long", "unknown") or "unknown") if entry_eval else "unknown",
+                        "entry_stop_price": float(entry_eval.diagnostics.get("stop_price", 0.0) or 0.0) if entry_eval else 0.0,
+                        "entry_swing_low": float(entry_eval.diagnostics.get("entry_swing_low", 0.0) or 0.0) if entry_eval else 0.0,
+                        "entry_atr": float(current_atr),
                         "sold_qty": 0.0,
                         "gross_exit_notional": 0.0,
                         "exit_fee": 0.0,
@@ -967,6 +1033,23 @@ class BacktestRunner:
                             "bars_held": int(float(decision.diagnostics.get("bars_held", 0.0) or 0.0)),
                             "highest_r": float(decision.diagnostics.get("highest_r", 0.0) or 0.0),
                             "price_at_exit": float(current_price),
+                            "stop_mode_long": str(active_trade.get("stop_mode_long", "unknown") if active_trade else "unknown"),
+                            "entry_swing_low": float(active_trade.get("entry_swing_low", 0.0) if active_trade else 0.0),
+                            "entry_atr": float(active_trade.get("entry_atr", 0.0) if active_trade else 0.0),
+                            "entry_stop_price": float(active_trade.get("entry_stop_price", 0.0) if active_trade else 0.0),
+                            "stop_gap_from_entry": float((decision.diagnostics.get("hard_stop_price", 0.0) or 0.0) - float(active_trade.get("entry_stop_price", 0.0) if active_trade else 0.0)),
+                            "stop_gap_from_entry_r": float(
+                                ((decision.diagnostics.get("hard_stop_price", 0.0) or 0.0) - float(active_trade.get("entry_stop_price", 0.0) if active_trade else 0.0))
+                                / max(float(decision.diagnostics.get("risk_per_unit", 0.0) or 0.0), 1e-9)
+                            ),
+                            "structure_ignore_case": self._classify_structure_ignore_case(
+                                stop_mode_long=str(active_trade.get("stop_mode_long", "unknown") if active_trade else "unknown"),
+                                entry_stop_price=float(active_trade.get("entry_stop_price", 0.0) if active_trade else 0.0),
+                                entry_swing_low=float(active_trade.get("entry_swing_low", 0.0) if active_trade else 0.0),
+                                hard_stop_price=float(decision.diagnostics.get("hard_stop_price", 0.0) or 0.0),
+                                entry_price=float(decision.diagnostics.get("entry_price", 0.0) or 0.0),
+                                risk_per_unit=float(decision.diagnostics.get("risk_per_unit", 0.0) or 0.0),
+                            ),
                         }
                         self.stop_event_rows.append(stop_diag)
                     if hold_coin <= 0:
@@ -1002,9 +1085,22 @@ class BacktestRunner:
                                     fee_estimate_krw=float(active_trade["entry_fee"]) + float(active_trade["exit_fee"]),
                                     slippage_estimate_krw=float(active_trade["invested_cash"]) * self.slippage_rate,
                                     exit_bars_held=max(0, int(completed_exit_state.bars_held)),
+                                    stop_gap_from_entry=float(stop_diag.get("stop_gap_from_entry", 0.0) if normalized_reason in self.STOP_EXIT_REASONS else 0.0),
+                                    stop_gap_from_entry_r=float(stop_diag.get("stop_gap_from_entry_r", 0.0) if normalized_reason in self.STOP_EXIT_REASONS else 0.0),
+                                    structure_ignore_case=str(stop_diag.get("structure_ignore_case", "not_applicable") if normalized_reason in self.STOP_EXIT_REASONS else "not_applicable"),
                                 )
                             )
                             if normalized_reason in self.STOP_EXIT_REASONS:
+                                self.stop_gap_trade_rows.append(
+                                    {
+                                        "segment_id": int(segment_id),
+                                        "reason": normalized_reason,
+                                        "pnl": float(pnl),
+                                        "stop_gap_from_entry": float(stop_diag.get("stop_gap_from_entry", 0.0)),
+                                        "stop_gap_from_entry_r": float(stop_diag.get("stop_gap_from_entry_r", 0.0)),
+                                        "structure_ignore_case": str(stop_diag.get("structure_ignore_case", "unknown")),
+                                    }
+                                )
                                 stop_recovery = self._calc_post_exit_recovery(
                                     data_newest=data_newest,
                                     exit_index=current_index,
@@ -1120,6 +1216,7 @@ class BacktestRunner:
     def run(self):
         self.stop_event_rows = []
         self.stop_recovery_rows = []
+        self.stop_gap_trade_rows = []
         self._print_config_default_vs_effective()
         raw_data, shortage_count = self._load_or_create_data()
         raw_data = self._filter_recent_days(raw_data)
@@ -1307,6 +1404,7 @@ class BacktestRunner:
         stop_diag_df = pd.DataFrame(self.stop_event_rows)
         if not stop_diag_df.empty:
             stop_diag_df.to_csv(self.stop_diagnostics_path, index=False)
+        stop_gap_stats = self._build_stop_gap_deterioration_stats(self.stop_gap_trade_rows)
         stop_recovery_df = pd.DataFrame(self.stop_recovery_rows)
         if not stop_recovery_df.empty:
             stop_recovery_df.to_csv(self.stop_recovery_path, index=False)
@@ -1356,6 +1454,8 @@ class BacktestRunner:
         print(f"walk-forward segments saved: {self.segment_report_path}")
         if not stop_diag_df.empty:
             print(f"stop-loss diagnostics saved: {self.stop_diagnostics_path}")
+        if stop_gap_stats:
+            print("stop gap deterioration stats:", {k: round(v, 4) for k, v in stop_gap_stats.items()})
         if not stop_recovery_df.empty:
             print(f"stop recovery diagnostics saved: {self.stop_recovery_path}")
         if self.debug_mode:

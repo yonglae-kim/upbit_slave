@@ -83,6 +83,17 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
    - 체결 후 포지션 종료 상태(`PositionExitState`)에 진입가, 초기손절가, risk_per_unit 등을 저장합니다.
 
 ### 청산(SELL)
+
+#### 구조 기반 손절 vs R 기반(정책 기반) 손절 구분
+- **구조 기반 손절(진입 시점)**: `core/rsi_bb_reversal_long.py`의 `_compute_stop_price`에서 `stop_mode_long`(`swing_low`/`conservative`/`lower_band`)으로 초기 손절을 산출합니다. 이 값은 진입 직후 `entry_stop_price`의 기준이 됩니다.
+- **R 기반(정책 기반) 손절(보유 중 관리)**: `core/position_policy.py`의 `PositionOrderPolicy.evaluate`가 `hard_stop_price`를 재평가하며, `initial_defense(0.85R)`, `mid/late 구간 손익분기 상향`, `ATR+스윙 결합` 규칙으로 stop을 단계적으로 끌어올립니다.
+- **구조 정보 무시(또는 약화) 케이스 정의**: 백테스트에서는 아래 케이스를 `structure_ignore_case`로 분류해 stop 진단 CSV에 기록합니다.
+  - `entry_lower_band_mode`: 진입 자체가 구조 저점(`swing_low`)이 아닌 하단밴드 기준
+  - `atr_or_policy_overrides_swing`: 보유 중 정책 stop이 진입 구조 저점보다 위로 올라감
+  - `initial_defense_tightening`: `entry - 0.85R` 방어 규칙이 stop을 상향
+  - `breakeven_or_higher`: 손익분기 이상으로 stop 상향되어 구조 저점 기준이 사실상 비활성화
+  - `structure_respected`: 관리 stop이 진입 구조 기준을 실질적으로 유지
+
 1. **포지션 상태 갱신**
    - 매 사이클마다 `peak_price`, `bars_held`, ATR/스윙로우 참조값을 갱신합니다.
    - `PositionExitState`에 `entry_regime`, `highest_r`, `drawdown_from_peak_r`를 유지해 레짐/성과/되돌림 기반 청산 판단을 수행합니다.
@@ -218,4 +229,9 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: 백테스트 거래 로그(`EXIT_DIAGNOSTICS`)에 `reason`, `exit_stage`, `bars_held_at_exit`, `realized_r`를 고정 포함하도록 강화하고, reason별 1~8 bar 조기청산 누적 비율 및 `strategy_signal/trailing_stop/partial_stop_loss/stop_loss`의 평균/중앙값/p10 R 비교 컬럼을 세그먼트 CSV에 추가.
 - 영향 파일: `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 실행 커맨드는 동일. 실행 시 `BACKTEST_CONFIG_DEFAULT_VS_EFFECTIVE` 로그가 추가되어 코드 기본값과 환경변수 적용값(특히 `TRADING_PARTIAL_STOP_LOSS_RATIO`)을 동시에 확인 가능.
+
+### 변경 요약 (2026-03-01, 구조기반 vs 정책기반 stop 괴리 진단)
+- 변경 요약: 진입 진단에 `stop_mode_long/entry_swing_low/entry_lower_band`를 노출하고, 백테스트 stop 진단 CSV에 `stop_mode_long`, `entry_swing_low`, `entry_atr`, `entry_stop_price`, `hard_stop_price`, `stop_gap_from_entry(_r)`, `structure_ignore_case`를 함께 기록하도록 확장. 또한 큰 stop 괴리 거래군(상위 25% gap-R)과 비-괴리 거래군의 `win_rate/expectancy/avg_loss` 비교 통계를 콘솔에 출력하도록 추가.
+- 영향 파일: `core/rsi_bb_reversal_long.py`, `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: `python -m testing.backtest_runner ...` 실행 커맨드는 동일. `backtest_stop_loss_diagnostics.csv`에 진입/청산 stop 괴리 컬럼이 추가되며, 실행 로그에 `stop gap deterioration stats` 요약이 출력됨.
 
