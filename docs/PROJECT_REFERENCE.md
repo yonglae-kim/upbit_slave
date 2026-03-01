@@ -42,7 +42,8 @@ pytest -q
 # 최근 1주 백테스트
 python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 # (산출 CSV에 exit reason별 mean/median/p10 R + 보유 bar 통계 컬럼 포함)
-# (추가 산출: stop_loss/partial_stop_loss 진단 CSV, 기본값 backtest_stop_loss_diagnostics.csv)
+# (추가 산출: stop_loss/partial_stop_loss/trailing_stop 진단 CSV, 기본값 backtest_stop_loss_diagnostics.csv)
+# (추가 산출: stop 청산 후 재상승 진단 CSV, 기본값 backtest_stop_recovery_diagnostics.csv)
 
 # 단계형 Walk-forward 튜닝(진입/청산/레짐/사이징, coarse→fine)
 python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --result-csv testing/optimize_walkforward_results.csv
@@ -129,6 +130,7 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - **평균 R(Average R)**: `EXIT_DIAGNOSTICS.realized_r` 평균/중앙값, 청산사유별 분해.
 - **손실 꼬리(Loss tail)**: `realized_r` 하위 10%(`p10`), `mae_r` 상위 분위수, `stop_loss`/`trailing_stop` 비중.
 - **온라인-오프라인 일치성**: 동일 기간 `entry_score` 분위수별 승률 및 `quality_bucket` 성과 비교(실거래 로그 vs 백테스트 CSV/로그).
+- **진입 직후 손절 후 재상승 진단 지표**: `backtest_stop_recovery_diagnostics.csv`에서 `reason in {stop_loss, partial_stop_loss, trailing_stop}`만 필터해 N bars(3/5/10) `mfe_r_N` 평균과 `recovered_1r_N` 비율을 확인하고, `entry_regime/entry_score/bars_held` 구간별로 노이즈 손절 집중 여부를 점검.
 
 ## 6) 변경 시 반드시 같이 업데이트할 항목
 코드 변경이 아래 영역에 해당하면 본 문서를 함께 업데이트합니다.
@@ -197,3 +199,8 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 영향 파일: `core/position_policy.py`, `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: `python -m testing.backtest_runner ...` 실행 시 기본 세그먼트 CSV 외에 stop 이벤트 진단 CSV(`--stop-diagnostics-path`, 기본 `backtest_stop_loss_diagnostics.csv`)가 추가 생성됨.
 
+
+### 변경 요약 (2026-02-28, stop re-acceleration diagnostics)
+- 변경 요약: 백테스트에서 손절성 청산(`stop_loss`, `partial_stop_loss`, `trailing_stop`) 거래를 식별해 청산 후 N bars(3/5/10) 최대 상승폭(MFE)과 1R 회복 여부를 계산/저장하도록 확장. `entry_regime`, `entry_score`, `bars_held`를 함께 기록해 노이즈 손절 구간 분석이 가능하도록 개선.
+- 영향 파일: `testing/backtest_runner.py`, `testing/test_backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: `python -m testing.backtest_runner ...` 실행 시 별도 재상승 진단 CSV(`--stop-recovery-path`, 기본 `backtest_stop_recovery_diagnostics.csv`)가 추가 생성되고, 세그먼트 CSV에 stop reason별 `mfe_r_3/5/10` 평균 및 `recovered_1r_3/5/10` 비율 컬럼이 포함됨.

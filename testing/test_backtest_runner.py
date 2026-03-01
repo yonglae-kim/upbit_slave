@@ -377,6 +377,83 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertIn("exit_reason_signal_exit", df.columns)
         self.assertIn("exit_reason_trailing_stop", df.columns)
         self.assertIn("exit_reason_stop_loss_early_bar_share_pct", df.columns)
+        self.assertIn("stop_recovery_stop_loss_mfe_r_3_mean", df.columns)
+        self.assertIn("stop_recovery_trailing_stop_recovered_1r_10_share_pct", df.columns)
+
+    def test_calc_post_exit_recovery_uses_forward_recent_bars(self):
+        data_newest = [
+            {"high_price": 140.0, "trade_price": 140.0},
+            {"high_price": 130.0, "trade_price": 130.0},
+            {"high_price": 125.0, "trade_price": 125.0},
+            {"high_price": 110.0, "trade_price": 110.0},
+            {"high_price": 100.0, "trade_price": 100.0},
+        ]
+
+        stats = BacktestRunner._calc_post_exit_recovery(
+            data_newest=data_newest,
+            exit_index=4,
+            exit_price=100.0,
+            risk_per_unit=10.0,
+        )
+
+        self.assertEqual(stats["bars_available_3"], 3)
+        self.assertAlmostEqual(stats["mfe_r_3"], 3.0)
+        self.assertEqual(stats["recovered_1r_3"], 1)
+
+    def test_run_writes_stop_recovery_csv_when_rows_exist(self):
+        runner = BacktestRunner(
+            buffer_cnt=3,
+            multiple_cnt=2,
+            path="/tmp/not_used_stop_recovery.xlsx",
+            segment_report_path="/tmp/segments_stop_recovery.csv",
+            stop_recovery_path="/tmp/stop_recovery.csv",
+        )
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        candles = [self._candle(base - datetime.timedelta(minutes=i), 100 + i) for i in range(12)]
+
+        with patch.object(runner, "_load_or_create_data", return_value=(candles, 0)):
+            with patch.object(runner, "_run_segment") as run_segment:
+                from testing.backtest_runner import SegmentResult
+
+                def _segment_side_effect(*_args, **_kwargs):
+                    runner.stop_recovery_rows.append(
+                        {
+                            "segment_id": 1,
+                            "reason": "stop_loss",
+                            "entry_score": 1.2,
+                            "entry_regime": "sideways",
+                            "bars_held": 2,
+                            "realized_r": -0.8,
+                            "mfe_r_3": 1.1,
+                            "recovered_1r_3": 1,
+                        }
+                    )
+                    return SegmentResult(
+                        segment_id=1,
+                        insample_start="a",
+                        insample_end="b",
+                        oos_start="c",
+                        oos_end="d",
+                        trades=1,
+                        attempted_entries=1,
+                        candidate_entries=1,
+                        triggered_entries=1,
+                        fill_rate=1.0,
+                        return_pct=1.0,
+                        cagr=1.0,
+                        mdd=1.0,
+                        sharpe=1.0,
+                        exit_reason_counts={"stop_loss": 1},
+                        stop_recovery_stats={"stop_loss": {"count": 1.0, "mfe_r_3_mean": 1.1, "recovered_1r_3_share_pct": 100.0}},
+                    )
+
+                run_segment.side_effect = _segment_side_effect
+                runner.run()
+
+        df = pd.read_csv("/tmp/stop_recovery.csv")
+        self.assertIn("entry_regime", df.columns)
+        self.assertIn("entry_score", df.columns)
+        self.assertIn("bars_held", df.columns)
 
     def test_segment_csv_includes_fail_columns_when_trades_are_zero(self):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2, path="/tmp/not_used_fail.xlsx", segment_report_path="/tmp/segments_fail.csv")
