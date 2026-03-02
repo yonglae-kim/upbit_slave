@@ -85,7 +85,7 @@ TRADING_CONFIG = {
     "macd_fast": 12,
     "macd_slow": 26,
     "macd_signal": 9,
-    "macd_histogram_filter_enabled": False,
+    "macd_histogram_filter_enabled": True,
     "engulfing_strict": True,
     "engulfing_include_wick": False,
     "consecutive_bearish_count": 3,
@@ -119,4 +119,5 @@ TRADING_CONFIG = {
     "move_stop_to_breakeven_after_partial": True,
     "max_hold_bars": 0,
     "strategy_cooldown_bars": 0,
+    "entry_experiment_profile": "baseline",
 }

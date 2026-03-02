@@ -89,6 +89,8 @@ class TradingEngine:
         self.debug_counters: dict[str, int] = {
             "fail_reentry_cooldown": 0,
             "fail_strategy_cooldown": 0,
+            "fail_entry_score_below_threshold": 0,
+            "fail_entry_trigger_fail": 0,
         }
         self._recent_trade_reasons: list[str] = []
         self._trade_reason_log_path = Path("logs/recent_trade_reasons.txt")
@@ -261,6 +263,11 @@ class TradingEngine:
             if str(effective_strategy_params.strategy_name).lower().strip() == "rsi_bb_reversal_long":
                 strategy_entry_result = evaluate_long_entry(data, effective_strategy_params)
                 if not strategy_entry_result.final_pass:
+                    reason = str(getattr(strategy_entry_result, "reason", ""))
+                    if reason == "score_below_threshold":
+                        self.debug_counters["fail_entry_score_below_threshold"] = self.debug_counters.get("fail_entry_score_below_threshold", 0) + 1
+                    elif reason == "trigger_fail":
+                        self.debug_counters["fail_entry_trigger_fail"] = self.debug_counters.get("fail_entry_trigger_fail", 0) + 1
                     continue
             elif not check_buy(data, effective_strategy_params):
                 continue

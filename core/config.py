@@ -28,22 +28,30 @@ REGIME_STRATEGY_PARAM_OVERRIDES: dict[str, dict[str, int | float]] = {
         "rsi_long_threshold": 27.0,
         "bb_std": 2.2,
         "required_trigger_count": 2,
-        "entry_score_threshold": 2.9,
+        "entry_score_threshold": 3.1,
         "take_profit_r": 2.6,
     },
     "weak_trend": {
         "rsi_long_threshold": 30.0,
         "bb_std": 2.0,
         "required_trigger_count": 1,
-        "entry_score_threshold": 2.5,
+        "entry_score_threshold": 2.8,
         "take_profit_r": 2.0,
     },
     "sideways": {
         "rsi_long_threshold": 34.0,
         "bb_std": 1.8,
         "required_trigger_count": 1,
-        "entry_score_threshold": 2.2,
+        "entry_score_threshold": 2.7,
         "take_profit_r": 1.6,
+    },
+}
+
+
+ENTRY_EXPERIMENT_PROFILE_OVERRIDES: dict[str, dict[str, bool | int | float]] = {
+    "baseline": {},
+    "neckline_confirmed": {
+        "require_neckline_break": True,
     },
 }
 
@@ -159,7 +167,7 @@ class TradingConfig:
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal: int = 9
-    macd_histogram_filter_enabled: bool = False
+    macd_histogram_filter_enabled: bool = True
     engulfing_strict: bool = True
     engulfing_include_wick: bool = False
     consecutive_bearish_count: int = 3
@@ -193,6 +201,7 @@ class TradingConfig:
     move_stop_to_breakeven_after_partial: bool = True
     max_hold_bars: int = 0
     strategy_cooldown_bars: int = 0
+    entry_experiment_profile: str = "baseline"
 
     def regime_strategy_overrides(self, regime: str) -> dict[str, int | float]:
         key = str(regime or "").strip().lower()
@@ -217,6 +226,11 @@ class TradingConfig:
             raise ValueError(f"unknown zone_profile '{profile_name}'. valid: {valid_profiles}")
 
         runtime_overrides = {k: v for k, v in (zone_overrides or {}).items() if v is not None}
+        experiment_profile_name = (self.entry_experiment_profile or "baseline").strip().lower()
+        experiment_profile_overrides = ENTRY_EXPERIMENT_PROFILE_OVERRIDES.get(experiment_profile_name)
+        if experiment_profile_overrides is None:
+            valid_profiles = ", ".join(sorted(ENTRY_EXPERIMENT_PROFILE_OVERRIDES))
+            raise ValueError(f"unknown entry_experiment_profile '{experiment_profile_name}'. valid: {valid_profiles}")
 
         base_params = {
 
@@ -307,5 +321,6 @@ class TradingConfig:
 
         }
         base_params.update(profile_overrides)
+        base_params.update(experiment_profile_overrides)
         base_params.update(runtime_overrides)
         return StrategyParams(**base_params)

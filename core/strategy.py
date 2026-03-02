@@ -47,7 +47,7 @@ class StrategyParams:
     min_candles_1m: int = 80
     min_candles_5m: int = 120
     min_candles_15m: int = 120
-    regime_filter_enabled: bool = False
+    regime_filter_enabled: bool = True
     regime_ema_fast: int = 20
     regime_ema_slow: int = 50
     regime_adx_period: int = 14
@@ -65,7 +65,7 @@ class StrategyParams:
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal: int = 9
-    macd_histogram_filter_enabled: bool = False
+    macd_histogram_filter_enabled: bool = True
     engulfing_strict: bool = True
     engulfing_include_wick: bool = False
     consecutive_bearish_count: int = 3
