@@ -84,7 +84,7 @@ class TradingEngine:
         self._entry_started_at_by_market: dict[str, datetime] = {}
         self._entry_strategy_params_by_market: dict[str, StrategyParams] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
-        self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
+        self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str | int | float]] = {}
         self._last_strategy_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
         self.debug_counters: dict[str, int] = {
             "fail_reentry_cooldown": 0,
@@ -190,11 +190,16 @@ class TradingEngine:
                     sold_volume=preflight["order_value"],
                 )
                 if decision.qty_ratio >= 1.0:
-                    self._reset_position_exit_state(market)
+                    exit_state = self._position_exit_states.get(market)
                     latest_candle = data.get("1m", [{}])[0]
                     exit_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
                     exit_time = self._to_utc_aware(exit_time)
-                    self._last_exit_snapshot_by_market[market] = {"time": exit_time, "reason": decision.reason}
+                    self._last_exit_snapshot_by_market[market] = {
+                        "time": exit_time,
+                        "reason": decision.reason,
+                        "entry_regime": str(getattr(exit_state, "entry_regime", "unknown") or "unknown"),
+                    }
+                    self._reset_position_exit_state(market)
                     if decision.reason == "strategy_signal":
                         self._last_strategy_exit_snapshot_by_market[market] = {
                             "time": exit_time,
@@ -255,7 +260,7 @@ class TradingEngine:
             latest_candle = data.get("1m", [{}])[0]
             latest_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
             latest_time = self._to_utc_aware(latest_time)
-            if self._is_reentry_cooldown_active(market, latest_time):
+            if self._is_reentry_cooldown_active(market, latest_time, regime=regime, candles_1m=data.get("1m", [])):
                 self.debug_counters["fail_reentry_cooldown"] = self.debug_counters.get("fail_reentry_cooldown", 0) + 1
                 continue
 
@@ -631,25 +636,80 @@ class TradingEngine:
             return default
 
 
-    def _is_reentry_cooldown_active(self, market: str, now_at: datetime) -> bool:
-        cooldown_bars = max(0, int(self.config.reentry_cooldown_bars))
-        if cooldown_bars <= 0:
-            return False
-
+    def _is_reentry_cooldown_active(
+        self,
+        market: str,
+        now_at: datetime,
+        *,
+        regime: str | None = None,
+        candles_1m: list[dict] | None = None,
+    ) -> bool:
         last_exit = self._last_exit_snapshot_by_market.get(market)
         if not last_exit:
             return False
 
+        profile_overrides = self.config.reentry_cooldown_profile_overrides()
+        cooldown_on_loss_exits_only = bool(profile_overrides.get("cooldown_on_loss_exits_only", self.config.cooldown_on_loss_exits_only))
+
         last_reason = str(last_exit.get("reason", ""))
-        if self.config.cooldown_on_loss_exits_only and last_reason not in {"trailing_stop", "stop_loss"}:
+        if cooldown_on_loss_exits_only and last_reason not in {"trailing_stop", "stop_loss"}:
             return False
 
         last_time = last_exit.get("time")
         if not isinstance(last_time, datetime):
             return False
 
+        effective_regime = str(regime or last_exit.get("entry_regime", "")).strip().lower() or "unknown"
+        static_cooldown_bars = self._resolve_reentry_cooldown_bars(effective_regime)
+        dynamic_cooldown_bars = self._compute_dynamic_reentry_cooldown_bars(candles_1m or [])
+        required_cooldown_bars = max(static_cooldown_bars, dynamic_cooldown_bars)
+        if required_cooldown_bars <= 0:
+            return False
+
         elapsed_bars = self._compute_elapsed_bars(last_time, now_at)
-        return elapsed_bars < cooldown_bars
+        remaining_bars = max(0, required_cooldown_bars - elapsed_bars)
+        is_active = elapsed_bars < required_cooldown_bars
+        self._emit_structured_log(
+            "REENTRY_COOLDOWN_EVAL",
+            market=market,
+            reason=last_reason,
+            regime=effective_regime,
+            elapsed_bars=elapsed_bars,
+            required_bars=required_cooldown_bars,
+            remaining_bars=remaining_bars,
+            static_bars=static_cooldown_bars,
+            dynamic_bars=dynamic_cooldown_bars,
+            active=is_active,
+        )
+        return is_active
+
+    def _resolve_reentry_cooldown_bars(self, regime: str) -> int:
+        base_bars = max(0, int(self.config.reentry_cooldown_bars))
+        overrides = self.config.reentry_cooldown_bars_by_regime if isinstance(self.config.reentry_cooldown_bars_by_regime, dict) else {}
+        regime_key = str(regime or "").strip().lower()
+        override_bars = overrides.get(regime_key)
+        if override_bars is None:
+            return base_bars
+        return max(0, int(override_bars))
+
+    def _compute_dynamic_reentry_cooldown_bars(self, candles_1m: list[dict]) -> int:
+        if not bool(self.config.reentry_dynamic_cooldown_enabled):
+            return 0
+        lookback_bars = max(2, int(self.config.reentry_dynamic_cooldown_lookback_bars))
+        if len(candles_1m) < lookback_bars:
+            return 0
+        atr_period = max(2, int(self.config.reentry_dynamic_cooldown_atr_period))
+        atr_value = self._latest_atr(candles_1m[:lookback_bars], atr_period)
+        last_price = float(candles_1m[0].get("trade_price", 0.0) or 0.0)
+        if atr_value <= 0 or last_price <= 0:
+            return 0
+        atr_ratio = atr_value / last_price
+        base_ratio = max(1e-9, float(self.config.reentry_dynamic_cooldown_base_atr_ratio))
+        scale = max(0.0, float(self.config.reentry_dynamic_cooldown_scale))
+        max_extra_bars = max(0, int(self.config.reentry_dynamic_cooldown_max_extra_bars))
+        volatility_excess = max(0.0, (atr_ratio / base_ratio) - 1.0)
+        extra_bars = int(round(volatility_excess * scale))
+        return min(max_extra_bars, max(0, extra_bars))
 
     def _is_strategy_cooldown_active(self, market: str, now_at: datetime, strategy_params) -> bool:
         cooldown_bars = max(0, int(getattr(strategy_params, "strategy_cooldown_bars", 0)))
