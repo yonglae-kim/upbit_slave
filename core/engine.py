@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 
 from core.candle_buffer import CandleBuffer
 from core.config import TradingConfig
@@ -85,6 +86,8 @@ class TradingEngine:
             "fail_reentry_cooldown": 0,
             "fail_strategy_cooldown": 0,
         }
+        self._recent_trade_reasons: list[str] = []
+        self._trade_reason_log_path = Path("logs/recent_trade_reasons.txt")
 
         if self.ws_client:
             self.ws_client.on_message = self._route_ws_message
@@ -197,6 +200,12 @@ class TradingEngine:
                         realized_r=self._compute_realized_r(market=market, current_price=current_price, avg_buy_price=avg_buy_price),
                         daily_pnl_krw=self._daily_realized_pnl_krw(),
                     )
+                )
+                self._append_trade_reason(
+                    side="SELL",
+                    market=market,
+                    reason=str(decision.reason),
+                    price=current_price,
                 )
 
         self._print_runtime_status(stage="evaluating_entries", portfolio=portfolio)
@@ -461,7 +470,25 @@ class TradingEngine:
                     final_order_krw=final_order_krw,
                 )
             )
+            entry_reason = str(getattr(strategy_entry_result, "reason", "entry_signal")) if strategy_entry_result is not None else "entry_signal"
+            self._append_trade_reason(
+                side="BUY",
+                market=market,
+                reason=entry_reason,
+                price=float(data["1m"][0]["trade_price"]),
+            )
             break
+
+    def _append_trade_reason(self, *, side: str, market: str, reason: str, price: float) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        line = f"{now} | {side} | {market} | price={price:.8f} | reason={reason}"
+        self._recent_trade_reasons.append(line)
+        self._recent_trade_reasons = self._recent_trade_reasons[-10:]
+        try:
+            self._trade_reason_log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._trade_reason_log_path.write_text("\n".join(self._recent_trade_reasons) + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"TRADE_REASON_LOG_WRITE_FAILED path={self._trade_reason_log_path} error={exc}")
 
     def _compute_market_damping_factors(self, ticker: dict, candles_1m: list[dict]) -> tuple[float, float, list[str]]:
         liquidity_factor = 1.0

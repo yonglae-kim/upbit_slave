@@ -235,3 +235,9 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 영향 파일: `core/rsi_bb_reversal_long.py`, `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: `python -m testing.backtest_runner ...` 실행 커맨드는 동일. `backtest_stop_loss_diagnostics.csv`에 진입/청산 stop 괴리 컬럼이 추가되며, 실행 로그에 `stop gap deterioration stats` 요약이 출력됨.
 
+
+
+### 변경 요약 (2026-03-02, 최근 10건 거래 사유 텍스트 로그)
+- 변경 요약: 엔진에서 매수/매도 주문 수락 시점마다 거래 사유를 기록하고, 최근 10건만 유지해 `logs/recent_trade_reasons.txt` 파일로 저장하도록 추가.
+- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 실행 후 `logs/recent_trade_reasons.txt` 파일에서 `BUY/SELL`, `market`, `price`, `reason`을 최근 10건 기준으로 확인 가능.

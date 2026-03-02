@@ -1,5 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import tempfile
 from unittest.mock import patch
 
 from core.config import TradingConfig
@@ -243,6 +245,26 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
         self.assertEqual(broker.cancel_calls, ["open-uuid-1"])
         self.assertEqual(len(broker.buy_calls), 1)
         self.assertIn(":root=open-1", broker.buy_calls[0][2])
+
+    def test_trade_reason_log_keeps_recent_10_records(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
+        engine = TradingEngine(broker, notifier, config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "recent_trade_reasons.txt"
+            engine._trade_reason_log_path = log_path
+
+            for idx in range(12):
+                side = "BUY" if idx % 2 == 0 else "SELL"
+                engine._append_trade_reason(side=side, market="KRW-BTC", reason=f"reason-{idx}", price=1000 + idx)
+
+            self.assertTrue(log_path.exists())
+            lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 10)
+            self.assertIn("reason-2", lines[0])
+            self.assertIn("reason-11", lines[-1])
 
 
 if __name__ == "__main__":
