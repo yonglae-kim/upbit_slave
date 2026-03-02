@@ -98,7 +98,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'macd_fast': 12,\n"
                 "    'macd_slow': 26,\n"
                 "    'macd_signal': 9,\n"
-                "    'macd_histogram_filter_enabled': False,\n"
+                "    'macd_histogram_filter_enabled': True,\n"
                 "    'engulfing_strict': True,\n"
                 "    'engulfing_include_wick': False,\n"
                 "    'consecutive_bearish_count': 3,\n"

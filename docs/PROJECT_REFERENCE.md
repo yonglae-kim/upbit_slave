@@ -267,3 +267,8 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: `PositionOrderPolicy.evaluate`의 트레일링 발동 조건을 강화해 `initial_defense` 구간에서는 트레일링을 비활성화하고 `hard_stop`만 적용하도록 분기했으며, 트레일링은 `breakeven_armed` 또는 `current_price >= entry_price` 게이트(옵션화)와 최소 보유 bar 게이트(`trailing_activation_bars`)를 모두 통과했을 때만 활성화되도록 조정.
 - 영향 파일: `core/position_policy.py`, `core/config.py`, `core/config_loader.py`, `core/engine.py`, `testing/backtest_runner.py`, `config.py`, `testing/test_risk_and_policy.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기존 실행 커맨드는 동일하며, 필요 시 `TRADING_TRAILING_REQUIRES_BREAKEVEN`, `TRADING_TRAILING_ACTIVATION_BARS` 환경변수로 트레일링 게이트를 조정 가능. 회귀 검증 시 stop 계열 거래 사유 로그/진단(`trailing_armed`, `breakeven_armed`, `bars_held`, `trailing_floor_candidate`)을 함께 확인.
+
+### 변경 요약 (2026-03-02, RSI-BB 진입 필터 강화 및 거절 사유 집계)
+- 변경 요약: 시장 레짐별 `entry_score_threshold`를 상향 조정(특히 `sideways`)해 횡보 구간 과잉 진입을 억제했고, `entry_experiment_profile`에 `neckline_confirmed` 실험 프로파일을 추가해 `require_neckline_break=True` 조합을 선택적으로 적용할 수 있게 했습니다. 또한 기본값에서 `macd_histogram_filter_enabled=True`로 전환해 1분봉 노이즈 구간 MACD 히스토그램 방향성 확인을 기본 게이트로 강화했습니다.
+- 영향 파일: `core/config.py`, `core/strategy.py`, `core/rsi_bb_reversal_long.py`, `core/engine.py`, `config.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일합니다. 운영 시 `engine.debug_counters`에서 `fail_entry_score_below_threshold`, `fail_entry_trigger_fail` 누적치를 확인해 진입 거절 사유 통계를 추적할 수 있습니다. `entry_experiment_profile=neckline_confirmed` 적용 시 더블바텀 neckline 돌파 확정 전 진입이 줄어드는지 백테스트/페이퍼에서 비교 검증하세요.

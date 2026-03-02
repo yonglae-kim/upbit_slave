@@ -350,7 +350,7 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     safety_pass = stop_valid and risk_valid
     score_pass = entry_score >= float(params.entry_score_threshold)
 
-    final_pass = safety_pass and score_pass
+    final_pass = filter_pass and setup_pass and trigger_pass and safety_pass and score_pass
 
     diag = {
         "state": {"filter": filter_pass, "setup": setup_pass, "trigger": trigger_pass, "special": special_setup, "safety": safety_pass},
@@ -397,7 +397,16 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
         "stop_valid": stop_valid,
         "risk_valid": risk_valid,
     }
-    reason = "ok" if final_pass else ("safety_fail" if not safety_pass else "score_below_threshold")
+    if final_pass:
+        reason = "ok"
+    elif not filter_pass:
+        reason = "filter_fail"
+    elif not setup_pass or not trigger_pass:
+        reason = "trigger_fail"
+    elif not safety_pass:
+        reason = "safety_fail"
+    else:
+        reason = "score_below_threshold"
     return ReversalSignal(filter_pass, setup_pass, trigger_pass, final_pass, reason, diag)
 
 
