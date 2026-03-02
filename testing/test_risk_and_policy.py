@@ -151,6 +151,9 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertTrue(trailing.should_exit)
         self.assertEqual(trailing.reason, "trailing_stop")
         self.assertEqual(trailing.qty_ratio, 1.0)
+        self.assertIn("hard_stop_price", trailing.diagnostics)
+        self.assertIn("trailing_floor", trailing.diagnostics)
+        self.assertIn("exit_stage", trailing.diagnostics)
 
 
     def test_position_policy_fixed_pct_vs_atr_mode(self):

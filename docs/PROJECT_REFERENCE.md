@@ -243,6 +243,11 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 실행 후 `logs/recent_trade_reasons.txt` 파일에서 `BUY/SELL`, `market`, `price`, `reason`을 최근 10건 기준으로 확인 가능.
 
 ### 변경 요약 (2026-03-02, 거래 사유 로그에 수량/주문금액 필드 확장)
-- 변경 요약: `_append_trade_reason` 시그니처를 확장해 `qty`, `notional_krw`, `qty_ratio`를 선택적으로 기록하도록 변경. 매도 경로에서는 `decision.qty_ratio`, preflight 산출값(`order_value`, `notional`)을 함께 전달하고, 매수 경로에서도 preflight 주문금액(`order_value`)과 추정 수량(`order_value / reference_price`)을 로그에 포함하도록 확장. 로그 포맷은 `qty=... | notional_krw=... | qty_ratio=...` 필드를 고정 포함(`미제공 시 n/a`)하도록 통일.
+- 변경 요약: `_append_trade_reason` 시그니처를 확장해 `qty`, `notional_krw`, `qty_ratio`를 선택적으로 기록하도록 변경. 매도 경로에서는 `decision.qty_ratio`, preflight 산출값(`order_value`, `notional`)을 함께 전달하고, 매수 경로에서도 preflight 주문금액(`order_value`)과 추정 수량(`order_value / reference_price`)을 로그에 포함하도록 확장. 로그 포맷은 `qty=... | notional_krw=... | qty_ratio=...` 필드를 고정 포함(`미제공 시 na`)하도록 통일.
 - 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 실행 커맨드는 동일. `logs/recent_trade_reasons.txt` 확인 시 기존 `price/reason` 외에 `qty/notional_krw/qty_ratio` 필드가 함께 출력되는지 검증 필요.
+
+### 변경 요약 (2026-03-02, stop reason 로그 진단 필드 고정)
+- 변경 요약: `PositionOrderPolicy.evaluate`의 stop 계열 의사결정(`stop_loss`, `partial_stop_loss`, `trailing_stop`)에 `exit_stage`, `hard_stop_price`, `trailing_floor`를 포함한 진단값을 일관되게 담도록 정리하고, 엔진 SELL 경로에서 `decision.diagnostics`를 거래 사유 로그 기록 함수로 전달하도록 확장. `_append_trade_reason`는 stop 계열 reason에 한해 `stop_ref_price`, `stop_gap_pct`를 추가 기록하며 숫자 포맷을 고정(`price/qty/stop_ref_price: 8자리`, `qty_ratio/stop_gap_pct: 4자리`, `없음: na`)하도록 통일.
+- 영향 파일: `core/position_policy.py`, `core/engine.py`, `testing/test_risk_and_policy.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: `python -m unittest testing.test_risk_and_policy testing.test_engine_order_acceptance`로 stop 진단 키 포함 및 stop reason 전용 로그 필드 출력 여부를 검증.

@@ -209,6 +209,7 @@ class TradingEngine:
                     qty=preflight["order_value"],
                     notional_krw=preflight.get("notional"),
                     qty_ratio=decision.qty_ratio,
+                    diagnostics=decision.diagnostics,
                 )
 
         self._print_runtime_status(stage="evaluating_entries", portfolio=portfolio)
@@ -494,15 +495,34 @@ class TradingEngine:
         qty: float | None = None,
         notional_krw: float | None = None,
         qty_ratio: float | None = None,
+        diagnostics: dict[str, float | str] | None = None,
     ) -> None:
+        stop_reasons = {"stop_loss", "partial_stop_loss", "trailing_stop"}
+
+        def _fmt(value: float | int | None, precision: int = 8) -> str:
+            if not isinstance(value, (int, float)):
+                return "na"
+            return f"{float(value):.{precision}f}"
+
         now = datetime.now(timezone.utc).isoformat()
-        qty_text = f"{qty:.8f}" if isinstance(qty, (int, float)) else "n/a"
-        notional_text = f"{notional_krw:.0f}" if isinstance(notional_krw, (int, float)) else "n/a"
-        qty_ratio_text = f"{qty_ratio:.4f}" if isinstance(qty_ratio, (int, float)) else "n/a"
+        qty_text = _fmt(qty)
+        notional_text = _fmt(notional_krw, precision=0)
+        qty_ratio_text = _fmt(qty_ratio, precision=4)
         line = (
             f"{now} | {side} | {market} | price={price:.8f}"
             f" | qty={qty_text} | notional_krw={notional_text} | qty_ratio={qty_ratio_text} | reason={reason}"
         )
+
+        if reason in stop_reasons:
+            stop_diag = diagnostics if isinstance(diagnostics, dict) else {}
+            stop_ref_price = stop_diag.get("hard_stop_price")
+            if not isinstance(stop_ref_price, (int, float)):
+                stop_ref_price = stop_diag.get("trailing_floor")
+            stop_gap_pct = None
+            if isinstance(price, (int, float)) and price > 0 and isinstance(stop_ref_price, (int, float)) and stop_ref_price > 0:
+                stop_gap_pct = ((float(price) - float(stop_ref_price)) / float(stop_ref_price)) * 100.0
+            line += f" | stop_ref_price={_fmt(stop_ref_price)} | stop_gap_pct={_fmt(stop_gap_pct, precision=4)}"
+
         self._recent_trade_reasons.append(line)
         self._recent_trade_reasons = self._recent_trade_reasons[-10:]
         try:

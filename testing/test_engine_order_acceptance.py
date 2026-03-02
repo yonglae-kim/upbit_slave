@@ -272,9 +272,45 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
             lines = log_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), 10)
             self.assertIn("reason-2", lines[0])
-            self.assertIn("qty=n/a | notional_krw=n/a | qty_ratio=n/a", lines[0])
+            self.assertIn("qty=na | notional_krw=na | qty_ratio=na", lines[0])
             self.assertIn("reason-11", lines[-1])
             self.assertIn("qty=0.12345678 | notional_krw=10000 | qty_ratio=0.5000", lines[-1])
+
+    def test_trade_reason_log_adds_stop_fields_only_for_stop_reasons(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
+        engine = TradingEngine(broker, notifier, config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "recent_trade_reasons.txt"
+            engine._trade_reason_log_path = log_path
+
+            engine._append_trade_reason(
+                side="SELL",
+                market="KRW-BTC",
+                reason="stop_loss",
+                price=99.0,
+                diagnostics={
+                    "hard_stop_price": 100.0,
+                    "trailing_floor": 98.0,
+                    "exit_stage": "mid_management",
+                },
+            )
+            engine._append_trade_reason(
+                side="SELL",
+                market="KRW-BTC",
+                reason="strategy_signal",
+                price=101.0,
+                diagnostics={"hard_stop_price": 100.0},
+            )
+
+            lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertIn("reason=stop_loss", lines[0])
+            self.assertIn("stop_ref_price=100.00000000", lines[0])
+            self.assertIn("stop_gap_pct=-1.0000", lines[0])
+            self.assertIn("reason=strategy_signal", lines[1])
+            self.assertNotIn("stop_ref_price=", lines[1])
 
 
 if __name__ == "__main__":

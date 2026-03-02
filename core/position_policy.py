@@ -139,9 +139,19 @@ class PositionOrderPolicy:
         if state.risk_per_unit > 0 and current_atr > 0:
             atr_to_risk = current_atr / state.risk_per_unit
 
+        trailing_floor = 0.0
+        if self.exit_mode == "atr":
+            trailing_floor = self._atr_trailing_floor(state, current_atr)
+        elif self.trailing_stop_pct > 0:
+            trailing_floor = state.peak_price * (1 - self.trailing_stop_pct)
+
+        if trailing_floor > 0 and state.risk_per_unit > 0 and exit_stage == "late_trailing":
+            trailing_floor = max(trailing_floor, state.peak_price - (state.risk_per_unit * 0.7))
+
         stop_diagnostics: dict[str, float | str] = {
             "exit_stage": exit_stage,
             "hard_stop_price": float(hard_stop_price),
+            "trailing_floor": float(trailing_floor),
             "entry_price": float(state.entry_price),
             "risk_per_unit": float(state.risk_per_unit),
             "atr_to_risk": float(atr_to_risk),
@@ -173,17 +183,8 @@ class PositionOrderPolicy:
             state.partial_take_profit_done = True
             return ExitDecision(True, self.partial_take_profit_ratio, "partial_take_profit")
 
-        trailing_floor = 0.0
-        if self.exit_mode == "atr":
-            trailing_floor = self._atr_trailing_floor(state, current_atr)
-        elif self.trailing_stop_pct > 0:
-            trailing_floor = state.peak_price * (1 - self.trailing_stop_pct)
-
-        if trailing_floor > 0 and state.risk_per_unit > 0 and exit_stage == "late_trailing":
-            trailing_floor = max(trailing_floor, state.peak_price - (state.risk_per_unit * 0.7))
-
         if trailing_floor > 0 and current_price <= trailing_floor:
-            return ExitDecision(True, 1.0, "trailing_stop")
+            return ExitDecision(True, 1.0, "trailing_stop", diagnostics=stop_diagnostics)
 
         if signal_exit:
             if strategy_mode and state.risk_per_unit > 0:
