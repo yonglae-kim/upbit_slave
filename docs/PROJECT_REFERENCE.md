@@ -251,3 +251,10 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: `PositionOrderPolicy.evaluate`의 stop 계열 의사결정(`stop_loss`, `partial_stop_loss`, `trailing_stop`)에 `exit_stage`, `hard_stop_price`, `trailing_floor`를 포함한 진단값을 일관되게 담도록 정리하고, 엔진 SELL 경로에서 `decision.diagnostics`를 거래 사유 로그 기록 함수로 전달하도록 확장. `_append_trade_reason`는 stop 계열 reason에 한해 `stop_ref_price`, `stop_gap_pct`를 추가 기록하며 숫자 포맷을 고정(`price/qty/stop_ref_price: 8자리`, `qty_ratio/stop_gap_pct: 4자리`, `없음: na`)하도록 통일.
 - 영향 파일: `core/position_policy.py`, `core/engine.py`, `testing/test_risk_and_policy.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: `python -m unittest testing.test_risk_and_policy testing.test_engine_order_acceptance`로 stop 진단 키 포함 및 stop reason 전용 로그 필드 출력 여부를 검증.
+
+
+### 변경 요약 (2026-03-02, 거래 사유 로그에 포지션 식별자/보유시간 필드 추가)
+- 변경 요약: 엔진에 시장별 포지션 식별자(`entry_order_id` 기반 `position_id`)와 진입 시각 상태 맵을 추가하고, BUY/SELL 거래 사유 로그 공통 필드에 `position_id`를 고정 기록하도록 확장. SELL 로그에는 진입 시각 대비 `holding_seconds`와 `holding_bars`를 함께 포함하고, 완전 청산(`decision.qty_ratio >= 1.0`) 시 관련 상태를 정리하도록 보강.
+- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 실행 커맨드는 동일. `python -m unittest testing.test_engine_order_acceptance` 실행 후 `logs/recent_trade_reasons.txt`에서 `position_id`, `holding_seconds`, `holding_bars` 필드 포함 여부를 확인.
+

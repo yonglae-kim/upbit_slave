@@ -272,9 +272,15 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
             lines = log_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), 10)
             self.assertIn("reason-2", lines[0])
-            self.assertIn("qty=na | notional_krw=na | qty_ratio=na", lines[0])
+            self.assertIn(
+                "qty=na | notional_krw=na | qty_ratio=na | position_id=na | holding_seconds=na | holding_bars=na",
+                lines[0],
+            )
             self.assertIn("reason-11", lines[-1])
-            self.assertIn("qty=0.12345678 | notional_krw=10000 | qty_ratio=0.5000", lines[-1])
+            self.assertIn(
+                "qty=0.12345678 | notional_krw=10000 | qty_ratio=0.5000 | position_id=na | holding_seconds=na | holding_bars=na",
+                lines[-1],
+            )
 
     def test_trade_reason_log_adds_stop_fields_only_for_stop_reasons(self):
         broker = BuyOnlyBroker()
@@ -309,8 +315,39 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
             self.assertIn("reason=stop_loss", lines[0])
             self.assertIn("stop_ref_price=100.00000000", lines[0])
             self.assertIn("stop_gap_pct=-1.0000", lines[0])
+            self.assertIn("position_id=na | holding_seconds=na | holding_bars=na", lines[0])
             self.assertIn("reason=strategy_signal", lines[1])
             self.assertNotIn("stop_ref_price=", lines[1])
+
+    def test_trade_reason_log_includes_position_id_and_holding_fields_for_sell(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
+        engine = TradingEngine(broker, notifier, config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "recent_trade_reasons.txt"
+            engine._trade_reason_log_path = log_path
+            engine._entry_position_id_by_market["KRW-BTC"] = "KRW-BTC:bid:entry-1"
+            engine._entry_started_at_by_market["KRW-BTC"] = datetime.now(timezone.utc) - timedelta(seconds=90)
+
+            engine._append_trade_reason(
+                side="SELL",
+                market="KRW-BTC",
+                reason="strategy_signal",
+                price=101.0,
+                qty=0.1,
+                notional_krw=10100,
+                qty_ratio=1.0,
+                position_id=engine._entry_position_id_by_market["KRW-BTC"],
+                holding_seconds=engine._compute_holding_seconds("KRW-BTC"),
+                holding_bars=engine._compute_holding_bars("KRW-BTC"),
+            )
+
+            line = log_path.read_text(encoding="utf-8").strip()
+            self.assertIn("position_id=KRW-BTC:bid:entry-1", line)
+            self.assertRegex(line, r"holding_seconds=\d+\.\d{3}")
+            self.assertIn("holding_bars=na", line)
 
 
 if __name__ == "__main__":
