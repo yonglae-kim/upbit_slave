@@ -258,13 +258,23 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
 
             for idx in range(12):
                 side = "BUY" if idx % 2 == 0 else "SELL"
-                engine._append_trade_reason(side=side, market="KRW-BTC", reason=f"reason-{idx}", price=1000 + idx)
+                engine._append_trade_reason(
+                    side=side,
+                    market="KRW-BTC",
+                    reason=f"reason-{idx}",
+                    price=1000 + idx,
+                    qty=0.12345678 if idx == 11 else None,
+                    notional_krw=10000 if idx == 11 else None,
+                    qty_ratio=0.5 if idx == 11 else None,
+                )
 
             self.assertTrue(log_path.exists())
             lines = log_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(lines), 10)
             self.assertIn("reason-2", lines[0])
+            self.assertIn("qty=n/a | notional_krw=n/a | qty_ratio=n/a", lines[0])
             self.assertIn("reason-11", lines[-1])
+            self.assertIn("qty=0.12345678 | notional_krw=10000 | qty_ratio=0.5000", lines[-1])
 
 
 if __name__ == "__main__":
