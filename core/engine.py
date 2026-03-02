@@ -70,6 +70,8 @@ class TradingEngine:
             partial_take_profit_threshold=config.partial_take_profit_threshold,
             partial_take_profit_ratio=config.partial_take_profit_ratio,
             partial_stop_loss_ratio=config.partial_stop_loss_ratio,
+            trailing_requires_breakeven=config.trailing_requires_breakeven,
+            trailing_activation_bars=config.trailing_activation_bars,
             exit_mode=config.exit_mode,
             atr_period=config.atr_period,
             atr_stop_mult=config.atr_stop_mult,

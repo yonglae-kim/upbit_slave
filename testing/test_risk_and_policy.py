@@ -154,6 +154,8 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertIn("hard_stop_price", trailing.diagnostics)
         self.assertIn("trailing_floor", trailing.diagnostics)
         self.assertIn("exit_stage", trailing.diagnostics)
+        self.assertIn("trailing_armed", trailing.diagnostics)
+        self.assertIn("breakeven_armed", trailing.diagnostics)
 
 
     def test_position_policy_fixed_pct_vs_atr_mode(self):
@@ -290,6 +292,58 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertTrue(state.breakeven_armed)
         self.assertTrue(breakeven_stop.should_exit)
         self.assertEqual(breakeven_stop.reason, "stop_loss")
+
+    def test_trailing_disabled_during_initial_defense(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            trailing_requires_breakeven=False,
+        )
+        state = PositionExitState(peak_price=103.0, entry_price=100.0, bars_held=1, risk_per_unit=5.0)
+
+        decision = policy.evaluate(state=state, avg_buy_price=100.0, current_price=101.0, signal_exit=False)
+
+        self.assertFalse(decision.should_exit)
+
+    def test_trailing_requires_breakeven_gate(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            trailing_requires_breakeven=True,
+        )
+        state = PositionExitState(peak_price=104.5, entry_price=100.0, bars_held=8, risk_per_unit=5.0)
+
+        blocked = policy.evaluate(state=state, avg_buy_price=100.0, current_price=99.5, signal_exit=False)
+
+        self.assertFalse(blocked.should_exit)
+
+    def test_trailing_activation_bars_gate(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            trailing_requires_breakeven=False,
+            trailing_activation_bars=10,
+        )
+        state = PositionExitState(peak_price=110.0, entry_price=100.0, bars_held=8, risk_per_unit=5.0)
+
+        blocked = policy.evaluate(state=state, avg_buy_price=100.0, current_price=107.0, signal_exit=False)
+        state.bars_held = 10
+        triggered = policy.evaluate(state=state, avg_buy_price=100.0, current_price=107.0, signal_exit=False)
+
+        self.assertFalse(blocked.should_exit)
+        self.assertTrue(triggered.should_exit)
+        self.assertEqual(triggered.reason, "trailing_stop")
+        self.assertEqual(triggered.diagnostics.get("trailing_armed"), 1.0)
+
 
 
 if __name__ == "__main__":

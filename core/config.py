@@ -80,6 +80,8 @@ class TradingConfig:
     partial_take_profit_threshold: float = 1.02
     partial_take_profit_ratio: float = 0.5
     partial_stop_loss_ratio: float = 1.0
+    trailing_requires_breakeven: bool = True
+    trailing_activation_bars: int = 0
     exit_mode: str = "atr"
     atr_period: int = 14
     atr_stop_mult: float = 1.4

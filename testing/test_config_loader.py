@@ -32,6 +32,8 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'partial_take_profit_threshold': 1.02,\n"
                 "    'partial_take_profit_ratio': 0.5,\n"
                 "    'partial_stop_loss_ratio': 1.0,\n"
+                "    'trailing_requires_breakeven': True,\n"
+                "    'trailing_activation_bars': 0,\n"
                 "    'exit_mode': 'atr',\n"
                 "    'atr_period': 14,\n"
                 "    'atr_stop_mult': 1.4,\n"
@@ -196,6 +198,19 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertGreater(strong.get("entry_score_threshold", 0.0), side.get("entry_score_threshold", 0.0))
         self.assertGreater(strong.get("take_profit_r", 0.0), side.get("take_profit_r", 0.0))
+
+
+    def test_trailing_activation_env_overrides(self):
+        os.environ["TRADING_TRAILING_REQUIRES_BREAKEVEN"] = "false"
+        os.environ["TRADING_TRAILING_ACTIVATION_BARS"] = "3"
+        try:
+            config = load_trading_config()
+        finally:
+            del os.environ["TRADING_TRAILING_REQUIRES_BREAKEVEN"]
+            del os.environ["TRADING_TRAILING_ACTIVATION_BARS"]
+
+        self.assertFalse(config.trailing_requires_breakeven)
+        self.assertEqual(config.trailing_activation_bars, 3)
 
     def test_invalid_range_raises(self):
         os.environ["TRADING_BUY_RSI_THRESHOLD"] = "120"

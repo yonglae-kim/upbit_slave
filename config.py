@@ -19,6 +19,8 @@ TRADING_CONFIG = {
     "partial_take_profit_threshold": 1.02,
     "partial_take_profit_ratio": 0.5,
     "partial_stop_loss_ratio": 1.0,
+    "trailing_requires_breakeven": True,
+    "trailing_activation_bars": 0,
     "exit_mode": "atr",
     "atr_period": 14,
     "atr_stop_mult": 1.4,

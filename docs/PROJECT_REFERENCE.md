@@ -262,3 +262,8 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: 기존 `logs/recent_trade_reasons.txt`(최근 10건 유지)는 유지하면서, append 전용 구조화 로그 `logs/trade_reasons.jsonl`를 추가. JSONL 스키마는 `ts, side, market, price, reason, qty, notional_krw, qty_ratio, position_id, holding_seconds, diagnostics`로 고정했으며, 파일이 최대 크기(기본 5MB)를 넘기면 `logs/trade_reasons.YYYYMMDDTHHMMSSZ.jsonl`로 회전 후 새 파일에 이어 기록.
 - 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 운영 확인 시 (1) `tail -n 10 logs/recent_trade_reasons.txt`로 최신 텍스트 10건을 점검하고, (2) `tail -n 5 logs/trade_reasons.jsonl` 또는 `python - <<'PY' ...`로 JSONL 필드 존재/타입(`diagnostics` 객체 포함)을 확인. 로그 파일 시스템 오류 시 콘솔에 `TRADE_REASON_JSONL_LOG_WRITE_FAILED` 경고가 출력됨.
+
+### 변경 요약 (2026-03-02, trailing_floor 활성화 게이트 강화)
+- 변경 요약: `PositionOrderPolicy.evaluate`의 트레일링 발동 조건을 강화해 `initial_defense` 구간에서는 트레일링을 비활성화하고 `hard_stop`만 적용하도록 분기했으며, 트레일링은 `breakeven_armed` 또는 `current_price >= entry_price` 게이트(옵션화)와 최소 보유 bar 게이트(`trailing_activation_bars`)를 모두 통과했을 때만 활성화되도록 조정.
+- 영향 파일: `core/position_policy.py`, `core/config.py`, `core/config_loader.py`, `core/engine.py`, `testing/backtest_runner.py`, `config.py`, `testing/test_risk_and_policy.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기존 실행 커맨드는 동일하며, 필요 시 `TRADING_TRAILING_REQUIRES_BREAKEVEN`, `TRADING_TRAILING_ACTIVATION_BARS` 환경변수로 트레일링 게이트를 조정 가능. 회귀 검증 시 stop 계열 거래 사유 로그/진단(`trailing_armed`, `breakeven_armed`, `bars_held`, `trailing_floor_candidate`)을 함께 확인.
