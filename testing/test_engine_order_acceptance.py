@@ -254,7 +254,9 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "recent_trade_reasons.txt"
+            jsonl_path = Path(tmpdir) / "trade_reasons.jsonl"
             engine._trade_reason_log_path = log_path
+            engine._trade_reason_jsonl_path = jsonl_path
 
             for idx in range(12):
                 side = "BUY" if idx % 2 == 0 else "SELL"
@@ -281,6 +283,26 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
                 "qty=0.12345678 | notional_krw=10000 | qty_ratio=0.5000 | position_id=na | holding_seconds=na | holding_bars=na",
                 lines[-1],
             )
+            jsonl_lines = jsonl_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(jsonl_lines), 12)
+            payload = __import__("json").loads(jsonl_lines[-1])
+            self.assertEqual(
+                sorted(payload.keys()),
+                [
+                    "diagnostics",
+                    "holding_seconds",
+                    "market",
+                    "notional_krw",
+                    "position_id",
+                    "price",
+                    "qty",
+                    "qty_ratio",
+                    "reason",
+                    "side",
+                    "ts",
+                ],
+            )
+            self.assertEqual(payload["reason"], "reason-11")
 
     def test_trade_reason_log_adds_stop_fields_only_for_stop_reasons(self):
         broker = BuyOnlyBroker()
@@ -290,7 +312,9 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "recent_trade_reasons.txt"
+            jsonl_path = Path(tmpdir) / "trade_reasons.jsonl"
             engine._trade_reason_log_path = log_path
+            engine._trade_reason_jsonl_path = jsonl_path
 
             engine._append_trade_reason(
                 side="SELL",
@@ -327,7 +351,9 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "recent_trade_reasons.txt"
+            jsonl_path = Path(tmpdir) / "trade_reasons.jsonl"
             engine._trade_reason_log_path = log_path
+            engine._trade_reason_jsonl_path = jsonl_path
             engine._entry_position_id_by_market["KRW-BTC"] = "KRW-BTC:bid:entry-1"
             engine._entry_started_at_by_market["KRW-BTC"] = datetime.now(timezone.utc) - timedelta(seconds=90)
 
@@ -348,6 +374,38 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
             self.assertIn("position_id=KRW-BTC:bid:entry-1", line)
             self.assertRegex(line, r"holding_seconds=\d+\.\d{3}")
             self.assertIn("holding_bars=na", line)
+
+    def test_trade_reason_jsonl_rotates_when_reaching_max_size(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
+        engine = TradingEngine(broker, notifier, config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            jsonl_path = Path(tmpdir) / "trade_reasons.jsonl"
+            engine._trade_reason_jsonl_path = jsonl_path
+            engine._trade_reason_jsonl_max_bytes = 32
+            jsonl_path.write_text("x" * 40, encoding="utf-8")
+
+            engine._append_trade_reason(side="BUY", market="KRW-BTC", reason="entry_signal", price=100.0)
+
+            rotated_files = list(Path(tmpdir).glob("trade_reasons.*.jsonl"))
+            self.assertEqual(len(rotated_files), 1)
+            self.assertTrue(jsonl_path.exists())
+            self.assertIn('"reason": "entry_signal"', jsonl_path.read_text(encoding="utf-8"))
+
+    def test_trade_reason_jsonl_write_failure_prints_warning(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
+        engine = TradingEngine(broker, notifier, config)
+        engine._trade_reason_jsonl_path = Path("/dev/null/trade_reasons.jsonl")
+
+        with patch("builtins.print") as mock_print:
+            engine._append_trade_reason(side="BUY", market="KRW-BTC", reason="entry_signal", price=100.0)
+
+        printed = "\n".join(" ".join(map(str, call.args)) for call in mock_print.call_args_list)
+        self.assertIn("TRADE_REASON_JSONL_LOG_WRITE_FAILED", printed)
 
 
 if __name__ == "__main__":
