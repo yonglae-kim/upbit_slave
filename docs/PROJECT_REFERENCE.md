@@ -258,3 +258,7 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 실행 커맨드는 동일. `python -m unittest testing.test_engine_order_acceptance` 실행 후 `logs/recent_trade_reasons.txt`에서 `position_id`, `holding_seconds`, `holding_bars` 필드 포함 여부를 확인.
 
+### 변경 요약 (2026-03-02, 거래 사유 JSONL 추가 및 로테이션)
+- 변경 요약: 기존 `logs/recent_trade_reasons.txt`(최근 10건 유지)는 유지하면서, append 전용 구조화 로그 `logs/trade_reasons.jsonl`를 추가. JSONL 스키마는 `ts, side, market, price, reason, qty, notional_krw, qty_ratio, position_id, holding_seconds, diagnostics`로 고정했으며, 파일이 최대 크기(기본 5MB)를 넘기면 `logs/trade_reasons.YYYYMMDDTHHMMSSZ.jsonl`로 회전 후 새 파일에 이어 기록.
+- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 운영 확인 시 (1) `tail -n 10 logs/recent_trade_reasons.txt`로 최신 텍스트 10건을 점검하고, (2) `tail -n 5 logs/trade_reasons.jsonl` 또는 `python - <<'PY' ...`로 JSONL 필드 존재/타입(`diagnostics` 객체 포함)을 확인. 로그 파일 시스템 오류 시 콘솔에 `TRADE_REASON_JSONL_LOG_WRITE_FAILED` 경고가 출력됨.

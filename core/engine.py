@@ -90,6 +90,8 @@ class TradingEngine:
         }
         self._recent_trade_reasons: list[str] = []
         self._trade_reason_log_path = Path("logs/recent_trade_reasons.txt")
+        self._trade_reason_jsonl_path = Path("logs/trade_reasons.jsonl")
+        self._trade_reason_jsonl_max_bytes = 5 * 1024 * 1024
 
         if self.ws_client:
             self.ws_client.on_message = self._route_ws_message
@@ -516,6 +518,7 @@ class TradingEngine:
             return f"{float(value):.{precision}f}"
 
         now = datetime.now(timezone.utc).isoformat()
+        diagnostics_payload = diagnostics if isinstance(diagnostics, dict) else {}
         qty_text = _fmt(qty)
         notional_text = _fmt(notional_krw, precision=0)
         qty_ratio_text = _fmt(qty_ratio, precision=4)
@@ -530,7 +533,7 @@ class TradingEngine:
         )
 
         if reason in stop_reasons:
-            stop_diag = diagnostics if isinstance(diagnostics, dict) else {}
+            stop_diag = diagnostics_payload
             stop_ref_price = stop_diag.get("hard_stop_price")
             if not isinstance(stop_ref_price, (int, float)):
                 stop_ref_price = stop_diag.get("trailing_floor")
@@ -546,6 +549,36 @@ class TradingEngine:
             self._trade_reason_log_path.write_text("\n".join(self._recent_trade_reasons) + "\n", encoding="utf-8")
         except OSError as exc:
             print(f"TRADE_REASON_LOG_WRITE_FAILED path={self._trade_reason_log_path} error={exc}")
+
+        jsonl_payload = {
+            "ts": now,
+            "side": side,
+            "market": market,
+            "price": float(price),
+            "reason": reason,
+            "qty": float(qty) if isinstance(qty, (int, float)) else None,
+            "notional_krw": float(notional_krw) if isinstance(notional_krw, (int, float)) else None,
+            "qty_ratio": float(qty_ratio) if isinstance(qty_ratio, (int, float)) else None,
+            "position_id": None if position_id_text == "na" else position_id_text,
+            "holding_seconds": float(holding_seconds) if isinstance(holding_seconds, (int, float)) else None,
+            "diagnostics": diagnostics_payload,
+        }
+        try:
+            self._trade_reason_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            self._rotate_trade_reason_jsonl_if_needed()
+            with self._trade_reason_jsonl_path.open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps(jsonl_payload, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            print(f"TRADE_REASON_JSONL_LOG_WRITE_FAILED path={self._trade_reason_jsonl_path} error={exc}")
+
+    def _rotate_trade_reason_jsonl_if_needed(self) -> None:
+        if not self._trade_reason_jsonl_path.exists():
+            return
+        if self._trade_reason_jsonl_path.stat().st_size < self._trade_reason_jsonl_max_bytes:
+            return
+        suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        rotated = self._trade_reason_jsonl_path.with_name(f"trade_reasons.{suffix}.jsonl")
+        self._trade_reason_jsonl_path.replace(rotated)
 
     def _compute_market_damping_factors(self, ticker: dict, candles_1m: list[dict]) -> tuple[float, float, list[str]]:
         liquidity_factor = 1.0
