@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -81,8 +82,16 @@ _ENV_KEY_MAP = {
     "regime_adx_min": "TRADING_REGIME_ADX_MIN",
     "regime_slope_lookback": "TRADING_REGIME_SLOPE_LOOKBACK",
     "zone_profile": "TRADING_ZONE_PROFILE",
+    "reentry_cooldown_profile": "TRADING_REENTRY_COOLDOWN_PROFILE",
     "reentry_cooldown_bars": "TRADING_REENTRY_COOLDOWN_BARS",
+    "reentry_cooldown_bars_by_regime": "TRADING_REENTRY_COOLDOWN_BARS_BY_REGIME",
     "cooldown_on_loss_exits_only": "TRADING_COOLDOWN_ON_LOSS_EXITS_ONLY",
+    "reentry_dynamic_cooldown_enabled": "TRADING_REENTRY_DYNAMIC_COOLDOWN_ENABLED",
+    "reentry_dynamic_cooldown_lookback_bars": "TRADING_REENTRY_DYNAMIC_COOLDOWN_LOOKBACK_BARS",
+    "reentry_dynamic_cooldown_atr_period": "TRADING_REENTRY_DYNAMIC_COOLDOWN_ATR_PERIOD",
+    "reentry_dynamic_cooldown_base_atr_ratio": "TRADING_REENTRY_DYNAMIC_COOLDOWN_BASE_ATR_RATIO",
+    "reentry_dynamic_cooldown_scale": "TRADING_REENTRY_DYNAMIC_COOLDOWN_SCALE",
+    "reentry_dynamic_cooldown_max_extra_bars": "TRADING_REENTRY_DYNAMIC_COOLDOWN_MAX_EXTRA_BARS",
     "strategy_name": "TRADING_STRATEGY_NAME",
     "rsi_period": "TRADING_RSI_PERIOD",
     "rsi_long_threshold": "TRADING_RSI_LONG_THRESHOLD",
@@ -153,9 +162,21 @@ def _load_module_config(path: Path) -> dict[str, Any]:
     return copy.deepcopy(config)
 
 
+def _parse_json_like_dict(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ConfigValidationError(f"dict env value must be valid JSON: {value}") from exc
+    if not isinstance(parsed, dict):
+        raise ConfigValidationError(f"dict env value must decode to object: {value}")
+    return parsed
+
+
 def _parse_env_value(key: str, value: str):
     if key in {"do_not_trading", "krw_markets"}:
         return [item.strip() for item in value.split(",") if item.strip()]
+    if key == "reentry_cooldown_bars_by_regime":
+        return _parse_json_like_dict(value)
     if key in {
         "paper_initial_krw",
         "min_order_krw",
@@ -197,6 +218,9 @@ def _parse_env_value(key: str, value: str):
         "regime_adx_period",
         "regime_slope_lookback",
         "reentry_cooldown_bars",
+        "reentry_dynamic_cooldown_lookback_bars",
+        "reentry_dynamic_cooldown_atr_period",
+        "reentry_dynamic_cooldown_max_extra_bars",
         "rsi_period",
         "bb_period",
         "macd_fast",
@@ -210,9 +234,9 @@ def _parse_env_value(key: str, value: str):
         "strategy_cooldown_bars",
     }:
         return int(value)
-    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min", "rsi_long_threshold", "rsi_neutral_low", "rsi_neutral_high", "bb_std", "double_bottom_tolerance_pct", "entry_score_threshold", "rsi_oversold_weight", "bb_touch_weight", "divergence_weight", "macd_cross_weight", "engulfing_weight", "band_deviation_weight", "quality_score_low_threshold", "quality_score_high_threshold", "quality_multiplier_low", "quality_multiplier_mid", "quality_multiplier_high", "quality_multiplier_min_bound", "quality_multiplier_max_bound", "take_profit_r", "partial_take_profit_r", "partial_take_profit_size"}:
+    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min", "rsi_long_threshold", "rsi_neutral_low", "rsi_neutral_high", "bb_std", "double_bottom_tolerance_pct", "entry_score_threshold", "rsi_oversold_weight", "bb_touch_weight", "divergence_weight", "macd_cross_weight", "engulfing_weight", "band_deviation_weight", "quality_score_low_threshold", "quality_score_high_threshold", "quality_multiplier_low", "quality_multiplier_mid", "quality_multiplier_high", "quality_multiplier_min_bound", "quality_multiplier_max_bound", "take_profit_r", "partial_take_profit_r", "partial_take_profit_size", "reentry_dynamic_cooldown_base_atr_ratio", "reentry_dynamic_cooldown_scale"}:
         return float(value)
-    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only", "rsi_neutral_filter_enabled", "macd_histogram_filter_enabled", "engulfing_strict", "engulfing_include_wick", "require_band_reentry_on_second_bottom", "require_neckline_break", "divergence_signal_enabled", "partial_take_profit_enabled", "move_stop_to_breakeven_after_partial", "trailing_requires_breakeven"}:
+    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only", "reentry_dynamic_cooldown_enabled", "rsi_neutral_filter_enabled", "macd_histogram_filter_enabled", "engulfing_strict", "engulfing_include_wick", "require_band_reentry_on_second_bottom", "require_neckline_break", "divergence_signal_enabled", "partial_take_profit_enabled", "move_stop_to_breakeven_after_partial", "trailing_requires_breakeven"}:
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return value
 
@@ -299,8 +323,16 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "regime_adx_period": int,
         "regime_adx_min": (int, float),
         "regime_slope_lookback": int,
+        "reentry_cooldown_profile": str,
         "reentry_cooldown_bars": int,
+        "reentry_cooldown_bars_by_regime": dict,
         "cooldown_on_loss_exits_only": bool,
+        "reentry_dynamic_cooldown_enabled": bool,
+        "reentry_dynamic_cooldown_lookback_bars": int,
+        "reentry_dynamic_cooldown_atr_period": int,
+        "reentry_dynamic_cooldown_base_atr_ratio": (int, float),
+        "reentry_dynamic_cooldown_scale": (int, float),
+        "reentry_dynamic_cooldown_max_extra_bars": int,
         "strategy_cooldown_bars": int,
         "strategy_name": str,
         "rsi_period": int,
@@ -481,6 +513,25 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("regime_adx_min must be >= 0")
     if config["reentry_cooldown_bars"] < 0:
         raise ConfigValidationError("reentry_cooldown_bars must be >= 0")
+    if config["reentry_cooldown_profile"] not in {"legacy", "loss_exit_guarded"}:
+        raise ConfigValidationError("reentry_cooldown_profile must be one of: legacy, loss_exit_guarded")
+    if not isinstance(config["reentry_cooldown_bars_by_regime"], dict):
+        raise ConfigValidationError("reentry_cooldown_bars_by_regime must be a dict")
+    for regime_key, cooldown_value in config["reentry_cooldown_bars_by_regime"].items():
+        if str(regime_key).strip().lower() not in {"strong_trend", "weak_trend", "sideways"}:
+            raise ConfigValidationError("reentry_cooldown_bars_by_regime keys must be one of: strong_trend, weak_trend, sideways")
+        if int(cooldown_value) < 0:
+            raise ConfigValidationError("reentry_cooldown_bars_by_regime values must be >= 0")
+    if config["reentry_dynamic_cooldown_lookback_bars"] <= 1:
+        raise ConfigValidationError("reentry_dynamic_cooldown_lookback_bars must be > 1")
+    if config["reentry_dynamic_cooldown_atr_period"] <= 1:
+        raise ConfigValidationError("reentry_dynamic_cooldown_atr_period must be > 1")
+    if config["reentry_dynamic_cooldown_base_atr_ratio"] <= 0:
+        raise ConfigValidationError("reentry_dynamic_cooldown_base_atr_ratio must be > 0")
+    if config["reentry_dynamic_cooldown_scale"] < 0:
+        raise ConfigValidationError("reentry_dynamic_cooldown_scale must be >= 0")
+    if config["reentry_dynamic_cooldown_max_extra_bars"] < 0:
+        raise ConfigValidationError("reentry_dynamic_cooldown_max_extra_bars must be >= 0")
 
     if config["strategy_name"] not in {"sr_ob_fvg", "rsi_bb_reversal_long"}:
         raise ConfigValidationError("strategy_name must be one of: sr_ob_fvg, rsi_bb_reversal_long")

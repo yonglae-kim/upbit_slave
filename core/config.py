@@ -56,6 +56,16 @@ ENTRY_EXPERIMENT_PROFILE_OVERRIDES: dict[str, dict[str, bool | int | float]] = {
 }
 
 
+REENTRY_COOLDOWN_PROFILE_OVERRIDES: dict[str, dict[str, bool]] = {
+    "legacy": {
+        "cooldown_on_loss_exits_only": False,
+    },
+    "loss_exit_guarded": {
+        "cooldown_on_loss_exits_only": True,
+    },
+}
+
+
 WALKFORWARD_DEFAULT_UPDATE_CRITERIA: dict[str, float | int] = {
     "min_oos_trades": 8,
     "min_oos_win_rate": 38.0,
@@ -153,8 +163,16 @@ class TradingConfig:
     regime_adx_min: float = 18.0
     regime_slope_lookback: int = 3
     zone_profile: str = "aggressive"
+    reentry_cooldown_profile: str = "loss_exit_guarded"
     reentry_cooldown_bars: int = 10
-    cooldown_on_loss_exits_only: bool = False
+    reentry_cooldown_bars_by_regime: dict[str, int] = field(default_factory=lambda: {"sideways": 14})
+    cooldown_on_loss_exits_only: bool = True
+    reentry_dynamic_cooldown_enabled: bool = True
+    reentry_dynamic_cooldown_lookback_bars: int = 20
+    reentry_dynamic_cooldown_atr_period: int = 14
+    reentry_dynamic_cooldown_base_atr_ratio: float = 0.008
+    reentry_dynamic_cooldown_scale: float = 2.5
+    reentry_dynamic_cooldown_max_extra_bars: int = 8
     strategy_name: str = "sr_ob_fvg"
     rsi_period: int = 14
     rsi_long_threshold: float = 30.0
@@ -206,6 +224,14 @@ class TradingConfig:
     def regime_strategy_overrides(self, regime: str) -> dict[str, int | float]:
         key = str(regime or "").strip().lower()
         return dict(REGIME_STRATEGY_PARAM_OVERRIDES.get(key, {}))
+
+    def reentry_cooldown_profile_overrides(self) -> dict[str, bool]:
+        key = str(self.reentry_cooldown_profile or "legacy").strip().lower()
+        overrides = REENTRY_COOLDOWN_PROFILE_OVERRIDES.get(key)
+        if overrides is None:
+            valid_profiles = ", ".join(sorted(REENTRY_COOLDOWN_PROFILE_OVERRIDES))
+            raise ValueError(f"unknown reentry_cooldown_profile '{key}'. valid: {valid_profiles}")
+        return dict(overrides)
 
     @property
     def min_effective_buyable_krw(self) -> int:

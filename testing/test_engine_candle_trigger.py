@@ -132,6 +132,71 @@ class TradingEngineCandleTriggerTest(unittest.TestCase):
         self.assertTrue(blocked)
         self.assertFalse(allowed)
 
+
+    def test_reentry_cooldown_uses_sideways_regime_override(self):
+        broker = TriggerBroker()
+        config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=["KRW-BTC"],
+            reentry_cooldown_bars=2,
+            reentry_cooldown_bars_by_regime={"sideways": 5},
+            reentry_dynamic_cooldown_enabled=False,
+        )
+        engine = TradingEngine(broker, DummyNotifier(), config)
+        engine._last_exit_snapshot_by_market["KRW-BTC"] = {
+            "time": datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc),
+            "reason": "stop_loss",
+            "entry_regime": "sideways",
+        }
+
+        blocked = engine._is_reentry_cooldown_active(
+            "KRW-BTC",
+            datetime(2024, 1, 1, 0, 3, tzinfo=timezone.utc),
+            regime="sideways",
+            candles_1m=broker._candles[1],
+        )
+        self.assertTrue(blocked)
+
+    def test_reentry_cooldown_dynamic_volatility_extends_block(self):
+        broker = TriggerBroker()
+        volatile = []
+        for idx in range(30):
+            price = 10000.0 + idx
+            volatile.append(
+                {
+                    "candle_date_time_utc": f"2024-01-01T00:{idx:02d}:00",
+                    "trade_price": price,
+                    "high_price": price + 300.0,
+                    "low_price": price - 300.0,
+                }
+            )
+        broker._candles[1] = list(reversed(volatile))
+
+        config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=["KRW-BTC"],
+            reentry_cooldown_bars=1,
+            reentry_dynamic_cooldown_enabled=True,
+            reentry_dynamic_cooldown_lookback_bars=20,
+            reentry_dynamic_cooldown_base_atr_ratio=0.005,
+            reentry_dynamic_cooldown_scale=3.0,
+            reentry_dynamic_cooldown_max_extra_bars=6,
+        )
+        engine = TradingEngine(broker, DummyNotifier(), config)
+        engine._last_exit_snapshot_by_market["KRW-BTC"] = {
+            "time": datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc),
+            "reason": "stop_loss",
+            "entry_regime": "weak_trend",
+        }
+
+        blocked = engine._is_reentry_cooldown_active(
+            "KRW-BTC",
+            datetime(2024, 1, 1, 0, 2, tzinfo=timezone.utc),
+            regime="weak_trend",
+            candles_1m=broker._candles[1],
+        )
+        self.assertTrue(blocked)
+
     def test_strategy_exit_snapshot_is_recorded_for_strategy_signal_only(self):
         broker = TimeStopBroker()
         config = TradingConfig(
