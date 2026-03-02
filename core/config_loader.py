@@ -29,6 +29,8 @@ _ENV_KEY_MAP = {
     "partial_take_profit_threshold": "TRADING_PARTIAL_TAKE_PROFIT_THRESHOLD",
     "partial_take_profit_ratio": "TRADING_PARTIAL_TAKE_PROFIT_RATIO",
     "partial_stop_loss_ratio": "TRADING_PARTIAL_STOP_LOSS_RATIO",
+    "trailing_requires_breakeven": "TRADING_TRAILING_REQUIRES_BREAKEVEN",
+    "trailing_activation_bars": "TRADING_TRAILING_ACTIVATION_BARS",
     "exit_mode": "TRADING_EXIT_MODE",
     "atr_period": "TRADING_ATR_PERIOD",
     "atr_stop_mult": "TRADING_ATR_STOP_MULT",
@@ -163,6 +165,7 @@ def _parse_env_value(key: str, value: str):
         "min_buyable_krw",
         "max_concurrent_positions",
         "max_correlated_positions",
+        "trailing_activation_bars",
         "atr_period",
         "swing_lookback",
         "candle_interval",
@@ -209,7 +212,7 @@ def _parse_env_value(key: str, value: str):
         return int(value)
     if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min", "rsi_long_threshold", "rsi_neutral_low", "rsi_neutral_high", "bb_std", "double_bottom_tolerance_pct", "entry_score_threshold", "rsi_oversold_weight", "bb_touch_weight", "divergence_weight", "macd_cross_weight", "engulfing_weight", "band_deviation_weight", "quality_score_low_threshold", "quality_score_high_threshold", "quality_multiplier_low", "quality_multiplier_mid", "quality_multiplier_high", "quality_multiplier_min_bound", "quality_multiplier_max_bound", "take_profit_r", "partial_take_profit_r", "partial_take_profit_size"}:
         return float(value)
-    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only", "rsi_neutral_filter_enabled", "macd_histogram_filter_enabled", "engulfing_strict", "engulfing_include_wick", "require_band_reentry_on_second_bottom", "require_neckline_break", "divergence_signal_enabled", "partial_take_profit_enabled", "move_stop_to_breakeven_after_partial"}:
+    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only", "rsi_neutral_filter_enabled", "macd_histogram_filter_enabled", "engulfing_strict", "engulfing_include_wick", "require_band_reentry_on_second_bottom", "require_neckline_break", "divergence_signal_enabled", "partial_take_profit_enabled", "move_stop_to_breakeven_after_partial", "trailing_requires_breakeven"}:
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return value
 
@@ -245,6 +248,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "partial_take_profit_threshold": (int, float),
         "partial_take_profit_ratio": (int, float),
         "partial_stop_loss_ratio": (int, float),
+        "trailing_requires_breakeven": bool,
+        "trailing_activation_bars": int,
         "exit_mode": str,
         "atr_period": int,
         "atr_stop_mult": (int, float),
@@ -424,6 +429,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("partial_take_profit_ratio must be in [0, 1]")
     if not 0 <= config["partial_stop_loss_ratio"] <= 1:
         raise ConfigValidationError("partial_stop_loss_ratio must be in [0, 1]")
+    if config["trailing_activation_bars"] < 0:
+        raise ConfigValidationError("trailing_activation_bars must be >= 0")
     if config["exit_mode"] not in {"fixed_pct", "atr"}:
         raise ConfigValidationError("exit_mode must be one of: fixed_pct, atr")
     if config["atr_stop_mult"] <= 0:

@@ -53,6 +53,8 @@ class PositionOrderPolicy:
         atr_stop_mult: float = 2.0,
         atr_trailing_mult: float = 1.0,
         swing_lookback: int = 5,
+        trailing_requires_breakeven: bool = True,
+        trailing_activation_bars: int = 0,
     ):
         self.stop_loss_threshold = float(stop_loss_threshold)
         self.trailing_stop_pct = max(0.0, float(trailing_stop_pct))
@@ -64,6 +66,8 @@ class PositionOrderPolicy:
         self.atr_stop_mult = max(0.0, float(atr_stop_mult))
         self.atr_trailing_mult = max(0.0, float(atr_trailing_mult))
         self.swing_lookback = max(1, int(swing_lookback))
+        self.trailing_requires_breakeven = bool(trailing_requires_breakeven)
+        self.trailing_activation_bars = max(0, int(trailing_activation_bars))
 
     def evaluate(
         self,
@@ -139,24 +143,38 @@ class PositionOrderPolicy:
         if state.risk_per_unit > 0 and current_atr > 0:
             atr_to_risk = current_atr / state.risk_per_unit
 
-        trailing_floor = 0.0
+        trailing_floor_candidate = 0.0
         if self.exit_mode == "atr":
-            trailing_floor = self._atr_trailing_floor(state, current_atr)
+            trailing_floor_candidate = self._atr_trailing_floor(state, current_atr)
         elif self.trailing_stop_pct > 0:
-            trailing_floor = state.peak_price * (1 - self.trailing_stop_pct)
+            trailing_floor_candidate = state.peak_price * (1 - self.trailing_stop_pct)
 
-        if trailing_floor > 0 and state.risk_per_unit > 0 and exit_stage == "late_trailing":
-            trailing_floor = max(trailing_floor, state.peak_price - (state.risk_per_unit * 0.7))
+        if trailing_floor_candidate > 0 and state.risk_per_unit > 0 and exit_stage == "late_trailing":
+            trailing_floor_candidate = max(trailing_floor_candidate, state.peak_price - (state.risk_per_unit * 0.7))
+
+        trailing_gate_by_profit = (not self.trailing_requires_breakeven) or state.breakeven_armed or current_price >= state.entry_price
+        trailing_gate_by_bars = max(0, int(state.bars_held)) >= self.trailing_activation_bars
+        trailing_armed = (
+            exit_stage != "initial_defense"
+            and trailing_gate_by_profit
+            and trailing_gate_by_bars
+        )
+        trailing_floor = trailing_floor_candidate if trailing_armed else 0.0
 
         stop_diagnostics: dict[str, float | str] = {
             "exit_stage": exit_stage,
             "hard_stop_price": float(hard_stop_price),
             "trailing_floor": float(trailing_floor),
+            "trailing_floor_candidate": float(trailing_floor_candidate),
             "entry_price": float(state.entry_price),
             "risk_per_unit": float(state.risk_per_unit),
             "atr_to_risk": float(atr_to_risk),
             "bars_held": float(max(0, int(state.bars_held))),
             "highest_r": float(state.highest_r),
+            "trailing_armed": 1.0 if trailing_armed else 0.0,
+            "trailing_activation_bars": float(self.trailing_activation_bars),
+            "trailing_requires_breakeven": 1.0 if self.trailing_requires_breakeven else 0.0,
+            "breakeven_armed": 1.0 if state.breakeven_armed else 0.0,
         }
 
         if current_price <= hard_stop_price:
