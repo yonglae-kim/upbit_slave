@@ -206,6 +206,9 @@ class TradingEngine:
                     market=market,
                     reason=str(decision.reason),
                     price=current_price,
+                    qty=preflight["order_value"],
+                    notional_krw=preflight.get("notional"),
+                    qty_ratio=decision.qty_ratio,
                 )
 
         self._print_runtime_status(stage="evaluating_entries", portfolio=portfolio)
@@ -476,12 +479,30 @@ class TradingEngine:
                 market=market,
                 reason=entry_reason,
                 price=float(data["1m"][0]["trade_price"]),
+                qty=preflight["order_value"] / reference_price if reference_price > 0 else None,
+                notional_krw=preflight.get("notional"),
             )
             break
 
-    def _append_trade_reason(self, *, side: str, market: str, reason: str, price: float) -> None:
+    def _append_trade_reason(
+        self,
+        *,
+        side: str,
+        market: str,
+        reason: str,
+        price: float,
+        qty: float | None = None,
+        notional_krw: float | None = None,
+        qty_ratio: float | None = None,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        line = f"{now} | {side} | {market} | price={price:.8f} | reason={reason}"
+        qty_text = f"{qty:.8f}" if isinstance(qty, (int, float)) else "n/a"
+        notional_text = f"{notional_krw:.0f}" if isinstance(notional_krw, (int, float)) else "n/a"
+        qty_ratio_text = f"{qty_ratio:.4f}" if isinstance(qty_ratio, (int, float)) else "n/a"
+        line = (
+            f"{now} | {side} | {market} | price={price:.8f}"
+            f" | qty={qty_text} | notional_krw={notional_text} | qty_ratio={qty_ratio_text} | reason={reason}"
+        )
         self._recent_trade_reasons.append(line)
         self._recent_trade_reasons = self._recent_trade_reasons[-10:]
         try:

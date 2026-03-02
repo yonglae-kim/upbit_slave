@@ -241,3 +241,8 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: 엔진에서 매수/매도 주문 수락 시점마다 거래 사유를 기록하고, 최근 10건만 유지해 `logs/recent_trade_reasons.txt` 파일로 저장하도록 추가.
 - 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 실행 후 `logs/recent_trade_reasons.txt` 파일에서 `BUY/SELL`, `market`, `price`, `reason`을 최근 10건 기준으로 확인 가능.
+
+### 변경 요약 (2026-03-02, 거래 사유 로그에 수량/주문금액 필드 확장)
+- 변경 요약: `_append_trade_reason` 시그니처를 확장해 `qty`, `notional_krw`, `qty_ratio`를 선택적으로 기록하도록 변경. 매도 경로에서는 `decision.qty_ratio`, preflight 산출값(`order_value`, `notional`)을 함께 전달하고, 매수 경로에서도 preflight 주문금액(`order_value`)과 추정 수량(`order_value / reference_price`)을 로그에 포함하도록 확장. 로그 포맷은 `qty=... | notional_krw=... | qty_ratio=...` 필드를 고정 포함(`미제공 시 n/a`)하도록 통일.
+- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 실행 커맨드는 동일. `logs/recent_trade_reasons.txt` 확인 시 기존 `price/reason` 외에 `qty/notional_krw/qty_ratio` 필드가 함께 출력되는지 검증 필요.
