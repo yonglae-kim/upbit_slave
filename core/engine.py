@@ -78,6 +78,8 @@ class TradingEngine:
         )
         self._position_exit_states: dict[str, PositionExitState] = {}
         self._entry_tracking_by_market: dict[str, dict[str, float | str | datetime]] = {}
+        self._entry_position_id_by_market: dict[str, str] = {}
+        self._entry_started_at_by_market: dict[str, datetime] = {}
         self._entry_strategy_params_by_market: dict[str, StrategyParams] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
         self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
@@ -209,6 +211,9 @@ class TradingEngine:
                     qty=preflight["order_value"],
                     notional_krw=preflight.get("notional"),
                     qty_ratio=decision.qty_ratio,
+                    position_id=self._entry_position_id_by_market.get(market),
+                    holding_seconds=self._compute_holding_seconds(market),
+                    holding_bars=self._compute_holding_bars(market),
                     diagnostics=decision.diagnostics,
                 )
 
@@ -432,6 +437,8 @@ class TradingEngine:
                 "base_order_krw": base_order_krw,
                 "final_order_krw": final_order_krw,
             }
+            self._entry_position_id_by_market[market] = identifier
+            self._entry_started_at_by_market[market] = latest_time
             self._log_entry_diagnostics(
                 market=market,
                 latest_time=latest_time,
@@ -482,6 +489,7 @@ class TradingEngine:
                 price=float(data["1m"][0]["trade_price"]),
                 qty=preflight["order_value"] / reference_price if reference_price > 0 else None,
                 notional_krw=preflight.get("notional"),
+                position_id=identifier,
             )
             break
 
@@ -495,6 +503,9 @@ class TradingEngine:
         qty: float | None = None,
         notional_krw: float | None = None,
         qty_ratio: float | None = None,
+        position_id: str | None = None,
+        holding_seconds: float | None = None,
+        holding_bars: int | None = None,
         diagnostics: dict[str, float | str] | None = None,
     ) -> None:
         stop_reasons = {"stop_loss", "partial_stop_loss", "trailing_stop"}
@@ -508,9 +519,14 @@ class TradingEngine:
         qty_text = _fmt(qty)
         notional_text = _fmt(notional_krw, precision=0)
         qty_ratio_text = _fmt(qty_ratio, precision=4)
+        position_id_text = str(position_id or self._entry_position_id_by_market.get(market) or "na")
+        holding_seconds_text = _fmt(holding_seconds, precision=3)
+        holding_bars_text = str(holding_bars) if isinstance(holding_bars, int) and holding_bars >= 0 else "na"
         line = (
             f"{now} | {side} | {market} | price={price:.8f}"
-            f" | qty={qty_text} | notional_krw={notional_text} | qty_ratio={qty_ratio_text} | reason={reason}"
+            f" | qty={qty_text} | notional_krw={notional_text} | qty_ratio={qty_ratio_text}"
+            f" | position_id={position_id_text} | holding_seconds={holding_seconds_text} | holding_bars={holding_bars_text}"
+            f" | reason={reason}"
         )
 
         if reason in stop_reasons:
@@ -664,7 +680,26 @@ class TradingEngine:
         state.reset_after_full_exit()
         self._position_exit_states.pop(market, None)
         self._entry_tracking_by_market.pop(market, None)
+        self._entry_position_id_by_market.pop(market, None)
+        self._entry_started_at_by_market.pop(market, None)
         self._entry_strategy_params_by_market.pop(market, None)
+
+    def _compute_holding_seconds(self, market: str) -> float | None:
+        entry_time = self._entry_started_at_by_market.get(market)
+        if not isinstance(entry_time, datetime):
+            entry_tracking = self._entry_tracking_by_market.get(market, {})
+            tracked_time = entry_tracking.get("entry_time")
+            if not isinstance(tracked_time, datetime):
+                return None
+            entry_time = tracked_time
+        entry_time = self._to_utc_aware(entry_time)
+        return max(0.0, (datetime.now(timezone.utc) - entry_time).total_seconds())
+
+    def _compute_holding_bars(self, market: str) -> int | None:
+        state = self._position_exit_states.get(market)
+        if state is None:
+            return None
+        return max(0, int(state.bars_held))
 
     def _emit_structured_log(self, event_type: str, **fields) -> None:
         event = {"type": event_type, **fields}
