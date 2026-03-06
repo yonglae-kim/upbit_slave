@@ -74,7 +74,7 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 2. **하드 게이트 + n-of-k + 점수 하한 결합 진입 평가 (`evaluate_long_entry`)**
    - 하드 필수 조건은 `safety_pass`(유효 손절 거리)와 상위 추세 보호(`regime_guard_pass`, 15m 정합도 기반) 2개만 유지합니다.
    - 나머지 진입 신호는 `bb_event`, `bearish_ok`, `double_bottom`, `engulfing`, `macd_cross`, `divergence` 6개를 대상으로 `required_signal_count`(예: 3-of-6) 충족 여부(`n_of_k_pass`)로 판정합니다.
-   - `entry_score = Σ(signal_strength × weight)`는 유지하되, `entry_score_threshold`와 레짐별 최소 점수 하한 중 큰 값을 `effective_score_threshold`로 사용해 최종 점수 통과 여부를 판단합니다.
+   - `entry_score = Σ(signal_strength × weight)`는 유지하되, 최근 N bars(기본 200) score 분포의 레짐별 분위수(강추세 60%, 약추세 65%, 횡보 70%)와 레짐별 최소 점수 하한을 결합한 적응형 임계치(`effective_score_threshold = max(min_threshold_by_regime, score_percentile_threshold)`)로 최종 점수 통과 여부를 판단합니다.
    - `diagnostics`에 `signal_hits`, `required_signal_count`, `n_of_k_pass`, `signal_checks`를 기록해 백테스트 CSV/로그에서 진입 실패 원인 분석이 가능합니다.
 3. **주문 리스크/사이징 계산**
    - `stop_mode_long`으로 초기 손절가를 만들고, `entry_price - stop_price`를 1R로 사용.
@@ -290,3 +290,9 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: RSI-BB 리버설 진입에서 중복 게이트를 줄이고 레짐/변동성 적응형 임계값을 적용. `consecutive_bearish_count`는 고정값 대신 레짐 기반 동적값(강추세 1, 약추세/횡보 2)으로 평가하며, 더블바텀 허용폭(`double_bottom_tolerance_pct`)은 고정 퍼센트가 아닌 ATR 비율 기반으로 재정의. 캔들 트리거는 `engulfing_strict=True`를 유지하면서 `engulfing OR bullish close reversal` 옵션을 지원.
 - 영향 파일: `core/rsi_bb_reversal_long.py`, `core/config.py`, `core/strategy.py`, `core/config_loader.py`, `config.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`.
 - 실행/검증 방법 변경 여부: 실행 커맨드 자체는 동일. 진단(`diagnostics`)에 `suppress_bearish`, `suppress_db`, `suppress_engulfing`, `dynamic_bearish_count`, `effective_db_tolerance_pct`가 추가되어 세그먼트/로그 분석 시 병목 필터 식별이 가능.
+
+
+### 변경 요약 (2026-03-06, entry_score 적응형 임계치/리포트 확장)
+- 변경 요약: `entry_score_threshold` 적용 방식을 최근 score 분포 기반 적응형 임계치로 확장했습니다. 최근 N bars(기본 200)의 `entry_score` 샘플에서 레짐별 분위수 임계값을 구하고, `min_threshold_by_regime`와 `max` 결합해 최종 진입 임계치를 산출합니다(횡보 레짐은 더 높은 분위수, 추세 레짐은 더 낮은 분위수).
+- 영향 파일: `core/rsi_bb_reversal_long.py`, `testing/backtest_runner.py`, `testing/test_backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 백테스트 세그먼트 CSV에 `entry_score_threshold_effective_mean/p50/p90` 컬럼이 추가되어 임계치 동작 분포를 구간별로 검증할 수 있습니다.

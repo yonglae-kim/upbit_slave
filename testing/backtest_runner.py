@@ -59,6 +59,9 @@ class SegmentResult:
     score_q25: float = 0.0
     score_q50: float = 0.0
     score_q75: float = 0.0
+    entry_score_threshold_effective_mean: float = 0.0
+    entry_score_threshold_effective_p50: float = 0.0
+    entry_score_threshold_effective_p90: float = 0.0
     score_win_rate_q1: float = 0.0
     score_win_rate_q2: float = 0.0
     score_win_rate_q3: float = 0.0
@@ -865,6 +868,7 @@ class BacktestRunner:
         entry_fail_counts: Counter[str] = Counter()
         trade_ledger: list[TradeLedgerEntry] = []
         entry_scores: list[float] = []
+        effective_score_thresholds: list[float] = []
         trade_score_rows: list[tuple[float, float]] = []
         trade_quality_rows: list[tuple[str, float]] = []
         active_trade: dict[str, float | str] | None = None
@@ -891,6 +895,7 @@ class BacktestRunner:
                 entry_eval = evaluate_long_entry(mtf_data, self.strategy_params) if strategy_name == "rsi_bb_reversal_long" else None
                 if entry_eval is not None:
                     entry_scores.append(float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0))
+                    effective_score_thresholds.append(float(entry_eval.diagnostics.get("effective_score_threshold", 0.0) or 0.0))
 
                 debug = debug_entry(mtf_data, self.strategy_params, side="buy")
                 zones_total, zones_active, has_candidate_entry = zone_debug_metrics(debug)
@@ -1167,6 +1172,8 @@ class BacktestRunner:
         score_q25 = float(pd.Series(entry_scores).quantile(0.25)) if entry_scores else 0.0
         score_q50 = float(pd.Series(entry_scores).quantile(0.50)) if entry_scores else 0.0
         score_q75 = float(pd.Series(entry_scores).quantile(0.75)) if entry_scores else 0.0
+        threshold_p50 = float(pd.Series(effective_score_thresholds).quantile(0.50)) if effective_score_thresholds else 0.0
+        threshold_p90 = float(pd.Series(effective_score_thresholds).quantile(0.90)) if effective_score_thresholds else 0.0
         score_win_rates = self._score_win_rates_by_quantile(trade_score_rows)
         regime_trade_stats = self._build_regime_trade_stats(trade_ledger)
         quality_bucket_stats = self._build_quality_bucket_stats(trade_quality_rows)
@@ -1208,6 +1215,9 @@ class BacktestRunner:
             score_q25=score_q25,
             score_q50=score_q50,
             score_q75=score_q75,
+            entry_score_threshold_effective_mean=(sum(effective_score_thresholds) / len(effective_score_thresholds)) if effective_score_thresholds else 0.0,
+            entry_score_threshold_effective_p50=threshold_p50,
+            entry_score_threshold_effective_p90=threshold_p90,
             score_win_rate_q1=score_win_rates.get("q1", 0.0),
             score_win_rate_q2=score_win_rates.get("q2", 0.0),
             score_win_rate_q3=score_win_rates.get("q3", 0.0),
@@ -1273,6 +1283,9 @@ class BacktestRunner:
                 score_q25=segment.score_q25,
                 score_q50=segment.score_q50,
                 score_q75=segment.score_q75,
+                entry_score_threshold_effective_mean=segment.entry_score_threshold_effective_mean,
+                entry_score_threshold_effective_p50=segment.entry_score_threshold_effective_p50,
+                entry_score_threshold_effective_p90=segment.entry_score_threshold_effective_p90,
                 score_win_rate_q1=segment.score_win_rate_q1,
                 score_win_rate_q2=segment.score_win_rate_q2,
                 score_win_rate_q3=segment.score_win_rate_q3,

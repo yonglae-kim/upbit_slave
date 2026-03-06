@@ -343,6 +343,9 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertIn("quality_bucket_low_trades", df.columns)
         self.assertIn("quality_bucket_mid_expectancy", df.columns)
         self.assertIn("quality_bucket_high_win_rate", df.columns)
+        self.assertIn("entry_score_threshold_effective_mean", df.columns)
+        self.assertIn("entry_score_threshold_effective_p50", df.columns)
+        self.assertIn("entry_score_threshold_effective_p90", df.columns)
         self.assertEqual(df.loc[0, "fill_rate"], 0.5)
 
     def test_segment_csv_includes_exit_reason_columns(self):

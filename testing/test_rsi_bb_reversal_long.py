@@ -152,6 +152,22 @@ class RsiBbReversalLongTests(unittest.TestCase):
         self.assertIn(result.reason, {"score_below_threshold", "filter_fail", "trigger_fail", "regime_guard_fail"})
 
 
+    def test_entry_score_threshold_is_adaptive_by_distribution(self):
+        candles = [candle(10 + (i * 0.02), 10.3 + (i * 0.02), 9.7 + (i * 0.02), 10.0 + (i * 0.02)) for i in range(240)]
+        trend15 = [candle(10 + i * 0.1, 10.2 + i * 0.1, 9.9 + i * 0.1, 10 + i * 0.1) for i in range(120)]
+        data = {"1m": list(reversed(candles)), "15m": list(reversed(trend15))}
+        params = replace(self.params, rsi_period=2, bb_period=2, pivot_left=1, pivot_right=1, entry_score_threshold=0.0)
+        result = evaluate_long_entry(data, params)
+
+        self.assertIn("score_percentile_threshold", result.diagnostics)
+        self.assertIn("min_threshold_by_regime", result.diagnostics)
+        self.assertIn("score_threshold_percentile", result.diagnostics)
+        self.assertGreaterEqual(result.diagnostics["entry_score_distribution_count"], 20)
+        self.assertAlmostEqual(
+            result.diagnostics["effective_score_threshold"],
+            max(result.diagnostics["min_threshold_by_regime"], result.diagnostics["score_percentile_threshold"]),
+        )
+
     def test_n_of_k_pass_when_hits_meet_required_count(self):
         candles = [candle(10, 10.2, 9.8, 10.0) for _ in range(90)]
         trend15 = [candle(10 + i * 0.05, 10.2 + i * 0.05, 9.9 + i * 0.05, 10 + i * 0.05) for i in range(90)]
