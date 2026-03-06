@@ -20,6 +20,44 @@ from core.position_policy import ExitDecision, PositionExitState, PositionOrderP
 from core.strategy import check_buy, check_sell, classify_market_regime, debug_entry, preprocess_candles, zone_debug_metrics
 
 
+STRATEGY_PROFILE_OVERRIDES: dict[str, dict[str, bool | int | float | str]] = {
+    "baseline": {},
+    "a": {
+        "required_signal_count": 2,
+        "required_trigger_count": 1,
+        "rsi_neutral_filter_enabled": False,
+        "macd_histogram_filter_enabled": False,
+        "reentry_cooldown_bars": 4,
+    },
+    "b": {
+        "regime_filter_enabled": True,
+        "regime_adx_min": 22.0,
+        "required_signal_count": 3,
+        "required_trigger_count": 2,
+        "entry_score_threshold": 2.9,
+        "trigger_mode": "adaptive",
+    },
+    "c": {
+        "required_signal_count": 2,
+        "required_trigger_count": 2,
+        "require_neckline_break": True,
+        "trigger_mode": "strict",
+        "trigger_confirm_lookback": 5,
+    },
+}
+
+
+def apply_strategy_profile(config: TradingConfig, profile_name: str) -> str:
+    normalized = str(profile_name or "baseline").strip().lower()
+    overrides = STRATEGY_PROFILE_OVERRIDES.get(normalized)
+    if overrides is None:
+        valid_profiles = ", ".join(sorted(STRATEGY_PROFILE_OVERRIDES))
+        raise ValueError(f"unknown strategy_profile '{profile_name}'. valid: {valid_profiles}")
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    return normalized
+
+
 @dataclass
 class SegmentResult:
     segment_id: int
@@ -69,6 +107,8 @@ class SegmentResult:
     regime_trade_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     quality_bucket_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     stop_recovery_stats: dict[str, dict[str, float]] = field(default_factory=dict)
+    avg_holding_minutes: float = 0.0
+    longest_no_trade_bars: int = 0
 
 
 
@@ -132,12 +172,14 @@ class BacktestRunner:
         zone_expiry_bars_5m: int | None = None,
         fvg_min_width_atr_mult: float | None = None,
         displacement_min_atr_mult: float | None = None,
+        strategy_profile: str = "baseline",
     ):
         self.market = market
         self.path = path
         self.buffer_cnt = buffer_cnt
         self.multiple_cnt = multiple_cnt
         self.config = load_trading_config()
+        self.strategy_profile = apply_strategy_profile(self.config, strategy_profile)
         self.mtf_timeframes = self._resolve_mtf_timeframes()
         self.zone_profile = zone_profile
         self.zone_overrides = {
@@ -872,6 +914,8 @@ class BacktestRunner:
         trade_score_rows: list[tuple[float, float]] = []
         trade_quality_rows: list[tuple[str, float]] = []
         active_trade: dict[str, float | str] | None = None
+        entry_bar_indices: list[int] = []
+        holding_minutes_values: list[float] = []
         required_window_size = max(
             int(self.buffer_cnt),
             int(self.required_base_bars_for_regime),
@@ -928,6 +972,7 @@ class BacktestRunner:
                 if buy_signal:
                     triggered_entries += 1
                     entries += 1
+                    entry_bar_indices.append(bar_index)
                     quality_score = float(entry_eval.diagnostics.get("quality_score", 0.0) or 0.0) if entry_eval else 0.0
                     if quality_score >= float(self.config.quality_score_high_threshold):
                         quality_bucket = "high"
@@ -1074,6 +1119,7 @@ class BacktestRunner:
                             entry_time = datetime.datetime.strptime(str(active_trade["entry_time"]), "%Y-%m-%dT%H:%M:%S")
                             exit_time = datetime.datetime.strptime(test_data[0]["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
                             holding_minutes = max(0.0, (exit_time - entry_time).total_seconds() / 60)
+                            holding_minutes_values.append(float(holding_minutes))
                             avg_exit_price = float(active_trade["gross_exit_notional"]) / float(active_trade["sold_qty"])
                             pnl = float(active_trade["net_exit_cash"]) - float(active_trade["invested_cash"])
                             risk_amount = float(active_trade["invested_cash"]) * max(self.config.stop_loss_threshold, 1e-9)
@@ -1180,6 +1226,15 @@ class BacktestRunner:
         stop_recovery_stats = self._build_stop_recovery_stats(
             [row for row in self.stop_recovery_rows if int(row.get("segment_id", -1)) == int(segment_id)]
         )
+        if entry_bar_indices:
+            ordered_indices = sorted(int(v) for v in entry_bar_indices)
+            no_trade_spans = [ordered_indices[0]]
+            no_trade_spans.extend(max(0, ordered_indices[idx] - ordered_indices[idx - 1] - 1) for idx in range(1, len(ordered_indices)))
+            no_trade_spans.append(max(0, (max_current_index - ordered_indices[-1])))
+            longest_no_trade_bars = max(no_trade_spans) if no_trade_spans else max_current_index
+        else:
+            longest_no_trade_bars = max_current_index
+        avg_holding_minutes = (sum(holding_minutes_values) / len(holding_minutes_values)) if holding_minutes_values else 0.0
         return SegmentResult(
             segment_id=segment_id,
             insample_start=oldest,
@@ -1225,6 +1280,8 @@ class BacktestRunner:
             regime_trade_stats=regime_trade_stats,
             quality_bucket_stats=quality_bucket_stats,
             stop_recovery_stats=stop_recovery_stats,
+            avg_holding_minutes=avg_holding_minutes,
+            longest_no_trade_bars=longest_no_trade_bars,
         )
 
     def run(self):
@@ -1391,6 +1448,8 @@ class BacktestRunner:
                     "stop_recovery_partial_stop_loss_recovered_1r_3_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_3_share_pct", 0.0),
                     "stop_recovery_partial_stop_loss_recovered_1r_5_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_5_share_pct", 0.0),
                     "stop_recovery_partial_stop_loss_recovered_1r_10_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_10_share_pct", 0.0),
+                    "avg_holding_minutes": row.avg_holding_minutes,
+                    "longest_no_trade_bars": row.longest_no_trade_bars,
                     "stop_recovery_trailing_stop_count": row.stop_recovery_stats.get("trailing_stop", {}).get("count", 0.0),
                     "stop_recovery_trailing_stop_mfe_r_3_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_3_mean", 0.0),
                     "stop_recovery_trailing_stop_mfe_r_5_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_5_mean", 0.0),
@@ -1511,6 +1570,7 @@ if __name__ == "__main__":
     parser.add_argument("--zone-expiry-bars-5m", type=int, default=None)
     parser.add_argument("--fvg-min-width-atr-mult", type=float, default=None)
     parser.add_argument("--displacement-min-atr-mult", type=float, default=None)
+    parser.add_argument("--strategy-profile", choices=sorted(STRATEGY_PROFILE_OVERRIDES.keys()), default="baseline")
     args = parser.parse_args()
 
     BacktestRunner(
@@ -1531,4 +1591,5 @@ if __name__ == "__main__":
         zone_expiry_bars_5m=args.zone_expiry_bars_5m,
         fvg_min_width_atr_mult=args.fvg_min_width_atr_mult,
         displacement_min_atr_mult=args.displacement_min_atr_mult,
+        strategy_profile=args.strategy_profile,
     ).run()

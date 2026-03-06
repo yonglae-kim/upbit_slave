@@ -49,6 +49,12 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 # 단계형 Walk-forward 튜닝(진입/청산/레짐/사이징, coarse→fine)
 python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --result-csv testing/optimize_walkforward_results.csv
 # (산출: 결과 CSV + 상위 조합 패턴 문서 testing/optimize_walkforward_patterns.md)
+
+# 4개 전략 프로파일 비교 (Baseline/A/B/C)
+python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --output-dir testing/reports
+# (산출: 통합 비교표 CSV testing/reports/strategy_comparison.csv)
+# (산출: 마크다운 리포트 testing/reports/strategy_comparison.md)
+# (산출: 프로파일별 세그먼트 CSV testing/reports/backtest_walkforward_segments_{baseline,a,b,c}.csv)
 ```
 
 
@@ -296,3 +302,9 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: `entry_score_threshold` 적용 방식을 최근 score 분포 기반 적응형 임계치로 확장했습니다. 최근 N bars(기본 200)의 `entry_score` 샘플에서 레짐별 분위수 임계값을 구하고, `min_threshold_by_regime`와 `max` 결합해 최종 진입 임계치를 산출합니다(횡보 레짐은 더 높은 분위수, 추세 레짐은 더 낮은 분위수).
 - 영향 파일: `core/rsi_bb_reversal_long.py`, `testing/backtest_runner.py`, `testing/test_backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 백테스트 세그먼트 CSV에 `entry_score_threshold_effective_mean/p50/p90` 컬럼이 추가되어 임계치 동작 분포를 구간별로 검증할 수 있습니다.
+
+
+### 변경 요약 (2026-03-06, 전략 프로파일 일괄 비교 리포트 자동화)
+- 변경 요약: 백테스트 실행기에 `--strategy-profile`(baseline/a/b/c) 오버라이드를 추가해 동일 파이프라인에서 전략안별 파라미터를 재현 가능하게 만들고, 세그먼트 CSV에 `avg_holding_minutes`, `longest_no_trade_bars`를 함께 기록하도록 확장. 신규 스크립트 `testing/compare_strategies.py`를 추가해 4개 프로파일을 순차 실행한 뒤 공통 KPI(`total_return/cagr/win_rate/profit_factor/expectancy/mdd/avg_rr`, `trades/monthly_trades/avg_holding/longest_no_trade_bars`, `recent_3m/6m/12m`)와 OOS(워크포워드 후반 절반) 집계를 병합한 비교 CSV/Markdown 리포트를 자동 생성.
+- 영향 파일: `testing/backtest_runner.py`, `testing/compare_strategies.py`, `testing/test_compare_strategies.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: `python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --output-dir testing/reports` 실행 시 `testing/reports/strategy_comparison.csv`, `testing/reports/strategy_comparison.md`, 프로파일별 `backtest_walkforward_segments_*.csv`가 생성됨.
