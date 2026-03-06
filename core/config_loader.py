@@ -115,6 +115,7 @@ _ENV_KEY_MAP = {
     "require_band_reentry_on_second_bottom": "TRADING_REQUIRE_BAND_REENTRY_ON_SECOND_BOTTOM",
     "require_neckline_break": "TRADING_REQUIRE_NECKLINE_BREAK",
     "divergence_signal_enabled": "TRADING_DIVERGENCE_SIGNAL_ENABLED",
+    "required_signal_count": "TRADING_REQUIRED_SIGNAL_COUNT",
     "entry_score_threshold": "TRADING_ENTRY_SCORE_THRESHOLD",
     "rsi_oversold_weight": "TRADING_RSI_OVERSOLD_WEIGHT",
     "bb_touch_weight": "TRADING_BB_TOUCH_WEIGHT",
@@ -230,6 +231,7 @@ def _parse_env_value(key: str, value: str):
         "pivot_left",
         "pivot_right",
         "double_bottom_lookback_bars",
+        "required_signal_count",
         "max_hold_bars",
         "strategy_cooldown_bars",
     }:
@@ -357,6 +359,7 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "require_band_reentry_on_second_bottom": bool,
         "require_neckline_break": bool,
         "divergence_signal_enabled": bool,
+        "required_signal_count": int,
         "entry_score_threshold": (int, float),
         "rsi_oversold_weight": (int, float),
         "bb_touch_weight": (int, float),
@@ -434,6 +437,7 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "pivot_left",
         "pivot_right",
         "double_bottom_lookback_bars",
+        "required_signal_count",
     ]
     for key in positive_keys:
         if config[key] <= 0:
@@ -551,6 +555,8 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("double_bottom_tolerance_pct must be >= 0")
     if config["entry_score_threshold"] < 0:
         raise ConfigValidationError("entry_score_threshold must be >= 0")
+    if config["required_signal_count"] <= 0:
+        raise ConfigValidationError("required_signal_count must be > 0")
     if not 0 <= config["quality_score_low_threshold"] <= 1 or not 0 <= config["quality_score_high_threshold"] <= 1:
         raise ConfigValidationError("quality_score_low/high_threshold must be in [0, 1]")
     if config["quality_score_low_threshold"] > config["quality_score_high_threshold"]:

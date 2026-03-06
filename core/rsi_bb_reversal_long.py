@@ -259,6 +259,18 @@ def _regime_alignment_score(candles_15m_newest: list[dict[str, Any]]) -> float:
     return 0.2
 
 
+def _regime_guard_pass(regime_alignment: float) -> bool:
+    return regime_alignment >= 0.6
+
+
+def _regime_min_entry_score_threshold(regime_alignment: float) -> float:
+    if regime_alignment >= 1.0:
+        return 2.6
+    if regime_alignment >= 0.6:
+        return 2.4
+    return 2.2
+
+
 def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> ReversalSignal:
     candles_newest = list(data.get("1m", []))
     candles_oldest = list(reversed(candles_newest))
@@ -348,17 +360,43 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     stop_valid = stop_price < entry_price
     risk_valid = risk > 1e-9
     safety_pass = stop_valid and risk_valid
-    score_pass = entry_score >= float(params.entry_score_threshold)
+    signal_checks = {
+        "bb_event": bool(bb_event),
+        "bearish_ok": bool(bearish_ok),
+        "double_bottom": bool(db.get("pass", False)),
+        "engulfing": bool(engulfing),
+        "macd_cross": bool(macd_cross),
+        "divergence": bool(div.get("pass", False)),
+    }
+    signal_hits = sum(1 for passed in signal_checks.values() if passed)
+    total_signals = len(signal_checks)
+    raw_required_signal_count = int(getattr(params, "required_signal_count", 3))
+    required_signal_count = max(1, min(raw_required_signal_count, total_signals))
+    n_of_k_pass = signal_hits >= required_signal_count
 
-    final_pass = filter_pass and setup_pass and trigger_pass and safety_pass and score_pass
+    regime_guard_pass = _regime_guard_pass(regime_alignment)
+    effective_score_threshold = max(float(params.entry_score_threshold), _regime_min_entry_score_threshold(regime_alignment))
+    score_pass = entry_score >= effective_score_threshold
+
+    final_pass = safety_pass and regime_guard_pass and n_of_k_pass and score_pass
 
     diag = {
-        "state": {"filter": filter_pass, "setup": setup_pass, "trigger": trigger_pass, "special": special_setup, "safety": safety_pass},
+        "state": {
+            "filter": filter_pass,
+            "setup": setup_pass,
+            "trigger": trigger_pass,
+            "special": special_setup,
+            "safety": safety_pass,
+            "regime_guard": regime_guard_pass,
+            "score_pass": score_pass,
+            "n_of_k_pass": n_of_k_pass,
+        },
         "symbol": str(data.get("symbol", "UNKNOWN")),
         "rsi": rsi_value,
         "bb_lower": bb_low[eval_idx],
         "bb_width": bb_width,
         "score_threshold": float(params.entry_score_threshold),
+        "effective_score_threshold": float(effective_score_threshold),
         "entry_score": float(entry_score),
         "score_components": {
             "rsi_oversold": float(rsi_oversold_strength),
@@ -383,6 +421,10 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
             "band_deviation_weight": float(params.band_deviation_weight),
         },
         "bb_event": bb_event,
+        "signal_hits": int(signal_hits),
+        "required_signal_count": int(required_signal_count),
+        "n_of_k_pass": bool(n_of_k_pass),
+        "signal_checks": signal_checks,
         "engulfing": engulfing,
         "double_bottom": db,
         "divergence": div,
@@ -399,9 +441,9 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     }
     if final_pass:
         reason = "ok"
-    elif not filter_pass:
-        reason = "filter_fail"
-    elif not setup_pass or not trigger_pass:
+    elif not regime_guard_pass:
+        reason = "regime_guard_fail"
+    elif not n_of_k_pass:
         reason = "trigger_fail"
     elif not safety_pass:
         reason = "safety_fail"

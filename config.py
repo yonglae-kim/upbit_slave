@@ -104,6 +104,7 @@ TRADING_CONFIG = {
     "require_band_reentry_on_second_bottom": True,
     "require_neckline_break": False,
     "divergence_signal_enabled": True,
+    "required_signal_count": 3,
     "entry_score_threshold": 2.5,
     "rsi_oversold_weight": 1.0,
     "bb_touch_weight": 1.0,

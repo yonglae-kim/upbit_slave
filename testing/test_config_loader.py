@@ -117,6 +117,7 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'require_band_reentry_on_second_bottom': True,\n"
                 "    'require_neckline_break': False,\n"
                 "    'divergence_signal_enabled': True,\n"
+                "    'required_signal_count': 3,\n"
                 "    'entry_score_threshold': 2.5,\n"
                 "    'rsi_oversold_weight': 1.0,\n"
                 "    'bb_touch_weight': 1.0,\n"
@@ -186,16 +187,19 @@ class ConfigLoaderTest(unittest.TestCase):
 
     def test_entry_score_env_override(self):
         os.environ["TRADING_ENTRY_SCORE_THRESHOLD"] = "3.25"
+        os.environ["TRADING_REQUIRED_SIGNAL_COUNT"] = "4"
         os.environ["TRADING_MACD_CROSS_WEIGHT"] = "1.7"
         os.environ["TRADING_QUALITY_MULTIPLIER_HIGH"] = "1.3"
         try:
             config = load_trading_config()
         finally:
             del os.environ["TRADING_ENTRY_SCORE_THRESHOLD"]
+            del os.environ["TRADING_REQUIRED_SIGNAL_COUNT"]
             del os.environ["TRADING_MACD_CROSS_WEIGHT"]
             del os.environ["TRADING_QUALITY_MULTIPLIER_HIGH"]
 
         self.assertEqual(config.entry_score_threshold, 3.25)
+        self.assertEqual(config.required_signal_count, 4)
         self.assertEqual(config.macd_cross_weight, 1.7)
         self.assertEqual(config.quality_multiplier_high, 1.3)
 
