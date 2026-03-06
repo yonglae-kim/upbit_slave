@@ -201,6 +201,53 @@ class RsiBbReversalLongTests(unittest.TestCase):
         self.assertLessEqual(cons, lower)
         self.assertLessEqual(cons, swing)
 
+    def test_trigger_allows_bullish_close_reversal_without_engulfing(self):
+        base = [candle(120 - i * 0.1, 120.2 - i * 0.1, 119.8 - i * 0.1, 120 - i * 0.1) for i in range(85)]
+        tail = [
+            candle(109.5, 109.6, 108.4, 108.6),
+            candle(108.7, 108.8, 107.7, 107.8),
+            candle(107.9, 108.0, 106.9, 107.0),
+            candle(107.1, 108.5, 106.8, 108.2),
+        ]
+        candles_oldest = base + tail
+        trend15 = [candle(10 + i * 0.2, 10.2 + i * 0.2, 9.8 + i * 0.2, 10 + i * 0.2) for i in range(90)]
+        data = {"1m": list(reversed(candles_oldest)), "15m": list(reversed(trend15))}
+        params = replace(
+            self.params,
+            rsi_period=2,
+            bb_period=2,
+            pivot_left=1,
+            pivot_right=1,
+            required_signal_count=1,
+            entry_score_threshold=0.0,
+        )
+        result = evaluate_long_entry(data, params)
+        self.assertIn("engulfing", result.diagnostics)
+        self.assertFalse(result.diagnostics["engulfing"])
+        self.assertTrue(result.diagnostics["bullish_close_reversal"])
+
+    def test_dynamic_bearish_count_changes_by_regime(self):
+        candles = [candle(10, 10.3, 9.7, 10.0) for _ in range(90)]
+        strong15 = [candle(10 + i * 0.2, 10.1 + i * 0.2, 9.9 + i * 0.2, 10 + i * 0.2) for i in range(90)]
+        side15 = [candle(10, 10.1, 9.9, 10 + (0.02 if i % 2 == 0 else -0.02)) for i in range(90)]
+        params = replace(self.params, rsi_period=2, bb_period=2, pivot_left=1, pivot_right=1)
+
+        strong = evaluate_long_entry({"1m": list(reversed(candles)), "15m": list(reversed(strong15))}, params)
+        side = evaluate_long_entry({"1m": list(reversed(candles)), "15m": list(reversed(side15))}, params)
+
+        self.assertEqual(strong.diagnostics["dynamic_bearish_count"], 1)
+        self.assertEqual(side.diagnostics["dynamic_bearish_count"], 2)
+
+    def test_diagnostics_include_filter_suppress_counts(self):
+        candles = [candle(10, 10.2, 9.8, 10.0) for _ in range(90)]
+        data = {"1m": list(reversed(candles))}
+        params = replace(self.params, rsi_period=2, bb_period=2, pivot_left=1, pivot_right=1)
+        result = evaluate_long_entry(data, params)
+
+        self.assertIn("suppress_bearish", result.diagnostics)
+        self.assertIn("suppress_db", result.diagnostics)
+        self.assertIn("suppress_engulfing", result.diagnostics)
+
 
 if __name__ == "__main__":
     unittest.main()

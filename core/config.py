@@ -188,12 +188,13 @@ class TradingConfig:
     macd_histogram_filter_enabled: bool = True
     engulfing_strict: bool = True
     engulfing_include_wick: bool = False
-    consecutive_bearish_count: int = 3
+    allow_bullish_close_reversal_trigger: bool = True
+    consecutive_bearish_count: int = 2
     pivot_left: int = 3
     pivot_right: int = 3
     double_bottom_lookback_bars: int = 40
-    double_bottom_tolerance_pct: float = 0.5
-    require_band_reentry_on_second_bottom: bool = True
+    double_bottom_tolerance_pct: float = 1.0
+    require_band_reentry_on_second_bottom: bool = False
     require_neckline_break: bool = False
     divergence_signal_enabled: bool = True
     required_signal_count: int = 3
@@ -277,6 +278,7 @@ class TradingConfig:
             "macd_histogram_filter_enabled": self.macd_histogram_filter_enabled,
             "engulfing_strict": self.engulfing_strict,
             "engulfing_include_wick": self.engulfing_include_wick,
+            "allow_bullish_close_reversal_trigger": self.allow_bullish_close_reversal_trigger,
             "consecutive_bearish_count": self.consecutive_bearish_count,
             "pivot_left": self.pivot_left,
             "pivot_right": self.pivot_right,

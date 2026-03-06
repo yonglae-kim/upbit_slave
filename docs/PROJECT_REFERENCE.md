@@ -285,3 +285,8 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 영향 파일: `core/rsi_bb_reversal_long.py`, `core/strategy.py`, `core/config.py`, `core/config_loader.py`, `config.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 검증 시 `python -m unittest testing.test_rsi_bb_reversal_long testing.test_config_loader`로 n-of-k 통과/실패 및 설정 로딩(`TRADING_REQUIRED_SIGNAL_COUNT`)을 함께 확인합니다.
 
+
+### 변경 요약 (2026-03-06, 중복 필터 제거/적응형 임계값)
+- 변경 요약: RSI-BB 리버설 진입에서 중복 게이트를 줄이고 레짐/변동성 적응형 임계값을 적용. `consecutive_bearish_count`는 고정값 대신 레짐 기반 동적값(강추세 1, 약추세/횡보 2)으로 평가하며, 더블바텀 허용폭(`double_bottom_tolerance_pct`)은 고정 퍼센트가 아닌 ATR 비율 기반으로 재정의. 캔들 트리거는 `engulfing_strict=True`를 유지하면서 `engulfing OR bullish close reversal` 옵션을 지원.
+- 영향 파일: `core/rsi_bb_reversal_long.py`, `core/config.py`, `core/strategy.py`, `core/config_loader.py`, `config.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`.
+- 실행/검증 방법 변경 여부: 실행 커맨드 자체는 동일. 진단(`diagnostics`)에 `suppress_bearish`, `suppress_db`, `suppress_engulfing`, `dynamic_bearish_count`, `effective_db_tolerance_pct`가 추가되어 세그먼트/로그 분석 시 병목 필터 식별이 가능.
