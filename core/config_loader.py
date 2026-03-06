@@ -107,6 +107,7 @@ _ENV_KEY_MAP = {
     "macd_histogram_filter_enabled": "TRADING_MACD_HISTOGRAM_FILTER_ENABLED",
     "engulfing_strict": "TRADING_ENGULFING_STRICT",
     "engulfing_include_wick": "TRADING_ENGULFING_INCLUDE_WICK",
+    "allow_bullish_close_reversal_trigger": "TRADING_ALLOW_BULLISH_CLOSE_REVERSAL_TRIGGER",
     "consecutive_bearish_count": "TRADING_CONSECUTIVE_BEARISH_COUNT",
     "pivot_left": "TRADING_PIVOT_LEFT",
     "pivot_right": "TRADING_PIVOT_RIGHT",
@@ -238,7 +239,7 @@ def _parse_env_value(key: str, value: str):
         return int(value)
     if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min", "rsi_long_threshold", "rsi_neutral_low", "rsi_neutral_high", "bb_std", "double_bottom_tolerance_pct", "entry_score_threshold", "rsi_oversold_weight", "bb_touch_weight", "divergence_weight", "macd_cross_weight", "engulfing_weight", "band_deviation_weight", "quality_score_low_threshold", "quality_score_high_threshold", "quality_multiplier_low", "quality_multiplier_mid", "quality_multiplier_high", "quality_multiplier_min_bound", "quality_multiplier_max_bound", "take_profit_r", "partial_take_profit_r", "partial_take_profit_size", "reentry_dynamic_cooldown_base_atr_ratio", "reentry_dynamic_cooldown_scale"}:
         return float(value)
-    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only", "reentry_dynamic_cooldown_enabled", "rsi_neutral_filter_enabled", "macd_histogram_filter_enabled", "engulfing_strict", "engulfing_include_wick", "require_band_reentry_on_second_bottom", "require_neckline_break", "divergence_signal_enabled", "partial_take_profit_enabled", "move_stop_to_breakeven_after_partial", "trailing_requires_breakeven"}:
+    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only", "reentry_dynamic_cooldown_enabled", "rsi_neutral_filter_enabled", "macd_histogram_filter_enabled", "engulfing_strict", "engulfing_include_wick", "allow_bullish_close_reversal_trigger", "require_band_reentry_on_second_bottom", "require_neckline_break", "divergence_signal_enabled", "partial_take_profit_enabled", "move_stop_to_breakeven_after_partial", "trailing_requires_breakeven"}:
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return value
 
@@ -351,6 +352,7 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "macd_histogram_filter_enabled": bool,
         "engulfing_strict": bool,
         "engulfing_include_wick": bool,
+        "allow_bullish_close_reversal_trigger": bool,
         "consecutive_bearish_count": int,
         "pivot_left": int,
         "pivot_right": int,

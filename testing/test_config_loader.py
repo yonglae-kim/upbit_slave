@@ -109,12 +109,13 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'macd_histogram_filter_enabled': True,\n"
                 "    'engulfing_strict': True,\n"
                 "    'engulfing_include_wick': False,\n"
+                "    'allow_bullish_close_reversal_trigger': True,\n"
                 "    'consecutive_bearish_count': 3,\n"
                 "    'pivot_left': 3,\n"
                 "    'pivot_right': 3,\n"
                 "    'double_bottom_lookback_bars': 40,\n"
-                "    'double_bottom_tolerance_pct': 0.5,\n"
-                "    'require_band_reentry_on_second_bottom': True,\n"
+                "    'double_bottom_tolerance_pct': 1.0,\n"
+                "    'require_band_reentry_on_second_bottom': False,\n"
                 "    'require_neckline_break': False,\n"
                 "    'divergence_signal_enabled': True,\n"
                 "    'required_signal_count': 3,\n"
@@ -158,6 +159,8 @@ class ConfigLoaderTest(unittest.TestCase):
         config = load_trading_config()
         self.assertEqual(config.max_holdings, 1)
         self.assertEqual(config.max_concurrent_positions, 1)
+        self.assertFalse(config.require_band_reentry_on_second_bottom)
+        self.assertTrue(config.allow_bullish_close_reversal_trigger)
 
     def test_env_override_and_validation(self):
         os.environ["TRADING_MODE"] = "dry_run"
@@ -223,6 +226,16 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertFalse(config.trailing_requires_breakeven)
         self.assertEqual(config.trailing_activation_bars, 3)
+
+
+    def test_close_reversal_trigger_env_override(self):
+        os.environ["TRADING_ALLOW_BULLISH_CLOSE_REVERSAL_TRIGGER"] = "false"
+        try:
+            config = load_trading_config()
+        finally:
+            del os.environ["TRADING_ALLOW_BULLISH_CLOSE_REVERSAL_TRIGGER"]
+
+        self.assertFalse(config.allow_bullish_close_reversal_trigger)
 
     def test_invalid_range_raises(self):
         os.environ["TRADING_BUY_RSI_THRESHOLD"] = "120"
