@@ -196,6 +196,7 @@ class TradingConfig:
     require_band_reentry_on_second_bottom: bool = True
     require_neckline_break: bool = False
     divergence_signal_enabled: bool = True
+    required_signal_count: int = 3
     entry_score_threshold: float = 2.5
     rsi_oversold_weight: float = 1.0
     bb_touch_weight: float = 1.0
@@ -284,6 +285,7 @@ class TradingConfig:
             "require_band_reentry_on_second_bottom": self.require_band_reentry_on_second_bottom,
             "require_neckline_break": self.require_neckline_break,
             "divergence_signal_enabled": self.divergence_signal_enabled,
+            "required_signal_count": self.required_signal_count,
             "entry_score_threshold": self.entry_score_threshold,
             "rsi_oversold_weight": self.rsi_oversold_weight,
             "bb_touch_weight": self.bb_touch_weight,

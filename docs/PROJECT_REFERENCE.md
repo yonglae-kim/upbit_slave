@@ -71,10 +71,11 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 ### 진입(BUY)
 1. **전략 실행 대상 검증 (Engine 레벨)**
    - 최소 캔들 수/쿨다운/보유 종목 수/가용 KRW 등 사전 조건을 확인한 뒤 전략 평가를 진행합니다.
-2. **점수 기반 진입 평가 (`evaluate_long_entry`)**
-   - 기존 필터/셋업/트리거 불리언 게이트를 시그널별 강도 점수 합산으로 분리했습니다.
-   - `entry_score = Σ(signal_strength × weight)` 구조를 사용하며, 신호는 RSI 과매도, BB 터치 강도, RSI 다이버전스, MACD 크로스, 엔걸핑, 최근 변동성 대비 밴드 이탈폭을 포함합니다.
-   - 최종 진입은 `entry_score >= entry_score_threshold` 조건으로 판단하고, 최소 안전장치(최소 캔들 수, 유효 손절 거리)는 유지합니다.
+2. **하드 게이트 + n-of-k + 점수 하한 결합 진입 평가 (`evaluate_long_entry`)**
+   - 하드 필수 조건은 `safety_pass`(유효 손절 거리)와 상위 추세 보호(`regime_guard_pass`, 15m 정합도 기반) 2개만 유지합니다.
+   - 나머지 진입 신호는 `bb_event`, `bearish_ok`, `double_bottom`, `engulfing`, `macd_cross`, `divergence` 6개를 대상으로 `required_signal_count`(예: 3-of-6) 충족 여부(`n_of_k_pass`)로 판정합니다.
+   - `entry_score = Σ(signal_strength × weight)`는 유지하되, `entry_score_threshold`와 레짐별 최소 점수 하한 중 큰 값을 `effective_score_threshold`로 사용해 최종 점수 통과 여부를 판단합니다.
+   - `diagnostics`에 `signal_hits`, `required_signal_count`, `n_of_k_pass`, `signal_checks`를 기록해 백테스트 CSV/로그에서 진입 실패 원인 분석이 가능합니다.
 3. **주문 리스크/사이징 계산**
    - `stop_mode_long`으로 초기 손절가를 만들고, `entry_price - stop_price`를 1R로 사용.
    - 리스크 기반 주문금액 + 현금관리 캡 + (옵션) 시장 댐핑 계수를 적용해 최종 매수 금액을 계산합니다.
@@ -277,3 +278,10 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: 재진입 쿨다운을 프로파일(`reentry_cooldown_profile`) 기반으로 확장해 기본값을 `loss_exit_guarded`(`cooldown_on_loss_exits_only=True`)로 전환했습니다. 또한 고정 `reentry_cooldown_bars` 외에 레짐별 오버라이드(`reentry_cooldown_bars_by_regime`, 기본 `sideways=14`)를 지원하고, 최근 N바 ATR 비율 기반 동적 추가 쿨다운(`reentry_dynamic_cooldown_*`)을 도입해 고변동 구간 즉시 재진입을 억제했습니다. 엔진은 재진입 평가 시 사유/레짐/정적·동적 쿨다운/잔여 bar를 구조화 로그(`REENTRY_COOLDOWN_EVAL`)로 기록합니다.
 - 영향 파일: `core/config.py`, `core/config_loader.py`, `core/engine.py`, `config.py`, `testing/test_engine_candle_trigger.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 운영/백테스트 진단 시 콘솔 JSON 로그의 `type=REENTRY_COOLDOWN_EVAL`를 필터링해 `reason`별 `required_bars/remaining_bars/active`와 성과 지표(승률) 상관관계를 점검할 수 있습니다. 환경변수로 `TRADING_REENTRY_COOLDOWN_PROFILE`, `TRADING_REENTRY_COOLDOWN_BARS_BY_REGIME`(JSON), `TRADING_REENTRY_DYNAMIC_COOLDOWN_*` 계열을 조정 가능합니다.
+
+
+### 변경 요약 (2026-03-06, RSI-BB 진입 final_pass를 n-of-k 구조로 개편)
+- 변경 요약: `evaluate_long_entry`의 `final_pass`를 하드 게이트(안전/레짐) + `required_signal_count` 기반 n-of-k 판정 + 레짐별 최소 점수 하한 결합 구조로 개편했습니다. 진단 필드에 `signal_hits`, `required_signal_count`, `n_of_k_pass`를 추가해 원인 분석 가시성을 높였습니다.
+- 영향 파일: `core/rsi_bb_reversal_long.py`, `core/strategy.py`, `core/config.py`, `core/config_loader.py`, `config.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 검증 시 `python -m unittest testing.test_rsi_bb_reversal_long testing.test_config_loader`로 n-of-k 통과/실패 및 설정 로딩(`TRADING_REQUIRED_SIGNAL_COUNT`)을 함께 확인합니다.
+

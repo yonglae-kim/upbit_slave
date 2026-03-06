@@ -109,7 +109,8 @@ class RsiBbReversalLongTests(unittest.TestCase):
     def test_no_duplicate_entry_when_already_holding(self):
         # engine-level policy keeps one holding; strategy still emits bool signal
         candles = [candle(10, 10.5, 9.5, 10.2) for _ in range(80)]
-        data = {"1m": list(reversed(candles))}
+        trend15 = [candle(10 + i * 0.05, 10.2 + i * 0.05, 9.9 + i * 0.05, 10 + i * 0.05) for i in range(90)]
+        data = {"1m": list(reversed(candles)), "15m": list(reversed(trend15))}
         result = evaluate_long_entry(data, replace(self.params, rsi_period=2, bb_period=2, pivot_left=1, pivot_right=1))
         self.assertIsInstance(result.final_pass, bool)
 
@@ -148,7 +149,42 @@ class RsiBbReversalLongTests(unittest.TestCase):
         )
         result = evaluate_long_entry(data, params)
         self.assertFalse(result.final_pass)
-        self.assertIn(result.reason, {"score_below_threshold", "filter_fail", "trigger_fail"})
+        self.assertIn(result.reason, {"score_below_threshold", "filter_fail", "trigger_fail", "regime_guard_fail"})
+
+
+    def test_n_of_k_pass_when_hits_meet_required_count(self):
+        candles = [candle(10, 10.2, 9.8, 10.0) for _ in range(90)]
+        trend15 = [candle(10 + i * 0.05, 10.2 + i * 0.05, 9.9 + i * 0.05, 10 + i * 0.05) for i in range(90)]
+        data = {"1m": list(reversed(candles)), "15m": list(reversed(trend15))}
+        params = replace(
+            self.params,
+            rsi_period=2,
+            bb_period=2,
+            pivot_left=1,
+            pivot_right=1,
+            required_signal_count=1,
+            entry_score_threshold=0.0,
+        )
+        result = evaluate_long_entry(data, params)
+        self.assertTrue(result.diagnostics["n_of_k_pass"])
+        self.assertGreaterEqual(result.diagnostics["signal_hits"], result.diagnostics["required_signal_count"])
+
+    def test_n_of_k_fail_when_hits_below_required_count(self):
+        candles = [candle(10, 10.2, 9.8, 10.0) for _ in range(90)]
+        trend15 = [candle(10 + i * 0.05, 10.2 + i * 0.05, 9.9 + i * 0.05, 10 + i * 0.05) for i in range(90)]
+        data = {"1m": list(reversed(candles)), "15m": list(reversed(trend15))}
+        params = replace(
+            self.params,
+            rsi_period=2,
+            bb_period=2,
+            pivot_left=1,
+            pivot_right=1,
+            required_signal_count=6,
+            entry_score_threshold=0.0,
+        )
+        result = evaluate_long_entry(data, params)
+        self.assertFalse(result.diagnostics["n_of_k_pass"])
+        self.assertEqual(result.reason, "trigger_fail")
 
     def test_stop_mode_price_calculation(self):
         candles_oldest = [
