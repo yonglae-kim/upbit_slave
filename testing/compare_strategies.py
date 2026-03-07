@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from testing.backtest_runner import BacktestRunner
+from testing.strategy_selector import SelectorConstraints, save_recommendation, select_recommendation
 
 
 @dataclass(frozen=True)
@@ -191,14 +192,35 @@ def run_comparison(args: argparse.Namespace) -> pd.DataFrame:
         records.append(record)
 
     result_df = pd.DataFrame(records)
+
+    sensitivity_df = None
+    sensitivity_path = str(getattr(args, "sensitivity_csv", "") or "").strip()
+    if sensitivity_path:
+        sensitivity_df = pd.read_csv(sensitivity_path)
+
+    selected_df, recommendation = select_recommendation(
+        result_df,
+        constraints=SelectorConstraints(
+            min_monthly_trades_increase=float(args.min_monthly_trades_increase),
+            mdd_buffer=float(args.mdd_buffer),
+        ),
+        sensitivity_df=sensitivity_df,
+    )
+
     csv_path = output_dir / args.result_csv
-    result_df.to_csv(csv_path, index=False)
+    selected_df.to_csv(csv_path, index=False)
 
     md_path = output_dir / args.report_md
-    _generate_markdown(result_df, md_path)
+    _generate_markdown(selected_df, md_path)
+
+    final_recommendation_json = output_dir / args.final_recommendation_json
+    final_recommendation_md = output_dir / args.final_recommendation_md
+    save_recommendation(recommendation, json_path=final_recommendation_json, markdown_path=final_recommendation_md)
     print(f"strategy comparison csv saved: {csv_path}")
     print(f"strategy comparison markdown saved: {md_path}")
-    return result_df
+    print(f"final recommendation json saved: {final_recommendation_json}")
+    print(f"final recommendation markdown saved: {final_recommendation_md}")
+    return selected_df
 
 
 def parse_args() -> argparse.Namespace:
@@ -215,6 +237,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="testing/reports")
     parser.add_argument("--result-csv", default="strategy_comparison.csv")
     parser.add_argument("--report-md", default="strategy_comparison.md")
+    parser.add_argument("--sensitivity-csv", default="", help="optional csv containing perturbation results for robustness_score")
+    parser.add_argument("--min-monthly-trades-increase", type=float, default=0.30)
+    parser.add_argument("--mdd-buffer", type=float, default=0.0)
+    parser.add_argument("--final-recommendation-json", default="final_recommendation.json")
+    parser.add_argument("--final-recommendation-md", default="final_recommendation.md")
     return parser.parse_args()
 
 

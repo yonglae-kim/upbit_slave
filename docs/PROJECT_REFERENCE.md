@@ -50,11 +50,16 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --result-csv testing/optimize_walkforward_results.csv
 # (산출: 결과 CSV + 상위 조합 패턴 문서 testing/optimize_walkforward_patterns.md)
 
-# 4개 전략 프로파일 비교 (Baseline/A/B/C)
+# 4개 전략 프로파일 비교 + 최종 추천 1개 산출
 python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --output-dir testing/reports
+# (선택 제약: OOS 월평균 거래수 baseline 대비 +30% 이상(옵션 조정 가능), expectancy/profit_factor baseline 이상, mdd baseline+mdd_buffer 이하)
+# (승률(win_rate)은 보조지표로만 기록하며 단독 최적화 기준으로 사용하지 않음)
+# (robustness_score: --sensitivity-csv 입력 시 perturbation_pct ±10~20% 구간에서 제약 충족 비율로 계산)
 # (산출: 통합 비교표 CSV testing/reports/strategy_comparison.csv)
 # (산출: 마크다운 리포트 testing/reports/strategy_comparison.md)
 # (산출: 프로파일별 세그먼트 CSV testing/reports/backtest_walkforward_segments_{baseline,a,b,c}.csv)
+# (산출: 최종 추천 JSON testing/reports/final_recommendation.json)
+# (산출: 최종 추천 Markdown testing/reports/final_recommendation.md)
 ```
 
 
@@ -308,3 +313,9 @@ python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --outpu
 - 변경 요약: 백테스트 실행기에 `--strategy-profile`(baseline/a/b/c) 오버라이드를 추가해 동일 파이프라인에서 전략안별 파라미터를 재현 가능하게 만들고, 세그먼트 CSV에 `avg_holding_minutes`, `longest_no_trade_bars`를 함께 기록하도록 확장. 신규 스크립트 `testing/compare_strategies.py`를 추가해 4개 프로파일을 순차 실행한 뒤 공통 KPI(`total_return/cagr/win_rate/profit_factor/expectancy/mdd/avg_rr`, `trades/monthly_trades/avg_holding/longest_no_trade_bars`, `recent_3m/6m/12m`)와 OOS(워크포워드 후반 절반) 집계를 병합한 비교 CSV/Markdown 리포트를 자동 생성.
 - 영향 파일: `testing/backtest_runner.py`, `testing/compare_strategies.py`, `testing/test_compare_strategies.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: `python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --output-dir testing/reports` 실행 시 `testing/reports/strategy_comparison.csv`, `testing/reports/strategy_comparison.md`, 프로파일별 `backtest_walkforward_segments_*.csv`가 생성됨.
+
+### 변경 요약 (2026-03-06, 전략 선택 모듈/최종 추천 리포트 추가)
+- 변경 요약: `testing/strategy_selector.py`를 추가해 Baseline 대비 제약(월평균 거래수 +30% 이상, expectancy/profit_factor baseline 이상, mdd buffer 적용 상한) 기반 후보 필터링과 최종 1개 추천 로직을 도입. 승률은 보조 지표로만 사용하고 단독 최적화 금지 가드레일을 명시. `--sensitivity-csv`가 제공되면 `perturbation_pct`의 ±10~20% 구간에서 조건 충족 비율을 `robustness_score`로 계산.
+- 영향 파일: `testing/strategy_selector.py`, `testing/compare_strategies.py`, `testing/test_strategy_selector.py`, `testing/test_compare_strategies.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: `python -m testing.compare_strategies ...` 실행 시 `testing/reports/final_recommendation.json` 및 `testing/reports/final_recommendation.md`가 추가 생성됨. 옵션으로 `--min-monthly-trades-increase`, `--mdd-buffer`, `--sensitivity-csv` 지원.
+
