@@ -3,7 +3,9 @@ from __future__ import annotations
 import datetime
 import json
 import math
+import os
 import os.path
+from pathlib import Path
 from argparse import ArgumentParser
 from collections import Counter
 from dataclasses import dataclass, field, replace
@@ -93,6 +95,8 @@ class SegmentResult:
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
     exit_reason_r_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     entry_fail_counts: dict[str, int] = field(default_factory=dict)
+    cooldown_blocked_entries: dict[str, int] = field(default_factory=dict)
+    blocked_entry_score_mean: dict[str, float] = field(default_factory=dict)
     avg_entry_score: float = 0.0
     score_q25: float = 0.0
     score_q50: float = 0.0
@@ -107,6 +111,7 @@ class SegmentResult:
     regime_trade_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     quality_bucket_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     stop_recovery_stats: dict[str, dict[str, float]] = field(default_factory=dict)
+    profit_factor: float = 0.0
     avg_holding_minutes: float = 0.0
     longest_no_trade_bars: int = 0
 
@@ -356,6 +361,15 @@ class BacktestRunner:
                 "expectancy": float((sum(pnls) / len(pnls)) if pnls else 0.0),
             }
         return summary
+
+    @staticmethod
+    def _resolve_cooldown_block_reason(state: BacktestPositionState) -> str:
+        reason = str(state.last_exit_reason or "unknown").strip().lower()
+        if not reason:
+            reason = "unknown"
+        if bool(getattr(state, "last_exit_reason", "")) and bool(getattr(state, "last_exit_bar_index", -1) >= 0):
+            return reason
+        return "unknown"
 
     @staticmethod
     def _build_quality_bucket_stats(rows: list[tuple[str, float]]) -> dict[str, dict[str, float]]:
@@ -880,9 +894,9 @@ class BacktestRunner:
             "dominant_fail_code": max(counters, key=counters.get) if counters else "none",
         }
 
-    def _calc_trade_stats(self, ledger: list[TradeLedgerEntry]) -> tuple[float, float, float, float, float]:
+    def _calc_trade_stats(self, ledger: list[TradeLedgerEntry]) -> tuple[float, float, float, float, float, float]:
         if not ledger:
-            return 0.0, 0.0, 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         pnls = [entry.pnl for entry in ledger]
         wins = [value for value in pnls if value > 0]
         losses = [value for value in pnls if value < 0]
@@ -891,7 +905,15 @@ class BacktestRunner:
         avg_loss = sum(losses) / len(losses) if losses else 0.0
         profit_loss_ratio = (avg_profit / abs(avg_loss)) if avg_loss < 0 else 0.0
         expectancy = sum(pnls) / len(pnls)
-        return win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy
+        gross_profit = sum(wins)
+        gross_loss = abs(sum(losses))
+        if gross_loss > 0:
+            profit_factor = gross_profit / gross_loss
+        elif gross_profit > 0:
+            profit_factor = float("inf")
+        else:
+            profit_factor = 0.0
+        return win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy, float(profit_factor)
 
     def _run_segment(self, data_newest: list[dict], init_amount: float, segment_id: int) -> SegmentResult:
         amount = init_amount
@@ -908,6 +930,8 @@ class BacktestRunner:
         position_state = BacktestPositionState()
         exit_reason_counts: Counter[str] = Counter()
         entry_fail_counts: Counter[str] = Counter()
+        cooldown_blocked_entries: Counter[str] = Counter()
+        blocked_entry_score_rows: dict[str, list[float]] = {}
         trade_ledger: list[TradeLedgerEntry] = []
         entry_scores: list[float] = []
         effective_score_thresholds: list[float] = []
@@ -961,6 +985,10 @@ class BacktestRunner:
                 if blocked_by_cooldown:
                     buy_signal = False
                     entry_fail_counts["fail_reentry_cooldown"] += 1
+                    block_reason = self._resolve_cooldown_block_reason(position_state)
+                    cooldown_blocked_entries[block_reason] += 1
+                    blocked_entry_score = float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0) if entry_eval else 0.0
+                    blocked_entry_score_rows.setdefault(block_reason, []).append(blocked_entry_score)
 
                 if not buy_signal and debug and not blocked_by_cooldown:
                     fail_code = str(debug.get("fail_code", "unknown"))
@@ -1209,7 +1237,7 @@ class BacktestRunner:
             candidate_entries,
             triggered_entries,
         )
-        win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy = self._calc_trade_stats(trade_ledger)
+        win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy, profit_factor = self._calc_trade_stats(trade_ledger)
         exit_reason_r_stats = self._build_exit_reason_r_stats(trade_ledger)
         oldest = data_newest[-1]["candle_date_time_kst"]
         newest = data_newest[0]["candle_date_time_kst"]
@@ -1266,6 +1294,11 @@ class BacktestRunner:
             exit_reason_counts=dict(exit_reason_counts),
             exit_reason_r_stats=exit_reason_r_stats,
             entry_fail_counts=dict(entry_fail_counts),
+            cooldown_blocked_entries=dict(cooldown_blocked_entries),
+            blocked_entry_score_mean={
+                reason: (sum(scores) / len(scores)) if scores else 0.0
+                for reason, scores in blocked_entry_score_rows.items()
+            },
             avg_entry_score=(sum(entry_scores) / len(entry_scores)) if entry_scores else 0.0,
             score_q25=score_q25,
             score_q50=score_q50,
@@ -1280,18 +1313,12 @@ class BacktestRunner:
             regime_trade_stats=regime_trade_stats,
             quality_bucket_stats=quality_bucket_stats,
             stop_recovery_stats=stop_recovery_stats,
+            profit_factor=profit_factor,
             avg_holding_minutes=avg_holding_minutes,
             longest_no_trade_bars=longest_no_trade_bars,
         )
 
-    def run(self):
-        self.stop_event_rows = []
-        self.stop_recovery_rows = []
-        self.stop_gap_trade_rows = []
-        self._print_config_default_vs_effective()
-        raw_data, shortage_count = self._load_or_create_data()
-        raw_data = self._filter_recent_days(raw_data)
-        init_amount = float(self.config.paper_initial_krw)
+    def _collect_walkforward_results(self, raw_data: list[dict], init_amount: float) -> list[SegmentResult]:
         in_len = self.insample_windows * self.buffer_cnt
         oos_len = self.oos_windows * self.buffer_cnt
         step = oos_len
@@ -1336,6 +1363,8 @@ class BacktestRunner:
                 exit_reason_counts=segment.exit_reason_counts,
                 exit_reason_r_stats=segment.exit_reason_r_stats,
                 entry_fail_counts=segment.entry_fail_counts,
+                cooldown_blocked_entries=segment.cooldown_blocked_entries,
+                blocked_entry_score_mean=segment.blocked_entry_score_mean,
                 avg_entry_score=segment.avg_entry_score,
                 score_q25=segment.score_q25,
                 score_q50=segment.score_q50,
@@ -1350,12 +1379,117 @@ class BacktestRunner:
                 regime_trade_stats=segment.regime_trade_stats,
                 quality_bucket_stats=segment.quality_bucket_stats,
                 stop_recovery_stats=segment.stop_recovery_stats,
+                profit_factor=segment.profit_factor,
+                avg_holding_minutes=segment.avg_holding_minutes,
+                longest_no_trade_bars=segment.longest_no_trade_bars,
             )
             results.append(segment)
             segment_id += 1
 
         if not results and len(raw_data) >= self.buffer_cnt:
             results.append(self._run_segment(raw_data, init_amount, segment_id=1))
+        return results
+
+    @staticmethod
+    def _delta(on_value: float, off_value: float) -> float:
+        return float(on_value - off_value)
+
+    @staticmethod
+    def _regime_metric(row: SegmentResult, regime_key: str, metric: str) -> float:
+        return float(row.regime_trade_stats.get(regime_key, {}).get(metric, 0.0))
+
+    def _build_cooldown_block_df(self, results: list[SegmentResult]) -> pd.DataFrame:
+        reasons = sorted({reason for row in results for reason in row.cooldown_blocked_entries.keys()})
+        rows: list[dict[str, float | int]] = []
+        for row in results:
+            payload: dict[str, float | int] = {}
+            for reason in reasons:
+                safe_reason = reason.replace(" ", "_")
+                payload[f"cooldown_blocked_entries_{safe_reason}"] = int(row.cooldown_blocked_entries.get(reason, 0))
+                payload[f"blocked_entry_score_mean_{safe_reason}"] = float(row.blocked_entry_score_mean.get(reason, 0.0))
+            rows.append(payload)
+        return pd.DataFrame(rows)
+
+    def _build_cooldown_ab_df(self, cooldown_on: list[SegmentResult], cooldown_off: list[SegmentResult]) -> pd.DataFrame:
+        paired = zip(cooldown_on, cooldown_off)
+        rows: list[dict[str, float | int]] = []
+        for on_row, off_row in paired:
+            rows.append(
+                {
+                    "segment_id": int(on_row.segment_id),
+                    "cooldown_on_trades": int(on_row.trades),
+                    "cooldown_off_trades": int(off_row.trades),
+                    "delta_trades": int(on_row.trades - off_row.trades),
+                    "cooldown_on_win_rate": float(on_row.win_rate),
+                    "cooldown_off_win_rate": float(off_row.win_rate),
+                    "delta_win_rate": self._delta(on_row.win_rate, off_row.win_rate),
+                    "cooldown_on_profit_factor": float(on_row.profit_factor),
+                    "cooldown_off_profit_factor": float(off_row.profit_factor),
+                    "delta_profit_factor": self._delta(on_row.profit_factor, off_row.profit_factor),
+                    "cooldown_on_expectancy": float(on_row.expectancy),
+                    "cooldown_off_expectancy": float(off_row.expectancy),
+                    "delta_expectancy": self._delta(on_row.expectancy, off_row.expectancy),
+                    "cooldown_on_mdd": float(on_row.mdd),
+                    "cooldown_off_mdd": float(off_row.mdd),
+                    "delta_mdd": self._delta(on_row.mdd, off_row.mdd),
+                    "cooldown_on_sideways_expectancy": self._regime_metric(on_row, "sideways", "expectancy"),
+                    "cooldown_off_sideways_expectancy": self._regime_metric(off_row, "sideways", "expectancy"),
+                    "delta_sideways_expectancy": self._delta(
+                        self._regime_metric(on_row, "sideways", "expectancy"),
+                        self._regime_metric(off_row, "sideways", "expectancy"),
+                    ),
+                    "cooldown_on_weak_expectancy": self._regime_metric(on_row, "weak_trend", "expectancy"),
+                    "cooldown_off_weak_expectancy": self._regime_metric(off_row, "weak_trend", "expectancy"),
+                    "delta_weak_expectancy": self._delta(
+                        self._regime_metric(on_row, "weak_trend", "expectancy"),
+                        self._regime_metric(off_row, "weak_trend", "expectancy"),
+                    ),
+                    "cooldown_on_strong_expectancy": self._regime_metric(on_row, "strong_trend", "expectancy"),
+                    "cooldown_off_strong_expectancy": self._regime_metric(off_row, "strong_trend", "expectancy"),
+                    "delta_strong_expectancy": self._delta(
+                        self._regime_metric(on_row, "strong_trend", "expectancy"),
+                        self._regime_metric(off_row, "strong_trend", "expectancy"),
+                    ),
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _write_cooldown_attribution_report(self, report_path: str, block_df: pd.DataFrame, ab_df: pd.DataFrame) -> None:
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        block_summary = block_df.sum(numeric_only=True).to_dict() if not block_df.empty else {}
+        ab_mean = ab_df.mean(numeric_only=True).to_dict() if not ab_df.empty else {}
+
+        lines = [
+            "# Cooldown Attribution Report",
+            "",
+            "## 1) Cooldown blocked entries by reason",
+            "",
+        ]
+        if block_summary:
+            for key, value in sorted(block_summary.items()):
+                lines.append(f"- {key}: {float(value):.4f}")
+        else:
+            lines.append("- no cooldown blocked entries")
+
+        lines.extend(["", "## 2) Cooldown ON/OFF A/B mean deltas", ""])
+        if ab_mean:
+            for key, value in sorted(ab_mean.items()):
+                lines.append(f"- {key}: {float(value):.4f}")
+        else:
+            lines.append("- no segment rows")
+
+        lines.extend(["", "## 3) Segment table (CSV)", "", "- `testing/reports/cooldown_ab_segments.csv`"])
+        Path(report_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def run(self):
+        self.stop_event_rows = []
+        self.stop_recovery_rows = []
+        self.stop_gap_trade_rows = []
+        self._print_config_default_vs_effective()
+        raw_data, shortage_count = self._load_or_create_data()
+        raw_data = self._filter_recent_days(raw_data)
+        init_amount = float(self.config.paper_initial_krw)
+        results = self._collect_walkforward_results(raw_data, init_amount)
 
         df = pd.DataFrame([r.__dict__ for r in results])
         reason_df = pd.DataFrame(
@@ -1462,13 +1596,16 @@ class BacktestRunner:
             ]
         )
         fail_df = pd.DataFrame([self._build_fail_summary(row.entry_fail_counts) for row in results])
+        cooldown_block_df = self._build_cooldown_block_df(results)
         if not reason_df.empty:
             df = pd.concat(
-                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "regime_trade_stats", "quality_bucket_stats", "stop_recovery_stats"], errors="ignore"), reason_df],
+                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "cooldown_blocked_entries", "blocked_entry_score_mean", "regime_trade_stats", "quality_bucket_stats", "stop_recovery_stats"], errors="ignore"), reason_df],
                 axis=1,
             )
         if not fail_df.empty:
             df = pd.concat([df, fail_df], axis=1)
+        if not cooldown_block_df.empty:
+            df = pd.concat([df, cooldown_block_df], axis=1)
         if not df.empty:
             period_returns = pd.to_numeric(df["period_return"], errors="coerce").fillna(0.0)
             compounded = (period_returns.div(100).add(1.0).prod() - 1.0) * 100
@@ -1476,6 +1613,33 @@ class BacktestRunner:
             df["segment_return_std"] = float(period_returns.std(ddof=0))
             df["segment_return_median"] = float(period_returns.median())
         df.to_csv(self.segment_report_path, index=False)
+
+        original_cooldown_bars = int(self.config.reentry_cooldown_bars)
+        original_loss_only = bool(self.config.cooldown_on_loss_exits_only)
+        stop_event_rows_on = list(self.stop_event_rows)
+        stop_recovery_rows_on = list(self.stop_recovery_rows)
+        stop_gap_rows_on = list(self.stop_gap_trade_rows)
+        try:
+            self.config.reentry_cooldown_bars = 0
+            self.config.cooldown_on_loss_exits_only = False
+            self.stop_event_rows = []
+            self.stop_recovery_rows = []
+            self.stop_gap_trade_rows = []
+            cooldown_off_results = self._collect_walkforward_results(raw_data, init_amount)
+        finally:
+            self.config.reentry_cooldown_bars = original_cooldown_bars
+            self.config.cooldown_on_loss_exits_only = original_loss_only
+            self.stop_event_rows = stop_event_rows_on
+            self.stop_recovery_rows = stop_recovery_rows_on
+            self.stop_gap_trade_rows = stop_gap_rows_on
+
+        cooldown_ab_df = self._build_cooldown_ab_df(results, cooldown_off_results)
+        cooldown_ab_path = os.path.join("testing", "reports", "cooldown_ab_segments.csv")
+        os.makedirs(os.path.dirname(cooldown_ab_path), exist_ok=True)
+        cooldown_ab_df.to_csv(cooldown_ab_path, index=False)
+
+        cooldown_report_path = os.path.join("testing", "reports", "cooldown_attribution.md")
+        self._write_cooldown_attribution_report(cooldown_report_path, cooldown_block_df, cooldown_ab_df)
 
         stop_diag_df = pd.DataFrame(self.stop_event_rows)
         if not stop_diag_df.empty:
@@ -1536,6 +1700,8 @@ class BacktestRunner:
             print(f"stop recovery diagnostics saved: {self.stop_recovery_path}")
         if self.debug_mode:
             print(f"entry failure debug saved: {self.debug_report_path}")
+        print("cooldown A/B segments saved: testing/reports/cooldown_ab_segments.csv")
+        print("cooldown attribution report saved: testing/reports/cooldown_attribution.md")
         if not abnormal_cagr_rows.empty:
             ids = ", ".join(str(int(v)) for v in abnormal_cagr_rows["segment_id"].tolist())
             print(
