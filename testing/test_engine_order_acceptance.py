@@ -31,8 +31,20 @@ class BuyOnlyBroker:
         return [{"market": "KRW-BTC", "trade_price": 100000.0, "trade_volume": 1000}]
 
     def get_candles(self, _market, interval, count=200):
-        _ = interval, count
-        return [{"trade_price": 100.0} for _ in range(3)]
+        candles = []
+        for idx in range(max(5, count)):
+            minute = idx % 60
+            candles.append(
+                {
+                    "candle_date_time_utc": f"2024-01-01T00:{minute:02d}:00",
+                    "trade_price": 100.0,
+                    "opening_price": 100.0,
+                    "high_price": 100.0,
+                    "low_price": 100.0,
+                    "candle_acc_trade_price": 1_000_000.0 + idx,
+                }
+            )
+        return list(reversed(candles))
 
     def buy_market(self, market, price, identifier=None):
         self.buy_calls.append((market, price, identifier))

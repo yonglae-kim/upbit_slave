@@ -237,20 +237,45 @@ class TradingEngine:
             return
 
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
-        turnover_5m_by_market = self._get_recent_5m_turnover_by_market(tickers)
         ticker_by_market = {str(ticker.get("market")): ticker for ticker in tickers if ticker.get("market")}
         top_and_spread_result = self.universe.select_watch_markets_with_report(
             tickers,
-            turnover_5m_by_market=turnover_5m_by_market,
         )
-        candles_by_market = {market: self._get_strategy_candles(market) for market in top_and_spread_result.watch_markets}
+
+        turnover_5m_by_market, candles_1m_by_market, collection_stats = self._collect_recent_5m_turnover_and_1m_candles(
+            top_and_spread_result.watch_markets
+        )
+        self.debug_counters["turnover_1m_collection_attempts"] = self.debug_counters.get("turnover_1m_collection_attempts", 0) + int(
+            collection_stats["attempts"]
+        )
+        self.debug_counters["turnover_1m_collection_api_calls"] = self.debug_counters.get("turnover_1m_collection_api_calls", 0) + int(
+            collection_stats["api_calls"]
+        )
+        self.debug_counters["turnover_1m_collection_failures"] = self.debug_counters.get("turnover_1m_collection_failures", 0) + int(
+            collection_stats["failures"]
+        )
+        cycle_failure_rate_pct = int(round(float(collection_stats["failure_rate"]) * 100.0))
+        self.debug_counters["turnover_1m_collection_cycle_failure_rate_pct"] = cycle_failure_rate_pct
+        print(
+            "TURNOVER_1M_COLLECTION_STATS",
+            f"attempts={int(collection_stats['attempts'])}",
+            f"api_calls={int(collection_stats['api_calls'])}",
+            f"failures={int(collection_stats['failures'])}",
+            f"failure_rate_pct={cycle_failure_rate_pct}",
+        )
+
         universe_result = self.universe.select_watch_markets_with_report(
             tickers,
-            candles_by_market={market: candles["1m"] for market, candles in candles_by_market.items()},
+            candles_by_market=candles_1m_by_market,
             turnover_5m_by_market=turnover_5m_by_market,
         )
         watch_markets = universe_result.watch_markets
         self.last_universe_selection_result = universe_result
+
+        candles_by_market = {
+            market: self._get_strategy_candles(market, preloaded_1m=candles_1m_by_market.get(market))
+            for market in watch_markets
+        }
 
         for market in watch_markets:
             if market in held_markets:
@@ -744,10 +769,13 @@ class TradingEngine:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
-    def _get_strategy_candles(self, market: str) -> dict[str, list[dict]]:
+    def _get_strategy_candles(self, market: str, preloaded_1m: list[dict] | None = None) -> dict[str, list[dict]]:
         intervals = {1: "1m", 5: "5m", 15: "15m"}
         result: dict[str, list[dict]] = {}
         for interval, key in intervals.items():
+            if interval == 1 and preloaded_1m is not None:
+                result[key] = preloaded_1m
+                continue
             raw = self.candle_buffer.get_candles(
                 market,
                 interval,
@@ -759,33 +787,51 @@ class TradingEngine:
             result[key] = preprocess_candles(raw, source_order="newest")
         return result
 
-    def _get_recent_5m_turnover_by_market(self, tickers: list[dict[str, object]]) -> dict[str, float]:
+    def _collect_recent_5m_turnover_and_1m_candles(
+        self,
+        candidate_markets: list[str],
+    ) -> tuple[dict[str, float], dict[str, list[dict]], dict[str, float | int]]:
         turnover_5m_by_market: dict[str, float] = {}
-        for ticker in tickers:
-            market = str(ticker.get("market", ""))
-            if not market:
+        candles_1m_by_market: dict[str, list[dict]] = {}
+        attempts = 0
+        failures = 0
+        api_calls = 0
+
+        for market in candidate_markets:
+            attempts += 1
+            raw_1m = self.candle_buffer.snapshot(market, 1)
+            if len(raw_1m) < 5:
+                api_calls += 1
+                raw_1m = self.candle_buffer.get_candles(
+                    market,
+                    1,
+                    lambda selected_market, selected_interval: self.broker.get_candles(
+                        selected_market,
+                        interval=selected_interval,
+                        count=5,
+                    ),
+                )
+
+            candles_1m = preprocess_candles(raw_1m, source_order="newest")
+            if len(candles_1m) < 5:
+                failures += 1
                 continue
 
-            raw_5m = self.candle_buffer.get_candles(
-                market,
-                5,
-                lambda selected_market, selected_interval: self.broker.get_candles(
-                    selected_market,
-                    interval=selected_interval,
-                    count=1,
-                ),
-            )
-            candles_5m = preprocess_candles(raw_5m, source_order="newest")
-            if not candles_5m:
+            latest_five = candles_1m[:5]
+            if any("candle_acc_trade_price" not in candle for candle in latest_five):
+                failures += 1
                 continue
 
-            latest_5m = candles_5m[0]
-            if "candle_acc_trade_price" not in latest_5m:
-                continue
+            turnover_5m_by_market[market] = sum(float(candle.get("candle_acc_trade_price", 0.0) or 0.0) for candle in latest_five)
+            candles_1m_by_market[market] = candles_1m
 
-            turnover_5m_by_market[market] = float(latest_5m.get("candle_acc_trade_price", 0.0) or 0.0)
-
-        return turnover_5m_by_market
+        failure_rate = (failures / attempts) if attempts > 0 else 0.0
+        return turnover_5m_by_market, candles_1m_by_market, {
+            "attempts": attempts,
+            "failures": failures,
+            "failure_rate": failure_rate,
+            "api_calls": api_calls,
+        }
 
     def _next_order_identifier(self, market: str, side: str) -> str:
         self._order_sequence += 1
