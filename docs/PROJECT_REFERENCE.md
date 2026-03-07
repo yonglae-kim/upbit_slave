@@ -339,3 +339,8 @@ python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --outpu
 - 변경 요약: `select_top_by_trading_value_with_drops` 인터페이스에 `turnover_5m_by_market` 인자를 추가하고, 값이 제공될 때는 `acc_trade_price_24h` 대신 최근 5분 거래대금만으로 top_n1 정렬을 수행하도록 확장. 5분 거래대금이 없는 마켓은 `missing_5m_turnover` 사유로 즉시 드롭하며 `UniverseDropReason`에 기록.
 - 영향 파일: `core/universe.py`, `core/engine.py`, `testing/test_universe.py`, `testing/test_engine_candle_trigger.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 회귀 검증 시 `python -m unittest testing.test_universe testing.test_engine_candle_trigger`로 5분 거래대금 기반 선별/드롭 사유와 엔진 연동 동작을 함께 확인.
+
+### 변경 요약 (2026-03-07, 1분 캔들 기반 5분 turnover 수집/재사용)
+- 변경 요약: `_try_buy`에서 top/spread 후보군 확정 이후 각 마켓의 최근 1분 캔들(최소 5개)을 우선 candle buffer snapshot으로 확보하고, 부족할 때만 `get_candles(interval=1, count=5)`를 호출하도록 변경. 최근 5개 1분 캔들의 `candle_acc_trade_price` 합으로 `turnover_5m_by_market`를 계산하며, 5개 미만/필드 누락 마켓은 invalid 처리되어 유니버스 `top_n1` 단계(`missing_5m_turnover`)에서 자동 제외. 동시에 수집한 1m 데이터를 전략 평가 입력으로 재사용해 중복 호출을 줄이고, cycle 단위 `attempts/api_calls/failures/failure_rate_pct`를 디버그 카운터/로그(`TURNOVER_1M_COLLECTION_STATS`)로 남기도록 확장.
+- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `testing/test_engine_candle_trigger.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 실거래/모의 실행 로그에서 `TURNOVER_1M_COLLECTION_STATS` 출력과 `debug_counters`의 `turnover_1m_collection_*` 누적값을 함께 확인해 수집 시도 수, API 호출 수, 실패율을 모니터링 가능.

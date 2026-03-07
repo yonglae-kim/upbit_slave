@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from core.config import TradingConfig
@@ -9,7 +9,17 @@ class TriggerBroker:
     def __init__(self):
         self.buy_orders = []
         self._candles = {
-            1: [{"candle_date_time_utc": "2024-01-01T00:01:00", "trade_price": 10000.0}],
+            1: [
+                {
+                    "candle_date_time_utc": f"2024-01-01T00:{minute:02d}:00",
+                    "trade_price": 10000.0,
+                    "opening_price": 10000.0,
+                    "high_price": 10000.0,
+                    "low_price": 10000.0,
+                    "candle_acc_trade_price": 1_000_000.0 + minute,
+                }
+                for minute in range(4, -1, -1)
+            ],
             5: [{"candle_date_time_utc": "2024-01-01T00:00:00", "trade_price": 10000.0, "candle_acc_trade_price": 1_000_000.0}],
             15: [{"candle_date_time_utc": "2024-01-01T00:00:00", "trade_price": 10000.0}],
         }
@@ -24,8 +34,25 @@ class TriggerBroker:
         return [{"market": "KRW-BTC", "trade_volume": 1000.0}]
 
     def get_candles(self, _market, interval, count=200):
-        _ = count
-        return list(self._candles[interval])
+        candles = list(self._candles[interval])
+        if interval != 1 or len(candles) >= count or not candles:
+            return candles
+
+        latest_time = datetime.fromisoformat(candles[0]["candle_date_time_utc"])
+        while len(candles) < count:
+            latest_time = latest_time.replace(tzinfo=None) + timedelta(minutes=1)
+            candles.insert(
+                0,
+                {
+                    "candle_date_time_utc": latest_time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "trade_price": 10000.0,
+                    "opening_price": 10000.0,
+                    "high_price": 10000.0,
+                    "low_price": 10000.0,
+                    "candle_acc_trade_price": 1_000_000.0 + float(len(candles)),
+                },
+            )
+        return candles
 
     def buy_market(self, market, value, identifier=None):
         self.buy_orders.append({"market": market, "value": value, "identifier": identifier})
