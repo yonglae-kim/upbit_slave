@@ -319,3 +319,18 @@ python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --outpu
 - 영향 파일: `testing/strategy_selector.py`, `testing/compare_strategies.py`, `testing/test_strategy_selector.py`, `testing/test_compare_strategies.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: `python -m testing.compare_strategies ...` 실행 시 `testing/reports/final_recommendation.json` 및 `testing/reports/final_recommendation.md`가 추가 생성됨. 옵션으로 `--min-monthly-trades-increase`, `--mdd-buffer`, `--sensitivity-csv` 지원.
 
+
+### 쿨다운 검증(A/B) 절차
+1. 아래 명령으로 워크포워드 백테스트를 실행합니다.
+   - `python -m testing.backtest_runner --market KRW-BTC --lookback-days 30 --segment-report-path testing/reports/backtest_walkforward_segments.csv`
+2. 실행 후 세그먼트 결과(`testing/reports/backtest_walkforward_segments.csv`)에서 `cooldown_blocked_entries_*`, `blocked_entry_score_mean_*` 컬럼으로 reason별 진입 차단 건수/차단 시 entry_score 평균을 확인합니다.
+3. 자동 생성되는 `testing/reports/cooldown_ab_segments.csv`에서 같은 세그먼트 기준으로 cooldown ON/OFF KPI 변화를 확인합니다.
+   - 거래 수 변화: `delta_trades`
+   - 승률/PF/expectancy/MDD 변화: `delta_win_rate`, `delta_profit_factor`, `delta_expectancy`, `delta_mdd`
+4. 레짐 효과는 `delta_sideways_expectancy`, `delta_weak_expectancy`, `delta_strong_expectancy` 컬럼으로 분리 확인합니다.
+5. 최종 요약은 `testing/reports/cooldown_attribution.md`에서 reason 집계 및 ON/OFF 평균 델타를 확인합니다.
+
+### 변경 요약 (2026-03-07, 쿨다운 attribution/A-B 리포트 자동화)
+- 변경 요약: 백테스트 세그먼트에 reason별 쿨다운 진입 차단 집계(`cooldown_blocked_entries_*`)와 차단 시 점수 평균(`blocked_entry_score_mean_*`)을 추가하고, 동일 구간에서 cooldown ON/OFF를 자동 재실행해 거래수/승률/PF/expectancy/MDD 및 레짐별(횡보/약추세/강추세) expectancy 변화 테이블(`testing/reports/cooldown_ab_segments.csv`)을 생성하도록 확장. 요약 Markdown(`testing/reports/cooldown_attribution.md`) 자동 생성 로직을 추가.
+- 영향 파일: `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기존 `python -m testing.backtest_runner ...` 명령은 동일. 실행 시 `testing/reports/cooldown_ab_segments.csv`, `testing/reports/cooldown_attribution.md`가 추가 생성되며, 세그먼트 CSV에 쿨다운 차단 reason 컬럼이 포함됨.
