@@ -37,11 +37,16 @@ class UniverseBuilder:
         self,
         tickers: Iterable[dict[str, Any]],
         candles_by_market: dict[str, list[dict[str, Any]]] | None = None,
+        turnover_5m_by_market: dict[str, float] | None = None,
     ) -> UniverseSelectionResult:
         candidates = [ticker for ticker in tickers if ticker.get("market")]
         drop_reasons: list[UniverseDropReason] = []
 
-        top_selected, top_drops = select_top_by_trading_value_with_drops(candidates, self.config.universe_top_n1)
+        top_selected, top_drops = select_top_by_trading_value_with_drops(
+            candidates,
+            self.config.universe_top_n1,
+            turnover_5m_by_market=turnover_5m_by_market,
+        )
         drop_reasons.extend(top_drops)
 
         spread_selected, spread_drops = filter_by_relative_spread_with_drops(top_selected, self.config.max_relative_spread)
@@ -100,14 +105,26 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def select_top_by_trading_value(tickers: Iterable[dict[str, Any]], top_n1: int) -> list[dict[str, Any]]:
-    selected, _drops = select_top_by_trading_value_with_drops(tickers, top_n1)
+def select_top_by_trading_value(
+    tickers: Iterable[dict[str, Any]],
+    top_n1: int,
+    turnover_5m_by_market: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    selected, _drops = select_top_by_trading_value_with_drops(
+        tickers,
+        top_n1,
+        turnover_5m_by_market=turnover_5m_by_market,
+    )
     return selected
 
 
 def select_top_by_trading_value_with_drops(
-    tickers: Iterable[dict[str, Any]], top_n1: int
+    tickers: Iterable[dict[str, Any]],
+    top_n1: int,
+    turnover_5m_by_market: dict[str, float] | None = None,
 ) -> tuple[list[dict[str, Any]], list[UniverseDropReason]]:
+    tickers_list = list(tickers)
+
     if top_n1 <= 0:
         return [], [
             UniverseDropReason(
@@ -116,12 +133,46 @@ def select_top_by_trading_value_with_drops(
                 reason="top_n1_disabled",
                 threshold=top_n1,
             )
-            for ticker in tickers
+            for ticker in tickers_list
             if ticker.get("market")
         ]
 
+    if turnover_5m_by_market is not None:
+        ranked_candidates: list[tuple[dict[str, Any], float]] = []
+        dropped = []
+        for ticker in tickers_list:
+            market = str(ticker.get("market", ""))
+            if not market:
+                continue
+            turnover_5m = turnover_5m_by_market.get(market)
+            if turnover_5m is None:
+                dropped.append(
+                    UniverseDropReason(
+                        market=market,
+                        stage="top_n1",
+                        reason="missing_5m_turnover",
+                    )
+                )
+                continue
+            ranked_candidates.append((ticker, _to_float(turnover_5m)))
+
+        ranked_candidates.sort(key=lambda item: item[1], reverse=True)
+        selected = [item[0] for item in ranked_candidates[:top_n1]]
+        dropped.extend(
+            UniverseDropReason(
+                market=str(ticker.get("market", "")),
+                stage="top_n1",
+                reason="outside_top_n1_5m_turnover",
+                value=turnover,
+                threshold=top_n1,
+            )
+            for ticker, turnover in ranked_candidates[top_n1:]
+            if ticker.get("market")
+        )
+        return selected, dropped
+
     ranked = sorted(
-        tickers,
+        tickers_list,
         key=lambda ticker: _to_float(
             ticker.get("acc_trade_price_24h", ticker.get("acc_trade_price", ticker.get("trade_volume", 0.0)))
         ),

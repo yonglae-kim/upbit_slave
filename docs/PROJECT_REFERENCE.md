@@ -334,3 +334,8 @@ python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --outpu
 - 변경 요약: 백테스트 세그먼트에 reason별 쿨다운 진입 차단 집계(`cooldown_blocked_entries_*`)와 차단 시 점수 평균(`blocked_entry_score_mean_*`)을 추가하고, 동일 구간에서 cooldown ON/OFF를 자동 재실행해 거래수/승률/PF/expectancy/MDD 및 레짐별(횡보/약추세/강추세) expectancy 변화 테이블(`testing/reports/cooldown_ab_segments.csv`)을 생성하도록 확장. 요약 Markdown(`testing/reports/cooldown_attribution.md`) 자동 생성 로직을 추가.
 - 영향 파일: `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기존 `python -m testing.backtest_runner ...` 명령은 동일. 실행 시 `testing/reports/cooldown_ab_segments.csv`, `testing/reports/cooldown_attribution.md`가 추가 생성되며, 세그먼트 CSV에 쿨다운 차단 reason 컬럼이 포함됨.
+
+### 변경 요약 (2026-03-07, 유니버스 top_n1 5분 거래대금 우선 정렬)
+- 변경 요약: `select_top_by_trading_value_with_drops` 인터페이스에 `turnover_5m_by_market` 인자를 추가하고, 값이 제공될 때는 `acc_trade_price_24h` 대신 최근 5분 거래대금만으로 top_n1 정렬을 수행하도록 확장. 5분 거래대금이 없는 마켓은 `missing_5m_turnover` 사유로 즉시 드롭하며 `UniverseDropReason`에 기록.
+- 영향 파일: `core/universe.py`, `core/engine.py`, `testing/test_universe.py`, `testing/test_engine_candle_trigger.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 회귀 검증 시 `python -m unittest testing.test_universe testing.test_engine_candle_trigger`로 5분 거래대금 기반 선별/드롭 사유와 엔진 연동 동작을 함께 확인.
