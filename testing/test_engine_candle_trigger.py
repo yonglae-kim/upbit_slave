@@ -10,7 +10,7 @@ class TriggerBroker:
         self.buy_orders = []
         self._candles = {
             1: [{"candle_date_time_utc": "2024-01-01T00:01:00", "trade_price": 10000.0}],
-            5: [{"candle_date_time_utc": "2024-01-01T00:00:00", "trade_price": 10000.0}],
+            5: [{"candle_date_time_utc": "2024-01-01T00:00:00", "trade_price": 10000.0, "candle_acc_trade_price": 1_000_000.0}],
             15: [{"candle_date_time_utc": "2024-01-01T00:00:00", "trade_price": 10000.0}],
         }
 

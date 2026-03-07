@@ -237,12 +237,17 @@ class TradingEngine:
             return
 
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
+        turnover_5m_by_market = self._get_recent_5m_turnover_by_market(tickers)
         ticker_by_market = {str(ticker.get("market")): ticker for ticker in tickers if ticker.get("market")}
-        top_and_spread_result = self.universe.select_watch_markets_with_report(tickers)
+        top_and_spread_result = self.universe.select_watch_markets_with_report(
+            tickers,
+            turnover_5m_by_market=turnover_5m_by_market,
+        )
         candles_by_market = {market: self._get_strategy_candles(market) for market in top_and_spread_result.watch_markets}
         universe_result = self.universe.select_watch_markets_with_report(
             tickers,
             candles_by_market={market: candles["1m"] for market, candles in candles_by_market.items()},
+            turnover_5m_by_market=turnover_5m_by_market,
         )
         watch_markets = universe_result.watch_markets
         self.last_universe_selection_result = universe_result
@@ -753,6 +758,34 @@ class TradingEngine:
             )
             result[key] = preprocess_candles(raw, source_order="newest")
         return result
+
+    def _get_recent_5m_turnover_by_market(self, tickers: list[dict[str, object]]) -> dict[str, float]:
+        turnover_5m_by_market: dict[str, float] = {}
+        for ticker in tickers:
+            market = str(ticker.get("market", ""))
+            if not market:
+                continue
+
+            raw_5m = self.candle_buffer.get_candles(
+                market,
+                5,
+                lambda selected_market, selected_interval: self.broker.get_candles(
+                    selected_market,
+                    interval=selected_interval,
+                    count=1,
+                ),
+            )
+            candles_5m = preprocess_candles(raw_5m, source_order="newest")
+            if not candles_5m:
+                continue
+
+            latest_5m = candles_5m[0]
+            if "candle_acc_trade_price" not in latest_5m:
+                continue
+
+            turnover_5m_by_market[market] = float(latest_5m.get("candle_acc_trade_price", 0.0) or 0.0)
+
+        return turnover_5m_by_market
 
     def _next_order_identifier(self, market: str, side: str) -> str:
         self._order_sequence += 1
