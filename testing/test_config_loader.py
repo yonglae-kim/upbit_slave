@@ -32,8 +32,6 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'partial_take_profit_threshold': 1.02,\n"
                 "    'partial_take_profit_ratio': 0.5,\n"
                 "    'partial_stop_loss_ratio': 1.0,\n"
-                "    'trailing_requires_breakeven': True,\n"
-                "    'trailing_activation_bars': 0,\n"
                 "    'exit_mode': 'atr',\n"
                 "    'atr_period': 14,\n"
                 "    'atr_stop_mult': 1.4,\n"
@@ -84,16 +82,8 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'regime_adx_min': 18.0,\n"
                 "    'regime_slope_lookback': 3,\n"
                 "    'zone_profile': 'aggressive',\n"
-                "    'reentry_cooldown_profile': 'loss_exit_guarded',\n"
                 "    'reentry_cooldown_bars': 10,\n"
-                "    'reentry_cooldown_bars_by_regime': {'sideways': 14},\n"
-                "    'cooldown_on_loss_exits_only': True,\n"
-                "    'reentry_dynamic_cooldown_enabled': True,\n"
-                "    'reentry_dynamic_cooldown_lookback_bars': 20,\n"
-                "    'reentry_dynamic_cooldown_atr_period': 14,\n"
-                "    'reentry_dynamic_cooldown_base_atr_ratio': 0.008,\n"
-                "    'reentry_dynamic_cooldown_scale': 2.5,\n"
-                "    'reentry_dynamic_cooldown_max_extra_bars': 8,\n"
+                "    'cooldown_on_loss_exits_only': False,\n"
                 "    'strategy_name': 'rsi_bb_reversal_long',\n"
                 "    'rsi_period': 14,\n"
                 "    'rsi_long_threshold': 30,\n"
@@ -106,19 +96,17 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'macd_fast': 12,\n"
                 "    'macd_slow': 26,\n"
                 "    'macd_signal': 9,\n"
-                "    'macd_histogram_filter_enabled': True,\n"
+                "    'macd_histogram_filter_enabled': False,\n"
                 "    'engulfing_strict': True,\n"
                 "    'engulfing_include_wick': False,\n"
-                "    'allow_bullish_close_reversal_trigger': True,\n"
                 "    'consecutive_bearish_count': 3,\n"
                 "    'pivot_left': 3,\n"
                 "    'pivot_right': 3,\n"
                 "    'double_bottom_lookback_bars': 40,\n"
-                "    'double_bottom_tolerance_pct': 1.0,\n"
-                "    'require_band_reentry_on_second_bottom': False,\n"
+                "    'double_bottom_tolerance_pct': 0.5,\n"
+                "    'require_band_reentry_on_second_bottom': True,\n"
                 "    'require_neckline_break': False,\n"
                 "    'divergence_signal_enabled': True,\n"
-                "    'required_signal_count': 3,\n"
                 "    'entry_score_threshold': 2.5,\n"
                 "    'rsi_oversold_weight': 1.0,\n"
                 "    'bb_touch_weight': 1.0,\n"
@@ -159,8 +147,6 @@ class ConfigLoaderTest(unittest.TestCase):
         config = load_trading_config()
         self.assertEqual(config.max_holdings, 1)
         self.assertEqual(config.max_concurrent_positions, 1)
-        self.assertFalse(config.require_band_reentry_on_second_bottom)
-        self.assertTrue(config.allow_bullish_close_reversal_trigger)
 
     def test_env_override_and_validation(self):
         os.environ["TRADING_MODE"] = "dry_run"
@@ -190,19 +176,16 @@ class ConfigLoaderTest(unittest.TestCase):
 
     def test_entry_score_env_override(self):
         os.environ["TRADING_ENTRY_SCORE_THRESHOLD"] = "3.25"
-        os.environ["TRADING_REQUIRED_SIGNAL_COUNT"] = "4"
         os.environ["TRADING_MACD_CROSS_WEIGHT"] = "1.7"
         os.environ["TRADING_QUALITY_MULTIPLIER_HIGH"] = "1.3"
         try:
             config = load_trading_config()
         finally:
             del os.environ["TRADING_ENTRY_SCORE_THRESHOLD"]
-            del os.environ["TRADING_REQUIRED_SIGNAL_COUNT"]
             del os.environ["TRADING_MACD_CROSS_WEIGHT"]
             del os.environ["TRADING_QUALITY_MULTIPLIER_HIGH"]
 
         self.assertEqual(config.entry_score_threshold, 3.25)
-        self.assertEqual(config.required_signal_count, 4)
         self.assertEqual(config.macd_cross_weight, 1.7)
         self.assertEqual(config.quality_multiplier_high, 1.3)
 
@@ -213,29 +196,6 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertGreater(strong.get("entry_score_threshold", 0.0), side.get("entry_score_threshold", 0.0))
         self.assertGreater(strong.get("take_profit_r", 0.0), side.get("take_profit_r", 0.0))
-
-
-    def test_trailing_activation_env_overrides(self):
-        os.environ["TRADING_TRAILING_REQUIRES_BREAKEVEN"] = "false"
-        os.environ["TRADING_TRAILING_ACTIVATION_BARS"] = "3"
-        try:
-            config = load_trading_config()
-        finally:
-            del os.environ["TRADING_TRAILING_REQUIRES_BREAKEVEN"]
-            del os.environ["TRADING_TRAILING_ACTIVATION_BARS"]
-
-        self.assertFalse(config.trailing_requires_breakeven)
-        self.assertEqual(config.trailing_activation_bars, 3)
-
-
-    def test_close_reversal_trigger_env_override(self):
-        os.environ["TRADING_ALLOW_BULLISH_CLOSE_REVERSAL_TRIGGER"] = "false"
-        try:
-            config = load_trading_config()
-        finally:
-            del os.environ["TRADING_ALLOW_BULLISH_CLOSE_REVERSAL_TRIGGER"]
-
-        self.assertFalse(config.allow_bullish_close_reversal_trigger)
 
     def test_invalid_range_raises(self):
         os.environ["TRADING_BUY_RSI_THRESHOLD"] = "120"

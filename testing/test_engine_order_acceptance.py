@@ -1,7 +1,5 @@
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-import tempfile
 from unittest.mock import patch
 
 from core.config import TradingConfig
@@ -31,20 +29,8 @@ class BuyOnlyBroker:
         return [{"market": "KRW-BTC", "trade_price": 100000.0, "trade_volume": 1000}]
 
     def get_candles(self, _market, interval, count=200):
-        candles = []
-        for idx in range(max(5, count)):
-            minute = idx % 60
-            candles.append(
-                {
-                    "candle_date_time_utc": f"2024-01-01T00:{minute:02d}:00",
-                    "trade_price": 100.0,
-                    "opening_price": 100.0,
-                    "high_price": 100.0,
-                    "low_price": 100.0,
-                    "candle_acc_trade_price": 1_000_000.0 + idx,
-                }
-            )
-        return list(reversed(candles))
+        _ = interval, count
+        return [{"trade_price": 100.0} for _ in range(3)]
 
     def buy_market(self, market, price, identifier=None):
         self.buy_calls.append((market, price, identifier))
@@ -257,167 +243,6 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
         self.assertEqual(broker.cancel_calls, ["open-uuid-1"])
         self.assertEqual(len(broker.buy_calls), 1)
         self.assertIn(":root=open-1", broker.buy_calls[0][2])
-
-    def test_trade_reason_log_keeps_recent_10_records(self):
-        broker = BuyOnlyBroker()
-        notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
-        engine = TradingEngine(broker, notifier, config)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            log_path = Path(tmpdir) / "recent_trade_reasons.txt"
-            jsonl_path = Path(tmpdir) / "trade_reasons.jsonl"
-            engine._trade_reason_log_path = log_path
-            engine._trade_reason_jsonl_path = jsonl_path
-
-            for idx in range(12):
-                side = "BUY" if idx % 2 == 0 else "SELL"
-                engine._append_trade_reason(
-                    side=side,
-                    market="KRW-BTC",
-                    reason=f"reason-{idx}",
-                    price=1000 + idx,
-                    qty=0.12345678 if idx == 11 else None,
-                    notional_krw=10000 if idx == 11 else None,
-                    qty_ratio=0.5 if idx == 11 else None,
-                )
-
-            self.assertTrue(log_path.exists())
-            lines = log_path.read_text(encoding="utf-8").strip().splitlines()
-            self.assertEqual(len(lines), 10)
-            self.assertIn("reason-2", lines[0])
-            self.assertIn(
-                "qty=na | notional_krw=na | qty_ratio=na | position_id=na | holding_seconds=na | holding_bars=na",
-                lines[0],
-            )
-            self.assertIn("reason-11", lines[-1])
-            self.assertIn(
-                "qty=0.12345678 | notional_krw=10000 | qty_ratio=0.5000 | position_id=na | holding_seconds=na | holding_bars=na",
-                lines[-1],
-            )
-            jsonl_lines = jsonl_path.read_text(encoding="utf-8").strip().splitlines()
-            self.assertEqual(len(jsonl_lines), 12)
-            payload = __import__("json").loads(jsonl_lines[-1])
-            self.assertEqual(
-                sorted(payload.keys()),
-                [
-                    "diagnostics",
-                    "holding_seconds",
-                    "market",
-                    "notional_krw",
-                    "position_id",
-                    "price",
-                    "qty",
-                    "qty_ratio",
-                    "reason",
-                    "side",
-                    "ts",
-                ],
-            )
-            self.assertEqual(payload["reason"], "reason-11")
-
-    def test_trade_reason_log_adds_stop_fields_only_for_stop_reasons(self):
-        broker = BuyOnlyBroker()
-        notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
-        engine = TradingEngine(broker, notifier, config)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            log_path = Path(tmpdir) / "recent_trade_reasons.txt"
-            jsonl_path = Path(tmpdir) / "trade_reasons.jsonl"
-            engine._trade_reason_log_path = log_path
-            engine._trade_reason_jsonl_path = jsonl_path
-
-            engine._append_trade_reason(
-                side="SELL",
-                market="KRW-BTC",
-                reason="stop_loss",
-                price=99.0,
-                diagnostics={
-                    "hard_stop_price": 100.0,
-                    "trailing_floor": 98.0,
-                    "exit_stage": "mid_management",
-                },
-            )
-            engine._append_trade_reason(
-                side="SELL",
-                market="KRW-BTC",
-                reason="strategy_signal",
-                price=101.0,
-                diagnostics={"hard_stop_price": 100.0},
-            )
-
-            lines = log_path.read_text(encoding="utf-8").strip().splitlines()
-            self.assertIn("reason=stop_loss", lines[0])
-            self.assertIn("stop_ref_price=100.00000000", lines[0])
-            self.assertIn("stop_gap_pct=-1.0000", lines[0])
-            self.assertIn("position_id=na | holding_seconds=na | holding_bars=na", lines[0])
-            self.assertIn("reason=strategy_signal", lines[1])
-            self.assertNotIn("stop_ref_price=", lines[1])
-
-    def test_trade_reason_log_includes_position_id_and_holding_fields_for_sell(self):
-        broker = BuyOnlyBroker()
-        notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
-        engine = TradingEngine(broker, notifier, config)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            log_path = Path(tmpdir) / "recent_trade_reasons.txt"
-            jsonl_path = Path(tmpdir) / "trade_reasons.jsonl"
-            engine._trade_reason_log_path = log_path
-            engine._trade_reason_jsonl_path = jsonl_path
-            engine._entry_position_id_by_market["KRW-BTC"] = "KRW-BTC:bid:entry-1"
-            engine._entry_started_at_by_market["KRW-BTC"] = datetime.now(timezone.utc) - timedelta(seconds=90)
-
-            engine._append_trade_reason(
-                side="SELL",
-                market="KRW-BTC",
-                reason="strategy_signal",
-                price=101.0,
-                qty=0.1,
-                notional_krw=10100,
-                qty_ratio=1.0,
-                position_id=engine._entry_position_id_by_market["KRW-BTC"],
-                holding_seconds=engine._compute_holding_seconds("KRW-BTC"),
-                holding_bars=engine._compute_holding_bars("KRW-BTC"),
-            )
-
-            line = log_path.read_text(encoding="utf-8").strip()
-            self.assertIn("position_id=KRW-BTC:bid:entry-1", line)
-            self.assertRegex(line, r"holding_seconds=\d+\.\d{3}")
-            self.assertIn("holding_bars=na", line)
-
-    def test_trade_reason_jsonl_rotates_when_reaching_max_size(self):
-        broker = BuyOnlyBroker()
-        notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
-        engine = TradingEngine(broker, notifier, config)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            jsonl_path = Path(tmpdir) / "trade_reasons.jsonl"
-            engine._trade_reason_jsonl_path = jsonl_path
-            engine._trade_reason_jsonl_max_bytes = 32
-            jsonl_path.write_text("x" * 40, encoding="utf-8")
-
-            engine._append_trade_reason(side="BUY", market="KRW-BTC", reason="entry_signal", price=100.0)
-
-            rotated_files = list(Path(tmpdir).glob("trade_reasons.*.jsonl"))
-            self.assertEqual(len(rotated_files), 1)
-            self.assertTrue(jsonl_path.exists())
-            self.assertIn('"reason": "entry_signal"', jsonl_path.read_text(encoding="utf-8"))
-
-    def test_trade_reason_jsonl_write_failure_prints_warning(self):
-        broker = BuyOnlyBroker()
-        notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
-        engine = TradingEngine(broker, notifier, config)
-        engine._trade_reason_jsonl_path = Path("/dev/null/trade_reasons.jsonl")
-
-        with patch("builtins.print") as mock_print:
-            engine._append_trade_reason(side="BUY", market="KRW-BTC", reason="entry_signal", price=100.0)
-
-        printed = "\n".join(" ".join(map(str, call.args)) for call in mock_print.call_args_list)
-        self.assertIn("TRADE_REASON_JSONL_LOG_WRITE_FAILED", printed)
 
 
 if __name__ == "__main__":

@@ -62,44 +62,6 @@ def _ema(values: list[float], period: int) -> list[float]:
     return out
 
 
-
-
-def _atr_series(candles_newest: list[dict[str, Any]], period: int) -> list[float]:
-    candles = list(reversed(candles_newest))
-    n = len(candles)
-    if n == 0:
-        return []
-
-    trs = [0.0] * n
-    for i in range(1, n):
-        high = _price(candles[i], "high_price")
-        low = _price(candles[i], "low_price")
-        prev_close = _price(candles[i - 1], "trade_price")
-        trs[i] = max(high - low, abs(high - prev_close), abs(low - prev_close))
-
-    out = [0.0] * n
-    if period <= 0:
-        return out
-
-    for i in range(1, n):
-        start = max(1, i - period + 1)
-        window = trs[start : i + 1]
-        out[i] = (sum(window) / len(window)) if window else 0.0
-    return out
-
-
-def _dynamic_bearish_count(regime_alignment: float) -> int:
-    return 1 if regime_alignment >= 1.0 else 2
-
-
-def _is_bullish_close_reversal(candles_oldest: list[dict[str, Any]], idx_oldest: int) -> bool:
-    if idx_oldest <= 0 or idx_oldest >= len(candles_oldest):
-        return False
-    prev_close = _price(candles_oldest[idx_oldest - 1], "trade_price")
-    cur_open = _price(candles_oldest[idx_oldest], "opening_price")
-    cur_close = _price(candles_oldest[idx_oldest], "trade_price")
-    return cur_close > cur_open and cur_close > prev_close
-
 def calc_macd_series(candles_newest: list[dict[str, Any]], fast: int, slow: int, signal: int) -> tuple[list[float], list[float], list[float]]:
     closes = _closes_oldest(candles_newest)
     ema_fast = _ema(closes, fast)
@@ -297,42 +259,6 @@ def _regime_alignment_score(candles_15m_newest: list[dict[str, Any]]) -> float:
     return 0.2
 
 
-def _regime_guard_pass(regime_alignment: float) -> bool:
-    return regime_alignment >= 0.6
-
-
-def _regime_min_entry_score_threshold(regime_alignment: float) -> float:
-    if regime_alignment >= 1.0:
-        return 2.2
-    if regime_alignment >= 0.6:
-        return 2.4
-    return 2.6
-
-
-def _regime_entry_score_percentile(regime_alignment: float) -> float:
-    if regime_alignment >= 1.0:
-        return 0.60
-    if regime_alignment >= 0.6:
-        return 0.65
-    return 0.70
-
-
-def _percentile(values: list[float], q: float) -> float:
-    if not values:
-        return 0.0
-    bounded_q = max(0.0, min(1.0, float(q)))
-    sorted_values = sorted(float(v) for v in values)
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    pos = bounded_q * (len(sorted_values) - 1)
-    lower_idx = int(pos)
-    upper_idx = min(lower_idx + 1, len(sorted_values) - 1)
-    weight = pos - lower_idx
-    lower = sorted_values[lower_idx]
-    upper = sorted_values[upper_idx]
-    return (lower * (1.0 - weight)) + (upper * weight)
-
-
 def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> ReversalSignal:
     candles_newest = list(data.get("1m", []))
     candles_oldest = list(reversed(candles_newest))
@@ -360,22 +286,14 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     rsi_oversold_strength = 0.0 if neutral_block else raw_rsi_oversold_strength
     filter_pass = rsi_oversold_strength > 0.0
 
-    regime_alignment = _regime_alignment_score(list(data.get("15m", [])))
-    dynamic_bearish_count = _dynamic_bearish_count(regime_alignment)
-
     bb_event = match_bb_touch_mode(candles_oldest[eval_idx], bb_low[eval_idx], params.bb_touch_mode)
-    bearish_ok = has_consecutive_bearish(candles_newest, eval_idx, dynamic_bearish_count)
-    atr_values = _atr_series(candles_newest, 14)
-    atr_now = atr_values[eval_idx] if eval_idx < len(atr_values) else 0.0
-    eval_price = max(_price(candles_oldest[eval_idx], "trade_price"), 1e-9)
-    atr_tolerance_pct = (atr_now / eval_price) * 100.0
-    effective_db_tolerance_pct = atr_tolerance_pct * float(params.double_bottom_tolerance_pct)
+    bearish_ok = has_consecutive_bearish(candles_newest, eval_idx, params.consecutive_bearish_count)
     db = detect_double_bottom(
         candles_newest,
         pivots,
         bb_low,
         params.double_bottom_lookback_bars,
-        effective_db_tolerance_pct,
+        params.double_bottom_tolerance_pct,
         params.require_band_reentry_on_second_bottom,
         params.require_neckline_break,
         eval_idx,
@@ -396,13 +314,11 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     setup_pass = bb_event and bearish_ok and bool(db.get("pass", False))
 
     engulfing = is_bullish_engulfing(candles_newest, eval_idx, strict=params.engulfing_strict, include_wick=params.engulfing_include_wick)
-    bullish_close_reversal = _is_bullish_close_reversal(candles_oldest, eval_idx)
-    allow_close_reversal_trigger = bool(getattr(params, "allow_bullish_close_reversal_trigger", True))
-    trigger_pass = engulfing or (allow_close_reversal_trigger and bullish_close_reversal)
+    trigger_pass = engulfing
 
     div = is_bullish_rsi_divergence(pivots, candles_newest, rsi_series, eval_idx)
     macd_cross = is_macd_bullish_cross(macd_line, signal_line, hist, eval_idx, params.macd_histogram_filter_enabled)
-    special_setup = params.divergence_signal_enabled and div.get("pass", False) and macd_cross and trigger_pass
+    special_setup = params.divergence_signal_enabled and div.get("pass", False) and macd_cross and engulfing
 
     divergence_strength = 0.0
     if int(div.get("p1", -1)) >= 0 and int(div.get("p2", -1)) >= 0:
@@ -412,6 +328,7 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
         norm_rsi_rise = rsi_rise / 100.0
         divergence_strength = min(1.0, (norm_price_drop * 12.0) + (norm_rsi_rise * 3.0))
 
+    regime_alignment = _regime_alignment_score(list(data.get("15m", [])))
     quality_score = max(0.0, min(1.0, (divergence_strength * 0.4) + (band_breakout_strength * 0.35) + (regime_alignment * 0.25)))
 
     entry_score = (
@@ -423,43 +340,6 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
         + (float(params.band_deviation_weight) * band_breakout_strength)
     )
 
-    score_distribution_window = max(20, int(getattr(params, "entry_score_distribution_window", 200)))
-    threshold_percentile = _regime_entry_score_percentile(regime_alignment)
-    window_start = max(0, eval_idx - score_distribution_window + 1)
-    sampled_entry_scores: list[float] = []
-    for sample_idx in range(window_start, eval_idx + 1):
-        sample_rsi = rsi_series[sample_idx]
-        sample_raw_rsi_oversold = 0.0
-        if sample_rsi <= params.rsi_long_threshold and params.rsi_long_threshold > 0:
-            sample_raw_rsi_oversold = min(1.0, (params.rsi_long_threshold - sample_rsi) / params.rsi_long_threshold)
-        sample_neutral_block = params.rsi_neutral_filter_enabled and params.rsi_neutral_low <= sample_rsi <= params.rsi_neutral_high
-        sample_rsi_oversold_strength = 0.0 if sample_neutral_block else sample_raw_rsi_oversold
-
-        sample_bb_width = max(_bb_up[sample_idx] - bb_low[sample_idx], 1e-9)
-        sample_bb_touch_depth = max(0.0, bb_low[sample_idx] - _price(candles_oldest[sample_idx], "low_price"))
-        sample_bb_touch_strength = min(1.0, sample_bb_touch_depth / sample_bb_width)
-        if match_bb_touch_mode(candles_oldest[sample_idx], bb_low[sample_idx], params.bb_touch_mode):
-            sample_bb_touch_strength = max(sample_bb_touch_strength, 0.5)
-
-        sample_recent_window = candles_oldest[max(0, sample_idx - 20) : sample_idx + 1]
-        sample_recent_ranges = [_price(c, "high_price") - _price(c, "low_price") for c in sample_recent_window]
-        sample_avg_recent_range = (sum(sample_recent_ranges) / len(sample_recent_ranges)) if sample_recent_ranges else 0.0
-        sample_band_breakout_strength = 0.0
-        if sample_avg_recent_range > 0:
-            sample_band_breakout_strength = min(1.0, sample_bb_touch_depth / sample_avg_recent_range)
-
-        sample_pivots = detect_pivot_lows(candles_newest, params.pivot_left, params.pivot_right, upto_index=sample_idx)
-        sample_div = is_bullish_rsi_divergence(sample_pivots, candles_newest, rsi_series, sample_idx)
-        sample_macd_cross = is_macd_bullish_cross(macd_line, signal_line, hist, sample_idx, params.macd_histogram_filter_enabled)
-        sampled_entry_scores.append(
-            (float(params.rsi_oversold_weight) * sample_rsi_oversold_strength)
-            + (float(params.bb_touch_weight) * sample_bb_touch_strength)
-            + (float(params.divergence_weight) * (1.0 if sample_div.get("pass", False) else 0.0))
-            + (float(params.macd_cross_weight) * (1.0 if sample_macd_cross else 0.0))
-            + (float(params.engulfing_weight) * (1.0 if is_bullish_engulfing(candles_newest, sample_idx, strict=params.engulfing_strict, include_wick=params.engulfing_include_wick) else 0.0))
-            + (float(params.band_deviation_weight) * sample_band_breakout_strength)
-        )
-
     entry_price = _price(candles_oldest[n - 1 if params.entry_mode == "next_open" else eval_idx], "trade_price")
     stop_context = _compute_stop_context(candles_oldest, bb_low, eval_idx, params.stop_mode_long)
     stop_price = float(stop_context["stop_price"])
@@ -468,51 +348,18 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
     stop_valid = stop_price < entry_price
     risk_valid = risk > 1e-9
     safety_pass = stop_valid and risk_valid
-    signal_checks = {
-        "bb_event": bool(bb_event),
-        "bearish_ok": bool(bearish_ok),
-        "double_bottom": bool(db.get("pass", False)),
-        "engulfing": bool(trigger_pass),
-        "macd_cross": bool(macd_cross),
-        "divergence": bool(div.get("pass", False)),
-    }
-    signal_hits = sum(1 for passed in signal_checks.values() if passed)
-    total_signals = len(signal_checks)
-    raw_required_signal_count = int(getattr(params, "required_signal_count", 3))
-    required_signal_count = max(1, min(raw_required_signal_count, total_signals))
-    n_of_k_pass = signal_hits >= required_signal_count
+    score_pass = entry_score >= float(params.entry_score_threshold)
 
-    regime_guard_pass = _regime_guard_pass(regime_alignment)
-    score_percentile_threshold = _percentile(sampled_entry_scores, threshold_percentile)
-    min_threshold_by_regime = max(float(params.entry_score_threshold), _regime_min_entry_score_threshold(regime_alignment))
-    effective_score_threshold = max(min_threshold_by_regime, score_percentile_threshold)
-    score_pass = entry_score >= effective_score_threshold
-
-    final_pass = safety_pass and regime_guard_pass and n_of_k_pass and score_pass
+    final_pass = safety_pass and score_pass
 
     diag = {
-        "state": {
-            "filter": filter_pass,
-            "setup": setup_pass,
-            "trigger": trigger_pass,
-            "special": special_setup,
-            "safety": safety_pass,
-            "regime_guard": regime_guard_pass,
-            "score_pass": score_pass,
-            "n_of_k_pass": n_of_k_pass,
-        },
+        "state": {"filter": filter_pass, "setup": setup_pass, "trigger": trigger_pass, "special": special_setup, "safety": safety_pass},
         "symbol": str(data.get("symbol", "UNKNOWN")),
         "rsi": rsi_value,
         "bb_lower": bb_low[eval_idx],
         "bb_width": bb_width,
         "score_threshold": float(params.entry_score_threshold),
-        "score_distribution_window": int(score_distribution_window),
-        "score_threshold_percentile": float(threshold_percentile),
-        "score_percentile_threshold": float(score_percentile_threshold),
-        "min_threshold_by_regime": float(min_threshold_by_regime),
-        "effective_score_threshold": float(effective_score_threshold),
         "entry_score": float(entry_score),
-        "entry_score_distribution_count": int(len(sampled_entry_scores)),
         "score_components": {
             "rsi_oversold": float(rsi_oversold_strength),
             "bb_touch": float(bb_touch_strength),
@@ -536,20 +383,8 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
             "band_deviation_weight": float(params.band_deviation_weight),
         },
         "bb_event": bb_event,
-        "suppress_bearish": int(0 if bearish_ok else 1),
-        "suppress_db": int(0 if bool(db.get("pass", False)) else 1),
-        "suppress_engulfing": int(0 if trigger_pass else 1),
-        "signal_hits": int(signal_hits),
-        "required_signal_count": int(required_signal_count),
-        "n_of_k_pass": bool(n_of_k_pass),
-        "signal_checks": signal_checks,
         "engulfing": engulfing,
-        "bullish_close_reversal": bool(bullish_close_reversal),
-        "allow_bullish_close_reversal_trigger": bool(allow_close_reversal_trigger),
         "double_bottom": db,
-        "dynamic_bearish_count": int(dynamic_bearish_count),
-        "effective_db_tolerance_pct": float(effective_db_tolerance_pct),
-        "atr_tolerance_pct": float(atr_tolerance_pct),
         "divergence": div,
         "macd_cross": macd_cross,
         "entry_price": entry_price,
@@ -562,16 +397,7 @@ def evaluate_long_entry(data: dict[str, list[dict[str, Any]]], params: Any) -> R
         "stop_valid": stop_valid,
         "risk_valid": risk_valid,
     }
-    if final_pass:
-        reason = "ok"
-    elif not regime_guard_pass:
-        reason = "regime_guard_fail"
-    elif not n_of_k_pass:
-        reason = "trigger_fail"
-    elif not safety_pass:
-        reason = "safety_fail"
-    else:
-        reason = "score_below_threshold"
+    reason = "ok" if final_pass else ("safety_fail" if not safety_pass else "score_below_threshold")
     return ReversalSignal(filter_pass, setup_pass, trigger_pass, final_pass, reason, diag)
 
 
