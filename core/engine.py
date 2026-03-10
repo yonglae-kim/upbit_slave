@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 
 from core.candle_buffer import CandleBuffer
@@ -52,6 +52,9 @@ class TradingEngine:
         self.universe = UniverseBuilder(config)
         self.candle_buffer = CandleBuffer(maxlen_by_interval={1: 300, 5: 300, 15: 300, config.candle_interval: 300})
         self.last_universe_selection_result = None
+        self._cached_watch_markets: list[str] = []
+        self._last_universe_refreshed_at: datetime | None = None
+        self._universe_refresh_interval = timedelta(hours=1)
         self.risk = RiskManager(
             risk_per_trade_pct=config.risk_per_trade_pct,
             max_daily_loss_pct=config.max_daily_loss_pct,
@@ -203,20 +206,57 @@ class TradingEngine:
         self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
         self._print_runtime_status(stage="cycle_complete", portfolio=portfolio)
 
+    def _compute_recent_trade_value_10m(self, market: str) -> float:
+        candles_1m = self.broker.get_candles(market, interval=1, count=10)
+        trade_value = 0.0
+        for candle in candles_1m:
+            candle_trade_value = self._safe_float(candle.get("candle_acc_trade_price"))
+            if candle_trade_value <= 0:
+                candle_trade_volume = self._safe_float(candle.get("candle_acc_trade_volume"))
+                trade_price = self._safe_float(candle.get("trade_price"))
+                candle_trade_value = candle_trade_volume * trade_price
+            trade_value += max(0.0, candle_trade_value)
+        return trade_value
+
+    def _refresh_watch_markets_if_needed(self) -> list[str]:
+        now_at = datetime.now(timezone.utc)
+        should_refresh = (
+            not self._cached_watch_markets
+            or self._last_universe_refreshed_at is None
+            or (now_at - self._last_universe_refreshed_at) >= self._universe_refresh_interval
+        )
+
+        if not should_refresh:
+            return list(self._cached_watch_markets)
+
+        tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
+        tickers_for_selection = [dict(ticker) for ticker in tickers if ticker.get("market")]
+        for ticker in tickers_for_selection:
+            ticker["recent_trade_value_10m"] = self._compute_recent_trade_value_10m(str(ticker.get("market")))
+
+        top_and_spread_result = self.universe.select_watch_markets_with_report(tickers_for_selection)
+        candles_by_market = {market: self._get_strategy_candles(market) for market in top_and_spread_result.watch_markets}
+        universe_result = self.universe.select_watch_markets_with_report(
+            tickers_for_selection,
+            candles_by_market={market: candles["1m"] for market, candles in candles_by_market.items()},
+        )
+
+        self._cached_watch_markets = list(universe_result.watch_markets)
+        self.last_universe_selection_result = universe_result
+        self._last_universe_refreshed_at = now_at
+        return list(self._cached_watch_markets)
+
     def _try_buy(self, available_krw: float, held_markets: list[str], strategy_params) -> None:
         if available_krw < self.config.min_effective_buyable_krw:
             return
 
-        tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
+        watch_markets = self._refresh_watch_markets_if_needed()
+        if not watch_markets:
+            return
+
+        tickers = self.broker.get_ticker(", ".join(watch_markets))
         ticker_by_market = {str(ticker.get("market")): ticker for ticker in tickers if ticker.get("market")}
-        top_and_spread_result = self.universe.select_watch_markets_with_report(tickers)
-        candles_by_market = {market: self._get_strategy_candles(market) for market in top_and_spread_result.watch_markets}
-        universe_result = self.universe.select_watch_markets_with_report(
-            tickers,
-            candles_by_market={market: candles["1m"] for market, candles in candles_by_market.items()},
-        )
-        watch_markets = universe_result.watch_markets
-        self.last_universe_selection_result = universe_result
+        candles_by_market = {market: self._get_strategy_candles(market) for market in watch_markets}
 
         for market in watch_markets:
             if market in held_markets:

@@ -235,3 +235,8 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 영향 파일: `core/rsi_bb_reversal_long.py`, `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: `python -m testing.backtest_runner ...` 실행 커맨드는 동일. `backtest_stop_loss_diagnostics.csv`에 진입/청산 stop 괴리 컬럼이 추가되며, 실행 로그에 `stop gap deterioration stats` 요약이 출력됨.
 
+
+### 변경 요약 (2026-03-10, 유니버스 거래량 기준 10분/1시간 리프레시)
+- 변경 요약: 후보 유니버스 탐색의 거래량 기준을 기존 24시간 누적 거래대금(`acc_trade_price_24h`) 우선순위에서 최근 10분(1분봉 10개 합산 거래대금) 기준으로 전환. 또한 유니버스 재탐색은 매 사이클이 아니라 1시간 캐시 주기로 수행하도록 엔진에 리프레시 간격을 도입.
+- 영향 파일: `core/engine.py`, `core/universe.py`, `testing/test_universe.py`, `testing/test_engine_universe_refresh.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 정적/단위 검증 시 `python -m unittest testing.test_universe testing.test_engine_universe_refresh`로 10분 거래대금 우선순위와 1시간 리프레시 동작을 확인 가능.
