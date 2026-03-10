@@ -100,6 +100,15 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _ticker_trading_value(ticker: dict[str, Any]) -> float:
+    return _to_float(
+        ticker.get(
+            "recent_trade_value_10m",
+            ticker.get("acc_trade_price_24h", ticker.get("acc_trade_price", ticker.get("trade_volume", 0.0))),
+        )
+    )
+
+
 def select_top_by_trading_value(tickers: Iterable[dict[str, Any]], top_n1: int) -> list[dict[str, Any]]:
     selected, _drops = select_top_by_trading_value_with_drops(tickers, top_n1)
     return selected
@@ -122,9 +131,7 @@ def select_top_by_trading_value_with_drops(
 
     ranked = sorted(
         tickers,
-        key=lambda ticker: _to_float(
-            ticker.get("acc_trade_price_24h", ticker.get("acc_trade_price", ticker.get("trade_volume", 0.0)))
-        ),
+        key=_ticker_trading_value,
         reverse=True,
     )
     selected = ranked[:top_n1]
@@ -132,10 +139,8 @@ def select_top_by_trading_value_with_drops(
         UniverseDropReason(
             market=ticker["market"],
             stage="top_n1",
-            reason="outside_top_n1_24h_trading_value",
-            value=_to_float(
-                ticker.get("acc_trade_price_24h", ticker.get("acc_trade_price", ticker.get("trade_volume", 0.0)))
-            ),
+            reason="outside_top_n1_recent_trading_value",
+            value=_ticker_trading_value(ticker),
             threshold=top_n1,
         )
         for ticker in ranked[top_n1:]

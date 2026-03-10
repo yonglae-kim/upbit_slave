@@ -57,6 +57,25 @@ class UniverseRulesTest(unittest.TestCase):
         selected = builder.select_watch_markets(tickers)
         self.assertEqual(selected, ["KRW-A", "KRW-C"])
 
+    def test_top_n_prefers_recent_10m_trade_value_when_available(self):
+        config = TradingConfig(
+            do_not_trading=[],
+            universe_top_n1=2,
+            universe_watch_n2=2,
+            low_spec_watch_cap_n2=2,
+            max_relative_spread=1.0,
+        )
+        builder = UniverseBuilder(config)
+
+        tickers = [
+            {"market": "KRW-A", "acc_trade_price_24h": 10000, "recent_trade_value_10m": 100, "ask_price": 100.1, "bid_price": 100.0, "trade_price": 100.0},
+            {"market": "KRW-B", "acc_trade_price_24h": 5000, "recent_trade_value_10m": 1000, "ask_price": 100.1, "bid_price": 100.0, "trade_price": 100.0},
+            {"market": "KRW-C", "acc_trade_price_24h": 9000, "recent_trade_value_10m": 900, "ask_price": 100.1, "bid_price": 100.0, "trade_price": 100.0},
+        ]
+
+        selected = builder.select_watch_markets(tickers)
+        self.assertEqual(selected, ["KRW-B", "KRW-C"])
+
     def test_missing_rate_filter(self):
         markets = ["KRW-A", "KRW-B", "KRW-C"]
         candles_by_market = {
@@ -94,7 +113,7 @@ class UniverseRulesTest(unittest.TestCase):
 
         self.assertEqual(result.watch_markets, ["KRW-A"])
         reason_by_market = {(item.market, item.stage): item.reason for item in result.drop_reasons}
-        self.assertEqual(reason_by_market[("KRW-D", "top_n1")], "outside_top_n1_24h_trading_value")
+        self.assertEqual(reason_by_market[("KRW-D", "top_n1")], "outside_top_n1_recent_trading_value")
         self.assertEqual(reason_by_market[("KRW-C", "relative_spread")], "relative_spread_exceeded")
         self.assertEqual(reason_by_market[("KRW-B", "missing_rate")], "missing_rate_exceeded")
 
