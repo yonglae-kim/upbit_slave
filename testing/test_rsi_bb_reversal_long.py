@@ -109,8 +109,7 @@ class RsiBbReversalLongTests(unittest.TestCase):
     def test_no_duplicate_entry_when_already_holding(self):
         # engine-level policy keeps one holding; strategy still emits bool signal
         candles = [candle(10, 10.5, 9.5, 10.2) for _ in range(80)]
-        trend15 = [candle(10 + i * 0.05, 10.2 + i * 0.05, 9.9 + i * 0.05, 10 + i * 0.05) for i in range(90)]
-        data = {"1m": list(reversed(candles)), "15m": list(reversed(trend15))}
+        data = {"1m": list(reversed(candles))}
         result = evaluate_long_entry(data, replace(self.params, rsi_period=2, bb_period=2, pivot_left=1, pivot_right=1))
         self.assertIsInstance(result.final_pass, bool)
 
@@ -149,58 +148,7 @@ class RsiBbReversalLongTests(unittest.TestCase):
         )
         result = evaluate_long_entry(data, params)
         self.assertFalse(result.final_pass)
-        self.assertIn(result.reason, {"score_below_threshold", "filter_fail", "trigger_fail", "regime_guard_fail"})
-
-
-    def test_entry_score_threshold_is_adaptive_by_distribution(self):
-        candles = [candle(10 + (i * 0.02), 10.3 + (i * 0.02), 9.7 + (i * 0.02), 10.0 + (i * 0.02)) for i in range(240)]
-        trend15 = [candle(10 + i * 0.1, 10.2 + i * 0.1, 9.9 + i * 0.1, 10 + i * 0.1) for i in range(120)]
-        data = {"1m": list(reversed(candles)), "15m": list(reversed(trend15))}
-        params = replace(self.params, rsi_period=2, bb_period=2, pivot_left=1, pivot_right=1, entry_score_threshold=0.0)
-        result = evaluate_long_entry(data, params)
-
-        self.assertIn("score_percentile_threshold", result.diagnostics)
-        self.assertIn("min_threshold_by_regime", result.diagnostics)
-        self.assertIn("score_threshold_percentile", result.diagnostics)
-        self.assertGreaterEqual(result.diagnostics["entry_score_distribution_count"], 20)
-        self.assertAlmostEqual(
-            result.diagnostics["effective_score_threshold"],
-            max(result.diagnostics["min_threshold_by_regime"], result.diagnostics["score_percentile_threshold"]),
-        )
-
-    def test_n_of_k_pass_when_hits_meet_required_count(self):
-        candles = [candle(10, 10.2, 9.8, 10.0) for _ in range(90)]
-        trend15 = [candle(10 + i * 0.05, 10.2 + i * 0.05, 9.9 + i * 0.05, 10 + i * 0.05) for i in range(90)]
-        data = {"1m": list(reversed(candles)), "15m": list(reversed(trend15))}
-        params = replace(
-            self.params,
-            rsi_period=2,
-            bb_period=2,
-            pivot_left=1,
-            pivot_right=1,
-            required_signal_count=1,
-            entry_score_threshold=0.0,
-        )
-        result = evaluate_long_entry(data, params)
-        self.assertTrue(result.diagnostics["n_of_k_pass"])
-        self.assertGreaterEqual(result.diagnostics["signal_hits"], result.diagnostics["required_signal_count"])
-
-    def test_n_of_k_fail_when_hits_below_required_count(self):
-        candles = [candle(10, 10.2, 9.8, 10.0) for _ in range(90)]
-        trend15 = [candle(10 + i * 0.05, 10.2 + i * 0.05, 9.9 + i * 0.05, 10 + i * 0.05) for i in range(90)]
-        data = {"1m": list(reversed(candles)), "15m": list(reversed(trend15))}
-        params = replace(
-            self.params,
-            rsi_period=2,
-            bb_period=2,
-            pivot_left=1,
-            pivot_right=1,
-            required_signal_count=6,
-            entry_score_threshold=0.0,
-        )
-        result = evaluate_long_entry(data, params)
-        self.assertFalse(result.diagnostics["n_of_k_pass"])
-        self.assertEqual(result.reason, "trigger_fail")
+        self.assertEqual(result.reason, "score_below_threshold")
 
     def test_stop_mode_price_calculation(self):
         candles_oldest = [
@@ -216,53 +164,6 @@ class RsiBbReversalLongTests(unittest.TestCase):
         cons = compute_stop_price_for_test(newest, bb_low, 3, "conservative")
         self.assertLessEqual(cons, lower)
         self.assertLessEqual(cons, swing)
-
-    def test_trigger_allows_bullish_close_reversal_without_engulfing(self):
-        base = [candle(120 - i * 0.1, 120.2 - i * 0.1, 119.8 - i * 0.1, 120 - i * 0.1) for i in range(85)]
-        tail = [
-            candle(109.5, 109.6, 108.4, 108.6),
-            candle(108.7, 108.8, 107.7, 107.8),
-            candle(107.9, 108.0, 106.9, 107.0),
-            candle(107.1, 108.5, 106.8, 108.2),
-        ]
-        candles_oldest = base + tail
-        trend15 = [candle(10 + i * 0.2, 10.2 + i * 0.2, 9.8 + i * 0.2, 10 + i * 0.2) for i in range(90)]
-        data = {"1m": list(reversed(candles_oldest)), "15m": list(reversed(trend15))}
-        params = replace(
-            self.params,
-            rsi_period=2,
-            bb_period=2,
-            pivot_left=1,
-            pivot_right=1,
-            required_signal_count=1,
-            entry_score_threshold=0.0,
-        )
-        result = evaluate_long_entry(data, params)
-        self.assertIn("engulfing", result.diagnostics)
-        self.assertFalse(result.diagnostics["engulfing"])
-        self.assertTrue(result.diagnostics["bullish_close_reversal"])
-
-    def test_dynamic_bearish_count_changes_by_regime(self):
-        candles = [candle(10, 10.3, 9.7, 10.0) for _ in range(90)]
-        strong15 = [candle(10 + i * 0.2, 10.1 + i * 0.2, 9.9 + i * 0.2, 10 + i * 0.2) for i in range(90)]
-        side15 = [candle(10, 10.1, 9.9, 10 + (0.02 if i % 2 == 0 else -0.02)) for i in range(90)]
-        params = replace(self.params, rsi_period=2, bb_period=2, pivot_left=1, pivot_right=1)
-
-        strong = evaluate_long_entry({"1m": list(reversed(candles)), "15m": list(reversed(strong15))}, params)
-        side = evaluate_long_entry({"1m": list(reversed(candles)), "15m": list(reversed(side15))}, params)
-
-        self.assertEqual(strong.diagnostics["dynamic_bearish_count"], 1)
-        self.assertEqual(side.diagnostics["dynamic_bearish_count"], 2)
-
-    def test_diagnostics_include_filter_suppress_counts(self):
-        candles = [candle(10, 10.2, 9.8, 10.0) for _ in range(90)]
-        data = {"1m": list(reversed(candles))}
-        params = replace(self.params, rsi_period=2, bb_period=2, pivot_left=1, pivot_right=1)
-        result = evaluate_long_entry(data, params)
-
-        self.assertIn("suppress_bearish", result.diagnostics)
-        self.assertIn("suppress_db", result.diagnostics)
-        self.assertIn("suppress_engulfing", result.diagnostics)
 
 
 if __name__ == "__main__":

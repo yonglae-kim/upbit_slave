@@ -49,17 +49,6 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 # 단계형 Walk-forward 튜닝(진입/청산/레짐/사이징, coarse→fine)
 python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --result-csv testing/optimize_walkforward_results.csv
 # (산출: 결과 CSV + 상위 조합 패턴 문서 testing/optimize_walkforward_patterns.md)
-
-# 4개 전략 프로파일 비교 + 최종 추천 1개 산출
-python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --output-dir testing/reports
-# (선택 제약: OOS 월평균 거래수 baseline 대비 +30% 이상(옵션 조정 가능), expectancy/profit_factor baseline 이상, mdd baseline+mdd_buffer 이하)
-# (승률(win_rate)은 보조지표로만 기록하며 단독 최적화 기준으로 사용하지 않음)
-# (robustness_score: --sensitivity-csv 입력 시 perturbation_pct ±10~20% 구간에서 제약 충족 비율로 계산)
-# (산출: 통합 비교표 CSV testing/reports/strategy_comparison.csv)
-# (산출: 마크다운 리포트 testing/reports/strategy_comparison.md)
-# (산출: 프로파일별 세그먼트 CSV testing/reports/backtest_walkforward_segments_{baseline,a,b,c}.csv)
-# (산출: 최종 추천 JSON testing/reports/final_recommendation.json)
-# (산출: 최종 추천 Markdown testing/reports/final_recommendation.md)
 ```
 
 
@@ -82,11 +71,10 @@ python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --outpu
 ### 진입(BUY)
 1. **전략 실행 대상 검증 (Engine 레벨)**
    - 최소 캔들 수/쿨다운/보유 종목 수/가용 KRW 등 사전 조건을 확인한 뒤 전략 평가를 진행합니다.
-2. **하드 게이트 + n-of-k + 점수 하한 결합 진입 평가 (`evaluate_long_entry`)**
-   - 하드 필수 조건은 `safety_pass`(유효 손절 거리)와 상위 추세 보호(`regime_guard_pass`, 15m 정합도 기반) 2개만 유지합니다.
-   - 나머지 진입 신호는 `bb_event`, `bearish_ok`, `double_bottom`, `engulfing`, `macd_cross`, `divergence` 6개를 대상으로 `required_signal_count`(예: 3-of-6) 충족 여부(`n_of_k_pass`)로 판정합니다.
-   - `entry_score = Σ(signal_strength × weight)`는 유지하되, 최근 N bars(기본 200) score 분포의 레짐별 분위수(강추세 60%, 약추세 65%, 횡보 70%)와 레짐별 최소 점수 하한을 결합한 적응형 임계치(`effective_score_threshold = max(min_threshold_by_regime, score_percentile_threshold)`)로 최종 점수 통과 여부를 판단합니다.
-   - `diagnostics`에 `signal_hits`, `required_signal_count`, `n_of_k_pass`, `signal_checks`를 기록해 백테스트 CSV/로그에서 진입 실패 원인 분석이 가능합니다.
+2. **점수 기반 진입 평가 (`evaluate_long_entry`)**
+   - 기존 필터/셋업/트리거 불리언 게이트를 시그널별 강도 점수 합산으로 분리했습니다.
+   - `entry_score = Σ(signal_strength × weight)` 구조를 사용하며, 신호는 RSI 과매도, BB 터치 강도, RSI 다이버전스, MACD 크로스, 엔걸핑, 최근 변동성 대비 밴드 이탈폭을 포함합니다.
+   - 최종 진입은 `entry_score >= entry_score_threshold` 조건으로 판단하고, 최소 안전장치(최소 캔들 수, 유효 손절 거리)는 유지합니다.
 3. **주문 리스크/사이징 계산**
    - `stop_mode_long`으로 초기 손절가를 만들고, `entry_price - stop_price`를 1R로 사용.
    - 리스크 기반 주문금액 + 현금관리 캡 + (옵션) 시장 댐핑 계수를 적용해 최종 매수 금액을 계산합니다.
@@ -247,100 +235,3 @@ python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --outpu
 - 영향 파일: `core/rsi_bb_reversal_long.py`, `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: `python -m testing.backtest_runner ...` 실행 커맨드는 동일. `backtest_stop_loss_diagnostics.csv`에 진입/청산 stop 괴리 컬럼이 추가되며, 실행 로그에 `stop gap deterioration stats` 요약이 출력됨.
 
-
-
-### 변경 요약 (2026-03-02, 최근 10건 거래 사유 텍스트 로그)
-- 변경 요약: 엔진에서 매수/매도 주문 수락 시점마다 거래 사유를 기록하고, 최근 10건만 유지해 `logs/recent_trade_reasons.txt` 파일로 저장하도록 추가.
-- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 실행 후 `logs/recent_trade_reasons.txt` 파일에서 `BUY/SELL`, `market`, `price`, `reason`을 최근 10건 기준으로 확인 가능.
-
-### 변경 요약 (2026-03-02, 거래 사유 로그에 수량/주문금액 필드 확장)
-- 변경 요약: `_append_trade_reason` 시그니처를 확장해 `qty`, `notional_krw`, `qty_ratio`를 선택적으로 기록하도록 변경. 매도 경로에서는 `decision.qty_ratio`, preflight 산출값(`order_value`, `notional`)을 함께 전달하고, 매수 경로에서도 preflight 주문금액(`order_value`)과 추정 수량(`order_value / reference_price`)을 로그에 포함하도록 확장. 로그 포맷은 `qty=... | notional_krw=... | qty_ratio=...` 필드를 고정 포함(`미제공 시 na`)하도록 통일.
-- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 실행 커맨드는 동일. `logs/recent_trade_reasons.txt` 확인 시 기존 `price/reason` 외에 `qty/notional_krw/qty_ratio` 필드가 함께 출력되는지 검증 필요.
-
-### 변경 요약 (2026-03-02, stop reason 로그 진단 필드 고정)
-- 변경 요약: `PositionOrderPolicy.evaluate`의 stop 계열 의사결정(`stop_loss`, `partial_stop_loss`, `trailing_stop`)에 `exit_stage`, `hard_stop_price`, `trailing_floor`를 포함한 진단값을 일관되게 담도록 정리하고, 엔진 SELL 경로에서 `decision.diagnostics`를 거래 사유 로그 기록 함수로 전달하도록 확장. `_append_trade_reason`는 stop 계열 reason에 한해 `stop_ref_price`, `stop_gap_pct`를 추가 기록하며 숫자 포맷을 고정(`price/qty/stop_ref_price: 8자리`, `qty_ratio/stop_gap_pct: 4자리`, `없음: na`)하도록 통일.
-- 영향 파일: `core/position_policy.py`, `core/engine.py`, `testing/test_risk_and_policy.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: `python -m unittest testing.test_risk_and_policy testing.test_engine_order_acceptance`로 stop 진단 키 포함 및 stop reason 전용 로그 필드 출력 여부를 검증.
-
-
-### 변경 요약 (2026-03-02, 거래 사유 로그에 포지션 식별자/보유시간 필드 추가)
-- 변경 요약: 엔진에 시장별 포지션 식별자(`entry_order_id` 기반 `position_id`)와 진입 시각 상태 맵을 추가하고, BUY/SELL 거래 사유 로그 공통 필드에 `position_id`를 고정 기록하도록 확장. SELL 로그에는 진입 시각 대비 `holding_seconds`와 `holding_bars`를 함께 포함하고, 완전 청산(`decision.qty_ratio >= 1.0`) 시 관련 상태를 정리하도록 보강.
-- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 실행 커맨드는 동일. `python -m unittest testing.test_engine_order_acceptance` 실행 후 `logs/recent_trade_reasons.txt`에서 `position_id`, `holding_seconds`, `holding_bars` 필드 포함 여부를 확인.
-
-### 변경 요약 (2026-03-02, 거래 사유 JSONL 추가 및 로테이션)
-- 변경 요약: 기존 `logs/recent_trade_reasons.txt`(최근 10건 유지)는 유지하면서, append 전용 구조화 로그 `logs/trade_reasons.jsonl`를 추가. JSONL 스키마는 `ts, side, market, price, reason, qty, notional_krw, qty_ratio, position_id, holding_seconds, diagnostics`로 고정했으며, 파일이 최대 크기(기본 5MB)를 넘기면 `logs/trade_reasons.YYYYMMDDTHHMMSSZ.jsonl`로 회전 후 새 파일에 이어 기록.
-- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 운영 확인 시 (1) `tail -n 10 logs/recent_trade_reasons.txt`로 최신 텍스트 10건을 점검하고, (2) `tail -n 5 logs/trade_reasons.jsonl` 또는 `python - <<'PY' ...`로 JSONL 필드 존재/타입(`diagnostics` 객체 포함)을 확인. 로그 파일 시스템 오류 시 콘솔에 `TRADE_REASON_JSONL_LOG_WRITE_FAILED` 경고가 출력됨.
-
-### 변경 요약 (2026-03-02, trailing_floor 활성화 게이트 강화)
-- 변경 요약: `PositionOrderPolicy.evaluate`의 트레일링 발동 조건을 강화해 `initial_defense` 구간에서는 트레일링을 비활성화하고 `hard_stop`만 적용하도록 분기했으며, 트레일링은 `breakeven_armed` 또는 `current_price >= entry_price` 게이트(옵션화)와 최소 보유 bar 게이트(`trailing_activation_bars`)를 모두 통과했을 때만 활성화되도록 조정.
-- 영향 파일: `core/position_policy.py`, `core/config.py`, `core/config_loader.py`, `core/engine.py`, `testing/backtest_runner.py`, `config.py`, `testing/test_risk_and_policy.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기존 실행 커맨드는 동일하며, 필요 시 `TRADING_TRAILING_REQUIRES_BREAKEVEN`, `TRADING_TRAILING_ACTIVATION_BARS` 환경변수로 트레일링 게이트를 조정 가능. 회귀 검증 시 stop 계열 거래 사유 로그/진단(`trailing_armed`, `breakeven_armed`, `bars_held`, `trailing_floor_candidate`)을 함께 확인.
-
-### 변경 요약 (2026-03-02, RSI-BB 진입 필터 강화 및 거절 사유 집계)
-- 변경 요약: 시장 레짐별 `entry_score_threshold`를 상향 조정(특히 `sideways`)해 횡보 구간 과잉 진입을 억제했고, `entry_experiment_profile`에 `neckline_confirmed` 실험 프로파일을 추가해 `require_neckline_break=True` 조합을 선택적으로 적용할 수 있게 했습니다. 또한 기본값에서 `macd_histogram_filter_enabled=True`로 전환해 1분봉 노이즈 구간 MACD 히스토그램 방향성 확인을 기본 게이트로 강화했습니다.
-- 영향 파일: `core/config.py`, `core/strategy.py`, `core/rsi_bb_reversal_long.py`, `core/engine.py`, `config.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일합니다. 운영 시 `engine.debug_counters`에서 `fail_entry_score_below_threshold`, `fail_entry_trigger_fail` 누적치를 확인해 진입 거절 사유 통계를 추적할 수 있습니다. `entry_experiment_profile=neckline_confirmed` 적용 시 더블바텀 neckline 돌파 확정 전 진입이 줄어드는지 백테스트/페이퍼에서 비교 검증하세요.
-
-### 변경 요약 (2026-03-02, reentry cooldown 확장)
-- 변경 요약: 재진입 쿨다운을 프로파일(`reentry_cooldown_profile`) 기반으로 확장해 기본값을 `loss_exit_guarded`(`cooldown_on_loss_exits_only=True`)로 전환했습니다. 또한 고정 `reentry_cooldown_bars` 외에 레짐별 오버라이드(`reentry_cooldown_bars_by_regime`, 기본 `sideways=14`)를 지원하고, 최근 N바 ATR 비율 기반 동적 추가 쿨다운(`reentry_dynamic_cooldown_*`)을 도입해 고변동 구간 즉시 재진입을 억제했습니다. 엔진은 재진입 평가 시 사유/레짐/정적·동적 쿨다운/잔여 bar를 구조화 로그(`REENTRY_COOLDOWN_EVAL`)로 기록합니다.
-- 영향 파일: `core/config.py`, `core/config_loader.py`, `core/engine.py`, `config.py`, `testing/test_engine_candle_trigger.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 운영/백테스트 진단 시 콘솔 JSON 로그의 `type=REENTRY_COOLDOWN_EVAL`를 필터링해 `reason`별 `required_bars/remaining_bars/active`와 성과 지표(승률) 상관관계를 점검할 수 있습니다. 환경변수로 `TRADING_REENTRY_COOLDOWN_PROFILE`, `TRADING_REENTRY_COOLDOWN_BARS_BY_REGIME`(JSON), `TRADING_REENTRY_DYNAMIC_COOLDOWN_*` 계열을 조정 가능합니다.
-
-
-### 변경 요약 (2026-03-06, RSI-BB 진입 final_pass를 n-of-k 구조로 개편)
-- 변경 요약: `evaluate_long_entry`의 `final_pass`를 하드 게이트(안전/레짐) + `required_signal_count` 기반 n-of-k 판정 + 레짐별 최소 점수 하한 결합 구조로 개편했습니다. 진단 필드에 `signal_hits`, `required_signal_count`, `n_of_k_pass`를 추가해 원인 분석 가시성을 높였습니다.
-- 영향 파일: `core/rsi_bb_reversal_long.py`, `core/strategy.py`, `core/config.py`, `core/config_loader.py`, `config.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 검증 시 `python -m unittest testing.test_rsi_bb_reversal_long testing.test_config_loader`로 n-of-k 통과/실패 및 설정 로딩(`TRADING_REQUIRED_SIGNAL_COUNT`)을 함께 확인합니다.
-
-
-### 변경 요약 (2026-03-06, 중복 필터 제거/적응형 임계값)
-- 변경 요약: RSI-BB 리버설 진입에서 중복 게이트를 줄이고 레짐/변동성 적응형 임계값을 적용. `consecutive_bearish_count`는 고정값 대신 레짐 기반 동적값(강추세 1, 약추세/횡보 2)으로 평가하며, 더블바텀 허용폭(`double_bottom_tolerance_pct`)은 고정 퍼센트가 아닌 ATR 비율 기반으로 재정의. 캔들 트리거는 `engulfing_strict=True`를 유지하면서 `engulfing OR bullish close reversal` 옵션을 지원.
-- 영향 파일: `core/rsi_bb_reversal_long.py`, `core/config.py`, `core/strategy.py`, `core/config_loader.py`, `config.py`, `testing/test_rsi_bb_reversal_long.py`, `testing/test_config_loader.py`.
-- 실행/검증 방법 변경 여부: 실행 커맨드 자체는 동일. 진단(`diagnostics`)에 `suppress_bearish`, `suppress_db`, `suppress_engulfing`, `dynamic_bearish_count`, `effective_db_tolerance_pct`가 추가되어 세그먼트/로그 분석 시 병목 필터 식별이 가능.
-
-
-### 변경 요약 (2026-03-06, entry_score 적응형 임계치/리포트 확장)
-- 변경 요약: `entry_score_threshold` 적용 방식을 최근 score 분포 기반 적응형 임계치로 확장했습니다. 최근 N bars(기본 200)의 `entry_score` 샘플에서 레짐별 분위수 임계값을 구하고, `min_threshold_by_regime`와 `max` 결합해 최종 진입 임계치를 산출합니다(횡보 레짐은 더 높은 분위수, 추세 레짐은 더 낮은 분위수).
-- 영향 파일: `core/rsi_bb_reversal_long.py`, `testing/backtest_runner.py`, `testing/test_backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 백테스트 세그먼트 CSV에 `entry_score_threshold_effective_mean/p50/p90` 컬럼이 추가되어 임계치 동작 분포를 구간별로 검증할 수 있습니다.
-
-
-### 변경 요약 (2026-03-06, 전략 프로파일 일괄 비교 리포트 자동화)
-- 변경 요약: 백테스트 실행기에 `--strategy-profile`(baseline/a/b/c) 오버라이드를 추가해 동일 파이프라인에서 전략안별 파라미터를 재현 가능하게 만들고, 세그먼트 CSV에 `avg_holding_minutes`, `longest_no_trade_bars`를 함께 기록하도록 확장. 신규 스크립트 `testing/compare_strategies.py`를 추가해 4개 프로파일을 순차 실행한 뒤 공통 KPI(`total_return/cagr/win_rate/profit_factor/expectancy/mdd/avg_rr`, `trades/monthly_trades/avg_holding/longest_no_trade_bars`, `recent_3m/6m/12m`)와 OOS(워크포워드 후반 절반) 집계를 병합한 비교 CSV/Markdown 리포트를 자동 생성.
-- 영향 파일: `testing/backtest_runner.py`, `testing/compare_strategies.py`, `testing/test_compare_strategies.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: `python -m testing.compare_strategies --market KRW-BTC --lookback-days 30 --output-dir testing/reports` 실행 시 `testing/reports/strategy_comparison.csv`, `testing/reports/strategy_comparison.md`, 프로파일별 `backtest_walkforward_segments_*.csv`가 생성됨.
-
-### 변경 요약 (2026-03-06, 전략 선택 모듈/최종 추천 리포트 추가)
-- 변경 요약: `testing/strategy_selector.py`를 추가해 Baseline 대비 제약(월평균 거래수 +30% 이상, expectancy/profit_factor baseline 이상, mdd buffer 적용 상한) 기반 후보 필터링과 최종 1개 추천 로직을 도입. 승률은 보조 지표로만 사용하고 단독 최적화 금지 가드레일을 명시. `--sensitivity-csv`가 제공되면 `perturbation_pct`의 ±10~20% 구간에서 조건 충족 비율을 `robustness_score`로 계산.
-- 영향 파일: `testing/strategy_selector.py`, `testing/compare_strategies.py`, `testing/test_strategy_selector.py`, `testing/test_compare_strategies.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: `python -m testing.compare_strategies ...` 실행 시 `testing/reports/final_recommendation.json` 및 `testing/reports/final_recommendation.md`가 추가 생성됨. 옵션으로 `--min-monthly-trades-increase`, `--mdd-buffer`, `--sensitivity-csv` 지원.
-
-
-### 쿨다운 검증(A/B) 절차
-1. 아래 명령으로 워크포워드 백테스트를 실행합니다.
-   - `python -m testing.backtest_runner --market KRW-BTC --lookback-days 30 --segment-report-path testing/reports/backtest_walkforward_segments.csv`
-2. 실행 후 세그먼트 결과(`testing/reports/backtest_walkforward_segments.csv`)에서 `cooldown_blocked_entries_*`, `blocked_entry_score_mean_*` 컬럼으로 reason별 진입 차단 건수/차단 시 entry_score 평균을 확인합니다.
-3. 자동 생성되는 `testing/reports/cooldown_ab_segments.csv`에서 같은 세그먼트 기준으로 cooldown ON/OFF KPI 변화를 확인합니다.
-   - 거래 수 변화: `delta_trades`
-   - 승률/PF/expectancy/MDD 변화: `delta_win_rate`, `delta_profit_factor`, `delta_expectancy`, `delta_mdd`
-4. 레짐 효과는 `delta_sideways_expectancy`, `delta_weak_expectancy`, `delta_strong_expectancy` 컬럼으로 분리 확인합니다.
-5. 최종 요약은 `testing/reports/cooldown_attribution.md`에서 reason 집계 및 ON/OFF 평균 델타를 확인합니다.
-
-### 변경 요약 (2026-03-07, 쿨다운 attribution/A-B 리포트 자동화)
-- 변경 요약: 백테스트 세그먼트에 reason별 쿨다운 진입 차단 집계(`cooldown_blocked_entries_*`)와 차단 시 점수 평균(`blocked_entry_score_mean_*`)을 추가하고, 동일 구간에서 cooldown ON/OFF를 자동 재실행해 거래수/승률/PF/expectancy/MDD 및 레짐별(횡보/약추세/강추세) expectancy 변화 테이블(`testing/reports/cooldown_ab_segments.csv`)을 생성하도록 확장. 요약 Markdown(`testing/reports/cooldown_attribution.md`) 자동 생성 로직을 추가.
-- 영향 파일: `testing/backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기존 `python -m testing.backtest_runner ...` 명령은 동일. 실행 시 `testing/reports/cooldown_ab_segments.csv`, `testing/reports/cooldown_attribution.md`가 추가 생성되며, 세그먼트 CSV에 쿨다운 차단 reason 컬럼이 포함됨.
-
-### 변경 요약 (2026-03-07, 유니버스 top_n1 5분 거래대금 우선 정렬)
-- 변경 요약: `select_top_by_trading_value_with_drops` 인터페이스에 `turnover_5m_by_market` 인자를 추가하고, 값이 제공될 때는 `acc_trade_price_24h` 대신 최근 5분 거래대금만으로 top_n1 정렬을 수행하도록 확장. 5분 거래대금이 없는 마켓은 `missing_5m_turnover` 사유로 즉시 드롭하며 `UniverseDropReason`에 기록.
-- 영향 파일: `core/universe.py`, `core/engine.py`, `testing/test_universe.py`, `testing/test_engine_candle_trigger.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 회귀 검증 시 `python -m unittest testing.test_universe testing.test_engine_candle_trigger`로 5분 거래대금 기반 선별/드롭 사유와 엔진 연동 동작을 함께 확인.
-
-### 변경 요약 (2026-03-07, 1분 캔들 기반 5분 turnover 수집/재사용)
-- 변경 요약: `_try_buy`에서 top/spread 후보군 확정 이후 각 마켓의 최근 1분 캔들(최소 5개)을 우선 candle buffer snapshot으로 확보하고, 부족할 때만 `get_candles(interval=1, count=5)`를 호출하도록 변경. 최근 5개 1분 캔들의 `candle_acc_trade_price` 합으로 `turnover_5m_by_market`를 계산하며, 5개 미만/필드 누락 마켓은 invalid 처리되어 유니버스 `top_n1` 단계(`missing_5m_turnover`)에서 자동 제외. 동시에 수집한 1m 데이터를 전략 평가 입력으로 재사용해 중복 호출을 줄이고, cycle 단위 `attempts/api_calls/failures/failure_rate_pct`를 디버그 카운터/로그(`TURNOVER_1M_COLLECTION_STATS`)로 남기도록 확장.
-- 영향 파일: `core/engine.py`, `testing/test_engine_order_acceptance.py`, `testing/test_engine_candle_trigger.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 실거래/모의 실행 로그에서 `TURNOVER_1M_COLLECTION_STATS` 출력과 `debug_counters`의 `turnover_1m_collection_*` 누적값을 함께 확인해 수집 시도 수, API 호출 수, 실패율을 모니터링 가능.

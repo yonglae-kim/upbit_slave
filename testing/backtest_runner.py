@@ -3,9 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 import math
-import os
 import os.path
-from pathlib import Path
 from argparse import ArgumentParser
 from collections import Counter
 from dataclasses import dataclass, field, replace
@@ -20,44 +18,6 @@ from core.config import TradingConfig
 from core.config_loader import load_trading_config
 from core.position_policy import ExitDecision, PositionExitState, PositionOrderPolicy
 from core.strategy import check_buy, check_sell, classify_market_regime, debug_entry, preprocess_candles, zone_debug_metrics
-
-
-STRATEGY_PROFILE_OVERRIDES: dict[str, dict[str, bool | int | float | str]] = {
-    "baseline": {},
-    "a": {
-        "required_signal_count": 2,
-        "required_trigger_count": 1,
-        "rsi_neutral_filter_enabled": False,
-        "macd_histogram_filter_enabled": False,
-        "reentry_cooldown_bars": 4,
-    },
-    "b": {
-        "regime_filter_enabled": True,
-        "regime_adx_min": 22.0,
-        "required_signal_count": 3,
-        "required_trigger_count": 2,
-        "entry_score_threshold": 2.9,
-        "trigger_mode": "adaptive",
-    },
-    "c": {
-        "required_signal_count": 2,
-        "required_trigger_count": 2,
-        "require_neckline_break": True,
-        "trigger_mode": "strict",
-        "trigger_confirm_lookback": 5,
-    },
-}
-
-
-def apply_strategy_profile(config: TradingConfig, profile_name: str) -> str:
-    normalized = str(profile_name or "baseline").strip().lower()
-    overrides = STRATEGY_PROFILE_OVERRIDES.get(normalized)
-    if overrides is None:
-        valid_profiles = ", ".join(sorted(STRATEGY_PROFILE_OVERRIDES))
-        raise ValueError(f"unknown strategy_profile '{profile_name}'. valid: {valid_profiles}")
-    for key, value in overrides.items():
-        setattr(config, key, value)
-    return normalized
 
 
 @dataclass
@@ -95,15 +55,10 @@ class SegmentResult:
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
     exit_reason_r_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     entry_fail_counts: dict[str, int] = field(default_factory=dict)
-    cooldown_blocked_entries: dict[str, int] = field(default_factory=dict)
-    blocked_entry_score_mean: dict[str, float] = field(default_factory=dict)
     avg_entry_score: float = 0.0
     score_q25: float = 0.0
     score_q50: float = 0.0
     score_q75: float = 0.0
-    entry_score_threshold_effective_mean: float = 0.0
-    entry_score_threshold_effective_p50: float = 0.0
-    entry_score_threshold_effective_p90: float = 0.0
     score_win_rate_q1: float = 0.0
     score_win_rate_q2: float = 0.0
     score_win_rate_q3: float = 0.0
@@ -111,9 +66,6 @@ class SegmentResult:
     regime_trade_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     quality_bucket_stats: dict[str, dict[str, float]] = field(default_factory=dict)
     stop_recovery_stats: dict[str, dict[str, float]] = field(default_factory=dict)
-    profit_factor: float = 0.0
-    avg_holding_minutes: float = 0.0
-    longest_no_trade_bars: int = 0
 
 
 
@@ -177,14 +129,12 @@ class BacktestRunner:
         zone_expiry_bars_5m: int | None = None,
         fvg_min_width_atr_mult: float | None = None,
         displacement_min_atr_mult: float | None = None,
-        strategy_profile: str = "baseline",
     ):
         self.market = market
         self.path = path
         self.buffer_cnt = buffer_cnt
         self.multiple_cnt = multiple_cnt
         self.config = load_trading_config()
-        self.strategy_profile = apply_strategy_profile(self.config, strategy_profile)
         self.mtf_timeframes = self._resolve_mtf_timeframes()
         self.zone_profile = zone_profile
         self.zone_overrides = {
@@ -208,8 +158,6 @@ class BacktestRunner:
             partial_take_profit_threshold=self.config.partial_take_profit_threshold,
             partial_take_profit_ratio=self.config.partial_take_profit_ratio,
             partial_stop_loss_ratio=self.config.partial_stop_loss_ratio,
-            trailing_requires_breakeven=self.config.trailing_requires_breakeven,
-            trailing_activation_bars=self.config.trailing_activation_bars,
             exit_mode=self.config.exit_mode,
             atr_period=self.config.atr_period,
             atr_stop_mult=self.config.atr_stop_mult,
@@ -363,15 +311,6 @@ class BacktestRunner:
         return summary
 
     @staticmethod
-    def _resolve_cooldown_block_reason(state: BacktestPositionState) -> str:
-        reason = str(state.last_exit_reason or "unknown").strip().lower()
-        if not reason:
-            reason = "unknown"
-        if bool(getattr(state, "last_exit_reason", "")) and bool(getattr(state, "last_exit_bar_index", -1) >= 0):
-            return reason
-        return "unknown"
-
-    @staticmethod
     def _build_quality_bucket_stats(rows: list[tuple[str, float]]) -> dict[str, dict[str, float]]:
         grouped: dict[str, list[float]] = {"low": [], "mid": [], "high": []}
         for bucket, pnl in rows:
@@ -459,8 +398,6 @@ class BacktestRunner:
             "partial_take_profit_threshold": "TRADING_PARTIAL_TAKE_PROFIT_THRESHOLD",
             "partial_take_profit_ratio": "TRADING_PARTIAL_TAKE_PROFIT_RATIO",
             "partial_stop_loss_ratio": "TRADING_PARTIAL_STOP_LOSS_RATIO",
-            "trailing_requires_breakeven": "TRADING_TRAILING_REQUIRES_BREAKEVEN",
-            "trailing_activation_bars": "TRADING_TRAILING_ACTIVATION_BARS",
             "exit_mode": "TRADING_EXIT_MODE",
             "atr_period": "TRADING_ATR_PERIOD",
             "atr_stop_mult": "TRADING_ATR_STOP_MULT",
@@ -894,9 +831,9 @@ class BacktestRunner:
             "dominant_fail_code": max(counters, key=counters.get) if counters else "none",
         }
 
-    def _calc_trade_stats(self, ledger: list[TradeLedgerEntry]) -> tuple[float, float, float, float, float, float]:
+    def _calc_trade_stats(self, ledger: list[TradeLedgerEntry]) -> tuple[float, float, float, float, float]:
         if not ledger:
-            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0
         pnls = [entry.pnl for entry in ledger]
         wins = [value for value in pnls if value > 0]
         losses = [value for value in pnls if value < 0]
@@ -905,15 +842,7 @@ class BacktestRunner:
         avg_loss = sum(losses) / len(losses) if losses else 0.0
         profit_loss_ratio = (avg_profit / abs(avg_loss)) if avg_loss < 0 else 0.0
         expectancy = sum(pnls) / len(pnls)
-        gross_profit = sum(wins)
-        gross_loss = abs(sum(losses))
-        if gross_loss > 0:
-            profit_factor = gross_profit / gross_loss
-        elif gross_profit > 0:
-            profit_factor = float("inf")
-        else:
-            profit_factor = 0.0
-        return win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy, float(profit_factor)
+        return win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy
 
     def _run_segment(self, data_newest: list[dict], init_amount: float, segment_id: int) -> SegmentResult:
         amount = init_amount
@@ -930,16 +859,11 @@ class BacktestRunner:
         position_state = BacktestPositionState()
         exit_reason_counts: Counter[str] = Counter()
         entry_fail_counts: Counter[str] = Counter()
-        cooldown_blocked_entries: Counter[str] = Counter()
-        blocked_entry_score_rows: dict[str, list[float]] = {}
         trade_ledger: list[TradeLedgerEntry] = []
         entry_scores: list[float] = []
-        effective_score_thresholds: list[float] = []
         trade_score_rows: list[tuple[float, float]] = []
         trade_quality_rows: list[tuple[str, float]] = []
         active_trade: dict[str, float | str] | None = None
-        entry_bar_indices: list[int] = []
-        holding_minutes_values: list[float] = []
         required_window_size = max(
             int(self.buffer_cnt),
             int(self.required_base_bars_for_regime),
@@ -963,7 +887,6 @@ class BacktestRunner:
                 entry_eval = evaluate_long_entry(mtf_data, self.strategy_params) if strategy_name == "rsi_bb_reversal_long" else None
                 if entry_eval is not None:
                     entry_scores.append(float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0))
-                    effective_score_thresholds.append(float(entry_eval.diagnostics.get("effective_score_threshold", 0.0) or 0.0))
 
                 debug = debug_entry(mtf_data, self.strategy_params, side="buy")
                 zones_total, zones_active, has_candidate_entry = zone_debug_metrics(debug)
@@ -985,10 +908,6 @@ class BacktestRunner:
                 if blocked_by_cooldown:
                     buy_signal = False
                     entry_fail_counts["fail_reentry_cooldown"] += 1
-                    block_reason = self._resolve_cooldown_block_reason(position_state)
-                    cooldown_blocked_entries[block_reason] += 1
-                    blocked_entry_score = float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0) if entry_eval else 0.0
-                    blocked_entry_score_rows.setdefault(block_reason, []).append(blocked_entry_score)
 
                 if not buy_signal and debug and not blocked_by_cooldown:
                     fail_code = str(debug.get("fail_code", "unknown"))
@@ -1000,7 +919,6 @@ class BacktestRunner:
                 if buy_signal:
                     triggered_entries += 1
                     entries += 1
-                    entry_bar_indices.append(bar_index)
                     quality_score = float(entry_eval.diagnostics.get("quality_score", 0.0) or 0.0) if entry_eval else 0.0
                     if quality_score >= float(self.config.quality_score_high_threshold):
                         quality_bucket = "high"
@@ -1147,7 +1065,6 @@ class BacktestRunner:
                             entry_time = datetime.datetime.strptime(str(active_trade["entry_time"]), "%Y-%m-%dT%H:%M:%S")
                             exit_time = datetime.datetime.strptime(test_data[0]["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
                             holding_minutes = max(0.0, (exit_time - entry_time).total_seconds() / 60)
-                            holding_minutes_values.append(float(holding_minutes))
                             avg_exit_price = float(active_trade["gross_exit_notional"]) / float(active_trade["sold_qty"])
                             pnl = float(active_trade["net_exit_cash"]) - float(active_trade["invested_cash"])
                             risk_amount = float(active_trade["invested_cash"]) * max(self.config.stop_loss_threshold, 1e-9)
@@ -1237,7 +1154,7 @@ class BacktestRunner:
             candidate_entries,
             triggered_entries,
         )
-        win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy, profit_factor = self._calc_trade_stats(trade_ledger)
+        win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy = self._calc_trade_stats(trade_ledger)
         exit_reason_r_stats = self._build_exit_reason_r_stats(trade_ledger)
         oldest = data_newest[-1]["candle_date_time_kst"]
         newest = data_newest[0]["candle_date_time_kst"]
@@ -1246,23 +1163,12 @@ class BacktestRunner:
         score_q25 = float(pd.Series(entry_scores).quantile(0.25)) if entry_scores else 0.0
         score_q50 = float(pd.Series(entry_scores).quantile(0.50)) if entry_scores else 0.0
         score_q75 = float(pd.Series(entry_scores).quantile(0.75)) if entry_scores else 0.0
-        threshold_p50 = float(pd.Series(effective_score_thresholds).quantile(0.50)) if effective_score_thresholds else 0.0
-        threshold_p90 = float(pd.Series(effective_score_thresholds).quantile(0.90)) if effective_score_thresholds else 0.0
         score_win_rates = self._score_win_rates_by_quantile(trade_score_rows)
         regime_trade_stats = self._build_regime_trade_stats(trade_ledger)
         quality_bucket_stats = self._build_quality_bucket_stats(trade_quality_rows)
         stop_recovery_stats = self._build_stop_recovery_stats(
             [row for row in self.stop_recovery_rows if int(row.get("segment_id", -1)) == int(segment_id)]
         )
-        if entry_bar_indices:
-            ordered_indices = sorted(int(v) for v in entry_bar_indices)
-            no_trade_spans = [ordered_indices[0]]
-            no_trade_spans.extend(max(0, ordered_indices[idx] - ordered_indices[idx - 1] - 1) for idx in range(1, len(ordered_indices)))
-            no_trade_spans.append(max(0, (max_current_index - ordered_indices[-1])))
-            longest_no_trade_bars = max(no_trade_spans) if no_trade_spans else max_current_index
-        else:
-            longest_no_trade_bars = max_current_index
-        avg_holding_minutes = (sum(holding_minutes_values) / len(holding_minutes_values)) if holding_minutes_values else 0.0
         return SegmentResult(
             segment_id=segment_id,
             insample_start=oldest,
@@ -1294,18 +1200,10 @@ class BacktestRunner:
             exit_reason_counts=dict(exit_reason_counts),
             exit_reason_r_stats=exit_reason_r_stats,
             entry_fail_counts=dict(entry_fail_counts),
-            cooldown_blocked_entries=dict(cooldown_blocked_entries),
-            blocked_entry_score_mean={
-                reason: (sum(scores) / len(scores)) if scores else 0.0
-                for reason, scores in blocked_entry_score_rows.items()
-            },
             avg_entry_score=(sum(entry_scores) / len(entry_scores)) if entry_scores else 0.0,
             score_q25=score_q25,
             score_q50=score_q50,
             score_q75=score_q75,
-            entry_score_threshold_effective_mean=(sum(effective_score_thresholds) / len(effective_score_thresholds)) if effective_score_thresholds else 0.0,
-            entry_score_threshold_effective_p50=threshold_p50,
-            entry_score_threshold_effective_p90=threshold_p90,
             score_win_rate_q1=score_win_rates.get("q1", 0.0),
             score_win_rate_q2=score_win_rates.get("q2", 0.0),
             score_win_rate_q3=score_win_rates.get("q3", 0.0),
@@ -1313,12 +1211,16 @@ class BacktestRunner:
             regime_trade_stats=regime_trade_stats,
             quality_bucket_stats=quality_bucket_stats,
             stop_recovery_stats=stop_recovery_stats,
-            profit_factor=profit_factor,
-            avg_holding_minutes=avg_holding_minutes,
-            longest_no_trade_bars=longest_no_trade_bars,
         )
 
-    def _collect_walkforward_results(self, raw_data: list[dict], init_amount: float) -> list[SegmentResult]:
+    def run(self):
+        self.stop_event_rows = []
+        self.stop_recovery_rows = []
+        self.stop_gap_trade_rows = []
+        self._print_config_default_vs_effective()
+        raw_data, shortage_count = self._load_or_create_data()
+        raw_data = self._filter_recent_days(raw_data)
+        init_amount = float(self.config.paper_initial_krw)
         in_len = self.insample_windows * self.buffer_cnt
         oos_len = self.oos_windows * self.buffer_cnt
         step = oos_len
@@ -1363,15 +1265,10 @@ class BacktestRunner:
                 exit_reason_counts=segment.exit_reason_counts,
                 exit_reason_r_stats=segment.exit_reason_r_stats,
                 entry_fail_counts=segment.entry_fail_counts,
-                cooldown_blocked_entries=segment.cooldown_blocked_entries,
-                blocked_entry_score_mean=segment.blocked_entry_score_mean,
                 avg_entry_score=segment.avg_entry_score,
                 score_q25=segment.score_q25,
                 score_q50=segment.score_q50,
                 score_q75=segment.score_q75,
-                entry_score_threshold_effective_mean=segment.entry_score_threshold_effective_mean,
-                entry_score_threshold_effective_p50=segment.entry_score_threshold_effective_p50,
-                entry_score_threshold_effective_p90=segment.entry_score_threshold_effective_p90,
                 score_win_rate_q1=segment.score_win_rate_q1,
                 score_win_rate_q2=segment.score_win_rate_q2,
                 score_win_rate_q3=segment.score_win_rate_q3,
@@ -1379,117 +1276,12 @@ class BacktestRunner:
                 regime_trade_stats=segment.regime_trade_stats,
                 quality_bucket_stats=segment.quality_bucket_stats,
                 stop_recovery_stats=segment.stop_recovery_stats,
-                profit_factor=segment.profit_factor,
-                avg_holding_minutes=segment.avg_holding_minutes,
-                longest_no_trade_bars=segment.longest_no_trade_bars,
             )
             results.append(segment)
             segment_id += 1
 
         if not results and len(raw_data) >= self.buffer_cnt:
             results.append(self._run_segment(raw_data, init_amount, segment_id=1))
-        return results
-
-    @staticmethod
-    def _delta(on_value: float, off_value: float) -> float:
-        return float(on_value - off_value)
-
-    @staticmethod
-    def _regime_metric(row: SegmentResult, regime_key: str, metric: str) -> float:
-        return float(row.regime_trade_stats.get(regime_key, {}).get(metric, 0.0))
-
-    def _build_cooldown_block_df(self, results: list[SegmentResult]) -> pd.DataFrame:
-        reasons = sorted({reason for row in results for reason in row.cooldown_blocked_entries.keys()})
-        rows: list[dict[str, float | int]] = []
-        for row in results:
-            payload: dict[str, float | int] = {}
-            for reason in reasons:
-                safe_reason = reason.replace(" ", "_")
-                payload[f"cooldown_blocked_entries_{safe_reason}"] = int(row.cooldown_blocked_entries.get(reason, 0))
-                payload[f"blocked_entry_score_mean_{safe_reason}"] = float(row.blocked_entry_score_mean.get(reason, 0.0))
-            rows.append(payload)
-        return pd.DataFrame(rows)
-
-    def _build_cooldown_ab_df(self, cooldown_on: list[SegmentResult], cooldown_off: list[SegmentResult]) -> pd.DataFrame:
-        paired = zip(cooldown_on, cooldown_off)
-        rows: list[dict[str, float | int]] = []
-        for on_row, off_row in paired:
-            rows.append(
-                {
-                    "segment_id": int(on_row.segment_id),
-                    "cooldown_on_trades": int(on_row.trades),
-                    "cooldown_off_trades": int(off_row.trades),
-                    "delta_trades": int(on_row.trades - off_row.trades),
-                    "cooldown_on_win_rate": float(on_row.win_rate),
-                    "cooldown_off_win_rate": float(off_row.win_rate),
-                    "delta_win_rate": self._delta(on_row.win_rate, off_row.win_rate),
-                    "cooldown_on_profit_factor": float(on_row.profit_factor),
-                    "cooldown_off_profit_factor": float(off_row.profit_factor),
-                    "delta_profit_factor": self._delta(on_row.profit_factor, off_row.profit_factor),
-                    "cooldown_on_expectancy": float(on_row.expectancy),
-                    "cooldown_off_expectancy": float(off_row.expectancy),
-                    "delta_expectancy": self._delta(on_row.expectancy, off_row.expectancy),
-                    "cooldown_on_mdd": float(on_row.mdd),
-                    "cooldown_off_mdd": float(off_row.mdd),
-                    "delta_mdd": self._delta(on_row.mdd, off_row.mdd),
-                    "cooldown_on_sideways_expectancy": self._regime_metric(on_row, "sideways", "expectancy"),
-                    "cooldown_off_sideways_expectancy": self._regime_metric(off_row, "sideways", "expectancy"),
-                    "delta_sideways_expectancy": self._delta(
-                        self._regime_metric(on_row, "sideways", "expectancy"),
-                        self._regime_metric(off_row, "sideways", "expectancy"),
-                    ),
-                    "cooldown_on_weak_expectancy": self._regime_metric(on_row, "weak_trend", "expectancy"),
-                    "cooldown_off_weak_expectancy": self._regime_metric(off_row, "weak_trend", "expectancy"),
-                    "delta_weak_expectancy": self._delta(
-                        self._regime_metric(on_row, "weak_trend", "expectancy"),
-                        self._regime_metric(off_row, "weak_trend", "expectancy"),
-                    ),
-                    "cooldown_on_strong_expectancy": self._regime_metric(on_row, "strong_trend", "expectancy"),
-                    "cooldown_off_strong_expectancy": self._regime_metric(off_row, "strong_trend", "expectancy"),
-                    "delta_strong_expectancy": self._delta(
-                        self._regime_metric(on_row, "strong_trend", "expectancy"),
-                        self._regime_metric(off_row, "strong_trend", "expectancy"),
-                    ),
-                }
-            )
-        return pd.DataFrame(rows)
-
-    def _write_cooldown_attribution_report(self, report_path: str, block_df: pd.DataFrame, ab_df: pd.DataFrame) -> None:
-        os.makedirs(os.path.dirname(report_path), exist_ok=True)
-        block_summary = block_df.sum(numeric_only=True).to_dict() if not block_df.empty else {}
-        ab_mean = ab_df.mean(numeric_only=True).to_dict() if not ab_df.empty else {}
-
-        lines = [
-            "# Cooldown Attribution Report",
-            "",
-            "## 1) Cooldown blocked entries by reason",
-            "",
-        ]
-        if block_summary:
-            for key, value in sorted(block_summary.items()):
-                lines.append(f"- {key}: {float(value):.4f}")
-        else:
-            lines.append("- no cooldown blocked entries")
-
-        lines.extend(["", "## 2) Cooldown ON/OFF A/B mean deltas", ""])
-        if ab_mean:
-            for key, value in sorted(ab_mean.items()):
-                lines.append(f"- {key}: {float(value):.4f}")
-        else:
-            lines.append("- no segment rows")
-
-        lines.extend(["", "## 3) Segment table (CSV)", "", "- `testing/reports/cooldown_ab_segments.csv`"])
-        Path(report_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    def run(self):
-        self.stop_event_rows = []
-        self.stop_recovery_rows = []
-        self.stop_gap_trade_rows = []
-        self._print_config_default_vs_effective()
-        raw_data, shortage_count = self._load_or_create_data()
-        raw_data = self._filter_recent_days(raw_data)
-        init_amount = float(self.config.paper_initial_krw)
-        results = self._collect_walkforward_results(raw_data, init_amount)
 
         df = pd.DataFrame([r.__dict__ for r in results])
         reason_df = pd.DataFrame(
@@ -1582,8 +1374,6 @@ class BacktestRunner:
                     "stop_recovery_partial_stop_loss_recovered_1r_3_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_3_share_pct", 0.0),
                     "stop_recovery_partial_stop_loss_recovered_1r_5_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_5_share_pct", 0.0),
                     "stop_recovery_partial_stop_loss_recovered_1r_10_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_10_share_pct", 0.0),
-                    "avg_holding_minutes": row.avg_holding_minutes,
-                    "longest_no_trade_bars": row.longest_no_trade_bars,
                     "stop_recovery_trailing_stop_count": row.stop_recovery_stats.get("trailing_stop", {}).get("count", 0.0),
                     "stop_recovery_trailing_stop_mfe_r_3_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_3_mean", 0.0),
                     "stop_recovery_trailing_stop_mfe_r_5_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_5_mean", 0.0),
@@ -1596,16 +1386,13 @@ class BacktestRunner:
             ]
         )
         fail_df = pd.DataFrame([self._build_fail_summary(row.entry_fail_counts) for row in results])
-        cooldown_block_df = self._build_cooldown_block_df(results)
         if not reason_df.empty:
             df = pd.concat(
-                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "cooldown_blocked_entries", "blocked_entry_score_mean", "regime_trade_stats", "quality_bucket_stats", "stop_recovery_stats"], errors="ignore"), reason_df],
+                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "regime_trade_stats", "quality_bucket_stats", "stop_recovery_stats"], errors="ignore"), reason_df],
                 axis=1,
             )
         if not fail_df.empty:
             df = pd.concat([df, fail_df], axis=1)
-        if not cooldown_block_df.empty:
-            df = pd.concat([df, cooldown_block_df], axis=1)
         if not df.empty:
             period_returns = pd.to_numeric(df["period_return"], errors="coerce").fillna(0.0)
             compounded = (period_returns.div(100).add(1.0).prod() - 1.0) * 100
@@ -1613,33 +1400,6 @@ class BacktestRunner:
             df["segment_return_std"] = float(period_returns.std(ddof=0))
             df["segment_return_median"] = float(period_returns.median())
         df.to_csv(self.segment_report_path, index=False)
-
-        original_cooldown_bars = int(self.config.reentry_cooldown_bars)
-        original_loss_only = bool(self.config.cooldown_on_loss_exits_only)
-        stop_event_rows_on = list(self.stop_event_rows)
-        stop_recovery_rows_on = list(self.stop_recovery_rows)
-        stop_gap_rows_on = list(self.stop_gap_trade_rows)
-        try:
-            self.config.reentry_cooldown_bars = 0
-            self.config.cooldown_on_loss_exits_only = False
-            self.stop_event_rows = []
-            self.stop_recovery_rows = []
-            self.stop_gap_trade_rows = []
-            cooldown_off_results = self._collect_walkforward_results(raw_data, init_amount)
-        finally:
-            self.config.reentry_cooldown_bars = original_cooldown_bars
-            self.config.cooldown_on_loss_exits_only = original_loss_only
-            self.stop_event_rows = stop_event_rows_on
-            self.stop_recovery_rows = stop_recovery_rows_on
-            self.stop_gap_trade_rows = stop_gap_rows_on
-
-        cooldown_ab_df = self._build_cooldown_ab_df(results, cooldown_off_results)
-        cooldown_ab_path = os.path.join("testing", "reports", "cooldown_ab_segments.csv")
-        os.makedirs(os.path.dirname(cooldown_ab_path), exist_ok=True)
-        cooldown_ab_df.to_csv(cooldown_ab_path, index=False)
-
-        cooldown_report_path = os.path.join("testing", "reports", "cooldown_attribution.md")
-        self._write_cooldown_attribution_report(cooldown_report_path, cooldown_block_df, cooldown_ab_df)
 
         stop_diag_df = pd.DataFrame(self.stop_event_rows)
         if not stop_diag_df.empty:
@@ -1700,8 +1460,6 @@ class BacktestRunner:
             print(f"stop recovery diagnostics saved: {self.stop_recovery_path}")
         if self.debug_mode:
             print(f"entry failure debug saved: {self.debug_report_path}")
-        print("cooldown A/B segments saved: testing/reports/cooldown_ab_segments.csv")
-        print("cooldown attribution report saved: testing/reports/cooldown_attribution.md")
         if not abnormal_cagr_rows.empty:
             ids = ", ".join(str(int(v)) for v in abnormal_cagr_rows["segment_id"].tolist())
             print(
@@ -1736,7 +1494,6 @@ if __name__ == "__main__":
     parser.add_argument("--zone-expiry-bars-5m", type=int, default=None)
     parser.add_argument("--fvg-min-width-atr-mult", type=float, default=None)
     parser.add_argument("--displacement-min-atr-mult", type=float, default=None)
-    parser.add_argument("--strategy-profile", choices=sorted(STRATEGY_PROFILE_OVERRIDES.keys()), default="baseline")
     args = parser.parse_args()
 
     BacktestRunner(
@@ -1757,5 +1514,4 @@ if __name__ == "__main__":
         zone_expiry_bars_5m=args.zone_expiry_bars_5m,
         fvg_min_width_atr_mult=args.fvg_min_width_atr_mult,
         displacement_min_atr_mult=args.displacement_min_atr_mult,
-        strategy_profile=args.strategy_profile,
     ).run()

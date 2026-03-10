@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
-from pathlib import Path
 
 from core.candle_buffer import CandleBuffer
 from core.config import TradingConfig
@@ -70,8 +69,6 @@ class TradingEngine:
             partial_take_profit_threshold=config.partial_take_profit_threshold,
             partial_take_profit_ratio=config.partial_take_profit_ratio,
             partial_stop_loss_ratio=config.partial_stop_loss_ratio,
-            trailing_requires_breakeven=config.trailing_requires_breakeven,
-            trailing_activation_bars=config.trailing_activation_bars,
             exit_mode=config.exit_mode,
             atr_period=config.atr_period,
             atr_stop_mult=config.atr_stop_mult,
@@ -80,22 +77,14 @@ class TradingEngine:
         )
         self._position_exit_states: dict[str, PositionExitState] = {}
         self._entry_tracking_by_market: dict[str, dict[str, float | str | datetime]] = {}
-        self._entry_position_id_by_market: dict[str, str] = {}
-        self._entry_started_at_by_market: dict[str, datetime] = {}
         self._entry_strategy_params_by_market: dict[str, StrategyParams] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
-        self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str | int | float]] = {}
+        self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
         self._last_strategy_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
         self.debug_counters: dict[str, int] = {
             "fail_reentry_cooldown": 0,
             "fail_strategy_cooldown": 0,
-            "fail_entry_score_below_threshold": 0,
-            "fail_entry_trigger_fail": 0,
         }
-        self._recent_trade_reasons: list[str] = []
-        self._trade_reason_log_path = Path("logs/recent_trade_reasons.txt")
-        self._trade_reason_jsonl_path = Path("logs/trade_reasons.jsonl")
-        self._trade_reason_jsonl_max_bytes = 5 * 1024 * 1024
 
         if self.ws_client:
             self.ws_client.on_message = self._route_ws_message
@@ -190,16 +179,11 @@ class TradingEngine:
                     sold_volume=preflight["order_value"],
                 )
                 if decision.qty_ratio >= 1.0:
-                    exit_state = self._position_exit_states.get(market)
+                    self._reset_position_exit_state(market)
                     latest_candle = data.get("1m", [{}])[0]
                     exit_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
                     exit_time = self._to_utc_aware(exit_time)
-                    self._last_exit_snapshot_by_market[market] = {
-                        "time": exit_time,
-                        "reason": decision.reason,
-                        "entry_regime": str(getattr(exit_state, "entry_regime", "unknown") or "unknown"),
-                    }
-                    self._reset_position_exit_state(market)
+                    self._last_exit_snapshot_by_market[market] = {"time": exit_time, "reason": decision.reason}
                     if decision.reason == "strategy_signal":
                         self._last_strategy_exit_snapshot_by_market[market] = {
                             "time": exit_time,
@@ -214,19 +198,6 @@ class TradingEngine:
                         daily_pnl_krw=self._daily_realized_pnl_krw(),
                     )
                 )
-                self._append_trade_reason(
-                    side="SELL",
-                    market=market,
-                    reason=str(decision.reason),
-                    price=current_price,
-                    qty=preflight["order_value"],
-                    notional_krw=preflight.get("notional"),
-                    qty_ratio=decision.qty_ratio,
-                    position_id=self._entry_position_id_by_market.get(market),
-                    holding_seconds=self._compute_holding_seconds(market),
-                    holding_bars=self._compute_holding_bars(market),
-                    diagnostics=decision.diagnostics,
-                )
 
         self._print_runtime_status(stage="evaluating_entries", portfolio=portfolio)
         self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
@@ -238,44 +209,14 @@ class TradingEngine:
 
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
         ticker_by_market = {str(ticker.get("market")): ticker for ticker in tickers if ticker.get("market")}
-        top_and_spread_result = self.universe.select_watch_markets_with_report(
-            tickers,
-        )
-
-        turnover_5m_by_market, candles_1m_by_market, collection_stats = self._collect_recent_5m_turnover_and_1m_candles(
-            top_and_spread_result.watch_markets
-        )
-        self.debug_counters["turnover_1m_collection_attempts"] = self.debug_counters.get("turnover_1m_collection_attempts", 0) + int(
-            collection_stats["attempts"]
-        )
-        self.debug_counters["turnover_1m_collection_api_calls"] = self.debug_counters.get("turnover_1m_collection_api_calls", 0) + int(
-            collection_stats["api_calls"]
-        )
-        self.debug_counters["turnover_1m_collection_failures"] = self.debug_counters.get("turnover_1m_collection_failures", 0) + int(
-            collection_stats["failures"]
-        )
-        cycle_failure_rate_pct = int(round(float(collection_stats["failure_rate"]) * 100.0))
-        self.debug_counters["turnover_1m_collection_cycle_failure_rate_pct"] = cycle_failure_rate_pct
-        print(
-            "TURNOVER_1M_COLLECTION_STATS",
-            f"attempts={int(collection_stats['attempts'])}",
-            f"api_calls={int(collection_stats['api_calls'])}",
-            f"failures={int(collection_stats['failures'])}",
-            f"failure_rate_pct={cycle_failure_rate_pct}",
-        )
-
+        top_and_spread_result = self.universe.select_watch_markets_with_report(tickers)
+        candles_by_market = {market: self._get_strategy_candles(market) for market in top_and_spread_result.watch_markets}
         universe_result = self.universe.select_watch_markets_with_report(
             tickers,
-            candles_by_market=candles_1m_by_market,
-            turnover_5m_by_market=turnover_5m_by_market,
+            candles_by_market={market: candles["1m"] for market, candles in candles_by_market.items()},
         )
         watch_markets = universe_result.watch_markets
         self.last_universe_selection_result = universe_result
-
-        candles_by_market = {
-            market: self._get_strategy_candles(market, preloaded_1m=candles_1m_by_market.get(market))
-            for market in watch_markets
-        }
 
         for market in watch_markets:
             if market in held_markets:
@@ -290,7 +231,7 @@ class TradingEngine:
             latest_candle = data.get("1m", [{}])[0]
             latest_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
             latest_time = self._to_utc_aware(latest_time)
-            if self._is_reentry_cooldown_active(market, latest_time, regime=regime, candles_1m=data.get("1m", [])):
+            if self._is_reentry_cooldown_active(market, latest_time):
                 self.debug_counters["fail_reentry_cooldown"] = self.debug_counters.get("fail_reentry_cooldown", 0) + 1
                 continue
 
@@ -298,11 +239,6 @@ class TradingEngine:
             if str(effective_strategy_params.strategy_name).lower().strip() == "rsi_bb_reversal_long":
                 strategy_entry_result = evaluate_long_entry(data, effective_strategy_params)
                 if not strategy_entry_result.final_pass:
-                    reason = str(getattr(strategy_entry_result, "reason", ""))
-                    if reason == "score_below_threshold":
-                        self.debug_counters["fail_entry_score_below_threshold"] = self.debug_counters.get("fail_entry_score_below_threshold", 0) + 1
-                    elif reason == "trigger_fail":
-                        self.debug_counters["fail_entry_trigger_fail"] = self.debug_counters.get("fail_entry_trigger_fail", 0) + 1
                     continue
             elif not check_buy(data, effective_strategy_params):
                 continue
@@ -483,8 +419,6 @@ class TradingEngine:
                 "base_order_krw": base_order_krw,
                 "final_order_krw": final_order_krw,
             }
-            self._entry_position_id_by_market[market] = identifier
-            self._entry_started_at_by_market[market] = latest_time
             self._log_entry_diagnostics(
                 market=market,
                 latest_time=latest_time,
@@ -527,102 +461,7 @@ class TradingEngine:
                     final_order_krw=final_order_krw,
                 )
             )
-            entry_reason = str(getattr(strategy_entry_result, "reason", "entry_signal")) if strategy_entry_result is not None else "entry_signal"
-            self._append_trade_reason(
-                side="BUY",
-                market=market,
-                reason=entry_reason,
-                price=float(data["1m"][0]["trade_price"]),
-                qty=preflight["order_value"] / reference_price if reference_price > 0 else None,
-                notional_krw=preflight.get("notional"),
-                position_id=identifier,
-            )
             break
-
-    def _append_trade_reason(
-        self,
-        *,
-        side: str,
-        market: str,
-        reason: str,
-        price: float,
-        qty: float | None = None,
-        notional_krw: float | None = None,
-        qty_ratio: float | None = None,
-        position_id: str | None = None,
-        holding_seconds: float | None = None,
-        holding_bars: int | None = None,
-        diagnostics: dict[str, float | str] | None = None,
-    ) -> None:
-        stop_reasons = {"stop_loss", "partial_stop_loss", "trailing_stop"}
-
-        def _fmt(value: float | int | None, precision: int = 8) -> str:
-            if not isinstance(value, (int, float)):
-                return "na"
-            return f"{float(value):.{precision}f}"
-
-        now = datetime.now(timezone.utc).isoformat()
-        diagnostics_payload = diagnostics if isinstance(diagnostics, dict) else {}
-        qty_text = _fmt(qty)
-        notional_text = _fmt(notional_krw, precision=0)
-        qty_ratio_text = _fmt(qty_ratio, precision=4)
-        position_id_text = str(position_id or self._entry_position_id_by_market.get(market) or "na")
-        holding_seconds_text = _fmt(holding_seconds, precision=3)
-        holding_bars_text = str(holding_bars) if isinstance(holding_bars, int) and holding_bars >= 0 else "na"
-        line = (
-            f"{now} | {side} | {market} | price={price:.8f}"
-            f" | qty={qty_text} | notional_krw={notional_text} | qty_ratio={qty_ratio_text}"
-            f" | position_id={position_id_text} | holding_seconds={holding_seconds_text} | holding_bars={holding_bars_text}"
-            f" | reason={reason}"
-        )
-
-        if reason in stop_reasons:
-            stop_diag = diagnostics_payload
-            stop_ref_price = stop_diag.get("hard_stop_price")
-            if not isinstance(stop_ref_price, (int, float)):
-                stop_ref_price = stop_diag.get("trailing_floor")
-            stop_gap_pct = None
-            if isinstance(price, (int, float)) and price > 0 and isinstance(stop_ref_price, (int, float)) and stop_ref_price > 0:
-                stop_gap_pct = ((float(price) - float(stop_ref_price)) / float(stop_ref_price)) * 100.0
-            line += f" | stop_ref_price={_fmt(stop_ref_price)} | stop_gap_pct={_fmt(stop_gap_pct, precision=4)}"
-
-        self._recent_trade_reasons.append(line)
-        self._recent_trade_reasons = self._recent_trade_reasons[-10:]
-        try:
-            self._trade_reason_log_path.parent.mkdir(parents=True, exist_ok=True)
-            self._trade_reason_log_path.write_text("\n".join(self._recent_trade_reasons) + "\n", encoding="utf-8")
-        except OSError as exc:
-            print(f"TRADE_REASON_LOG_WRITE_FAILED path={self._trade_reason_log_path} error={exc}")
-
-        jsonl_payload = {
-            "ts": now,
-            "side": side,
-            "market": market,
-            "price": float(price),
-            "reason": reason,
-            "qty": float(qty) if isinstance(qty, (int, float)) else None,
-            "notional_krw": float(notional_krw) if isinstance(notional_krw, (int, float)) else None,
-            "qty_ratio": float(qty_ratio) if isinstance(qty_ratio, (int, float)) else None,
-            "position_id": None if position_id_text == "na" else position_id_text,
-            "holding_seconds": float(holding_seconds) if isinstance(holding_seconds, (int, float)) else None,
-            "diagnostics": diagnostics_payload,
-        }
-        try:
-            self._trade_reason_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-            self._rotate_trade_reason_jsonl_if_needed()
-            with self._trade_reason_jsonl_path.open("a", encoding="utf-8") as fp:
-                fp.write(json.dumps(jsonl_payload, ensure_ascii=False) + "\n")
-        except OSError as exc:
-            print(f"TRADE_REASON_JSONL_LOG_WRITE_FAILED path={self._trade_reason_jsonl_path} error={exc}")
-
-    def _rotate_trade_reason_jsonl_if_needed(self) -> None:
-        if not self._trade_reason_jsonl_path.exists():
-            return
-        if self._trade_reason_jsonl_path.stat().st_size < self._trade_reason_jsonl_max_bytes:
-            return
-        suffix = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        rotated = self._trade_reason_jsonl_path.with_name(f"trade_reasons.{suffix}.jsonl")
-        self._trade_reason_jsonl_path.replace(rotated)
 
     def _compute_market_damping_factors(self, ticker: dict, candles_1m: list[dict]) -> tuple[float, float, list[str]]:
         liquidity_factor = 1.0
@@ -666,80 +505,25 @@ class TradingEngine:
             return default
 
 
-    def _is_reentry_cooldown_active(
-        self,
-        market: str,
-        now_at: datetime,
-        *,
-        regime: str | None = None,
-        candles_1m: list[dict] | None = None,
-    ) -> bool:
+    def _is_reentry_cooldown_active(self, market: str, now_at: datetime) -> bool:
+        cooldown_bars = max(0, int(self.config.reentry_cooldown_bars))
+        if cooldown_bars <= 0:
+            return False
+
         last_exit = self._last_exit_snapshot_by_market.get(market)
         if not last_exit:
             return False
 
-        profile_overrides = self.config.reentry_cooldown_profile_overrides()
-        cooldown_on_loss_exits_only = bool(profile_overrides.get("cooldown_on_loss_exits_only", self.config.cooldown_on_loss_exits_only))
-
         last_reason = str(last_exit.get("reason", ""))
-        if cooldown_on_loss_exits_only and last_reason not in {"trailing_stop", "stop_loss"}:
+        if self.config.cooldown_on_loss_exits_only and last_reason not in {"trailing_stop", "stop_loss"}:
             return False
 
         last_time = last_exit.get("time")
         if not isinstance(last_time, datetime):
             return False
 
-        effective_regime = str(regime or last_exit.get("entry_regime", "")).strip().lower() or "unknown"
-        static_cooldown_bars = self._resolve_reentry_cooldown_bars(effective_regime)
-        dynamic_cooldown_bars = self._compute_dynamic_reentry_cooldown_bars(candles_1m or [])
-        required_cooldown_bars = max(static_cooldown_bars, dynamic_cooldown_bars)
-        if required_cooldown_bars <= 0:
-            return False
-
         elapsed_bars = self._compute_elapsed_bars(last_time, now_at)
-        remaining_bars = max(0, required_cooldown_bars - elapsed_bars)
-        is_active = elapsed_bars < required_cooldown_bars
-        self._emit_structured_log(
-            "REENTRY_COOLDOWN_EVAL",
-            market=market,
-            reason=last_reason,
-            regime=effective_regime,
-            elapsed_bars=elapsed_bars,
-            required_bars=required_cooldown_bars,
-            remaining_bars=remaining_bars,
-            static_bars=static_cooldown_bars,
-            dynamic_bars=dynamic_cooldown_bars,
-            active=is_active,
-        )
-        return is_active
-
-    def _resolve_reentry_cooldown_bars(self, regime: str) -> int:
-        base_bars = max(0, int(self.config.reentry_cooldown_bars))
-        overrides = self.config.reentry_cooldown_bars_by_regime if isinstance(self.config.reentry_cooldown_bars_by_regime, dict) else {}
-        regime_key = str(regime or "").strip().lower()
-        override_bars = overrides.get(regime_key)
-        if override_bars is None:
-            return base_bars
-        return max(0, int(override_bars))
-
-    def _compute_dynamic_reentry_cooldown_bars(self, candles_1m: list[dict]) -> int:
-        if not bool(self.config.reentry_dynamic_cooldown_enabled):
-            return 0
-        lookback_bars = max(2, int(self.config.reentry_dynamic_cooldown_lookback_bars))
-        if len(candles_1m) < lookback_bars:
-            return 0
-        atr_period = max(2, int(self.config.reentry_dynamic_cooldown_atr_period))
-        atr_value = self._latest_atr(candles_1m[:lookback_bars], atr_period)
-        last_price = float(candles_1m[0].get("trade_price", 0.0) or 0.0)
-        if atr_value <= 0 or last_price <= 0:
-            return 0
-        atr_ratio = atr_value / last_price
-        base_ratio = max(1e-9, float(self.config.reentry_dynamic_cooldown_base_atr_ratio))
-        scale = max(0.0, float(self.config.reentry_dynamic_cooldown_scale))
-        max_extra_bars = max(0, int(self.config.reentry_dynamic_cooldown_max_extra_bars))
-        volatility_excess = max(0.0, (atr_ratio / base_ratio) - 1.0)
-        extra_bars = int(round(volatility_excess * scale))
-        return min(max_extra_bars, max(0, extra_bars))
+        return elapsed_bars < cooldown_bars
 
     def _is_strategy_cooldown_active(self, market: str, now_at: datetime, strategy_params) -> bool:
         cooldown_bars = max(0, int(getattr(strategy_params, "strategy_cooldown_bars", 0)))
@@ -769,13 +553,10 @@ class TradingEngine:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
-    def _get_strategy_candles(self, market: str, preloaded_1m: list[dict] | None = None) -> dict[str, list[dict]]:
+    def _get_strategy_candles(self, market: str) -> dict[str, list[dict]]:
         intervals = {1: "1m", 5: "5m", 15: "15m"}
         result: dict[str, list[dict]] = {}
         for interval, key in intervals.items():
-            if interval == 1 and preloaded_1m is not None:
-                result[key] = preloaded_1m
-                continue
             raw = self.candle_buffer.get_candles(
                 market,
                 interval,
@@ -786,52 +567,6 @@ class TradingEngine:
             )
             result[key] = preprocess_candles(raw, source_order="newest")
         return result
-
-    def _collect_recent_5m_turnover_and_1m_candles(
-        self,
-        candidate_markets: list[str],
-    ) -> tuple[dict[str, float], dict[str, list[dict]], dict[str, float | int]]:
-        turnover_5m_by_market: dict[str, float] = {}
-        candles_1m_by_market: dict[str, list[dict]] = {}
-        attempts = 0
-        failures = 0
-        api_calls = 0
-
-        for market in candidate_markets:
-            attempts += 1
-            raw_1m = self.candle_buffer.snapshot(market, 1)
-            if len(raw_1m) < 5:
-                api_calls += 1
-                raw_1m = self.candle_buffer.get_candles(
-                    market,
-                    1,
-                    lambda selected_market, selected_interval: self.broker.get_candles(
-                        selected_market,
-                        interval=selected_interval,
-                        count=5,
-                    ),
-                )
-
-            candles_1m = preprocess_candles(raw_1m, source_order="newest")
-            if len(candles_1m) < 5:
-                failures += 1
-                continue
-
-            latest_five = candles_1m[:5]
-            if any("candle_acc_trade_price" not in candle for candle in latest_five):
-                failures += 1
-                continue
-
-            turnover_5m_by_market[market] = sum(float(candle.get("candle_acc_trade_price", 0.0) or 0.0) for candle in latest_five)
-            candles_1m_by_market[market] = candles_1m
-
-        failure_rate = (failures / attempts) if attempts > 0 else 0.0
-        return turnover_5m_by_market, candles_1m_by_market, {
-            "attempts": attempts,
-            "failures": failures,
-            "failure_rate": failure_rate,
-            "api_calls": api_calls,
-        }
 
     def _next_order_identifier(self, market: str, side: str) -> str:
         self._order_sequence += 1
@@ -861,26 +596,7 @@ class TradingEngine:
         state.reset_after_full_exit()
         self._position_exit_states.pop(market, None)
         self._entry_tracking_by_market.pop(market, None)
-        self._entry_position_id_by_market.pop(market, None)
-        self._entry_started_at_by_market.pop(market, None)
         self._entry_strategy_params_by_market.pop(market, None)
-
-    def _compute_holding_seconds(self, market: str) -> float | None:
-        entry_time = self._entry_started_at_by_market.get(market)
-        if not isinstance(entry_time, datetime):
-            entry_tracking = self._entry_tracking_by_market.get(market, {})
-            tracked_time = entry_tracking.get("entry_time")
-            if not isinstance(tracked_time, datetime):
-                return None
-            entry_time = tracked_time
-        entry_time = self._to_utc_aware(entry_time)
-        return max(0.0, (datetime.now(timezone.utc) - entry_time).total_seconds())
-
-    def _compute_holding_bars(self, market: str) -> int | None:
-        state = self._position_exit_states.get(market)
-        if state is None:
-            return None
-        return max(0, int(state.bars_held))
 
     def _emit_structured_log(self, event_type: str, **fields) -> None:
         event = {"type": event_type, **fields}

@@ -28,40 +28,22 @@ REGIME_STRATEGY_PARAM_OVERRIDES: dict[str, dict[str, int | float]] = {
         "rsi_long_threshold": 27.0,
         "bb_std": 2.2,
         "required_trigger_count": 2,
-        "entry_score_threshold": 3.1,
+        "entry_score_threshold": 2.9,
         "take_profit_r": 2.6,
     },
     "weak_trend": {
         "rsi_long_threshold": 30.0,
         "bb_std": 2.0,
         "required_trigger_count": 1,
-        "entry_score_threshold": 2.8,
+        "entry_score_threshold": 2.5,
         "take_profit_r": 2.0,
     },
     "sideways": {
         "rsi_long_threshold": 34.0,
         "bb_std": 1.8,
         "required_trigger_count": 1,
-        "entry_score_threshold": 2.7,
+        "entry_score_threshold": 2.2,
         "take_profit_r": 1.6,
-    },
-}
-
-
-ENTRY_EXPERIMENT_PROFILE_OVERRIDES: dict[str, dict[str, bool | int | float]] = {
-    "baseline": {},
-    "neckline_confirmed": {
-        "require_neckline_break": True,
-    },
-}
-
-
-REENTRY_COOLDOWN_PROFILE_OVERRIDES: dict[str, dict[str, bool]] = {
-    "legacy": {
-        "cooldown_on_loss_exits_only": False,
-    },
-    "loss_exit_guarded": {
-        "cooldown_on_loss_exits_only": True,
     },
 }
 
@@ -98,8 +80,6 @@ class TradingConfig:
     partial_take_profit_threshold: float = 1.02
     partial_take_profit_ratio: float = 0.5
     partial_stop_loss_ratio: float = 1.0
-    trailing_requires_breakeven: bool = True
-    trailing_activation_bars: int = 0
     exit_mode: str = "atr"
     atr_period: int = 14
     atr_stop_mult: float = 1.4
@@ -163,16 +143,8 @@ class TradingConfig:
     regime_adx_min: float = 18.0
     regime_slope_lookback: int = 3
     zone_profile: str = "aggressive"
-    reentry_cooldown_profile: str = "loss_exit_guarded"
     reentry_cooldown_bars: int = 10
-    reentry_cooldown_bars_by_regime: dict[str, int] = field(default_factory=lambda: {"sideways": 14})
-    cooldown_on_loss_exits_only: bool = True
-    reentry_dynamic_cooldown_enabled: bool = True
-    reentry_dynamic_cooldown_lookback_bars: int = 20
-    reentry_dynamic_cooldown_atr_period: int = 14
-    reentry_dynamic_cooldown_base_atr_ratio: float = 0.008
-    reentry_dynamic_cooldown_scale: float = 2.5
-    reentry_dynamic_cooldown_max_extra_bars: int = 8
+    cooldown_on_loss_exits_only: bool = False
     strategy_name: str = "sr_ob_fvg"
     rsi_period: int = 14
     rsi_long_threshold: float = 30.0
@@ -185,19 +157,17 @@ class TradingConfig:
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal: int = 9
-    macd_histogram_filter_enabled: bool = True
+    macd_histogram_filter_enabled: bool = False
     engulfing_strict: bool = True
     engulfing_include_wick: bool = False
-    allow_bullish_close_reversal_trigger: bool = True
-    consecutive_bearish_count: int = 2
+    consecutive_bearish_count: int = 3
     pivot_left: int = 3
     pivot_right: int = 3
     double_bottom_lookback_bars: int = 40
-    double_bottom_tolerance_pct: float = 1.0
-    require_band_reentry_on_second_bottom: bool = False
+    double_bottom_tolerance_pct: float = 0.5
+    require_band_reentry_on_second_bottom: bool = True
     require_neckline_break: bool = False
     divergence_signal_enabled: bool = True
-    required_signal_count: int = 3
     entry_score_threshold: float = 2.5
     rsi_oversold_weight: float = 1.0
     bb_touch_weight: float = 1.0
@@ -221,19 +191,10 @@ class TradingConfig:
     move_stop_to_breakeven_after_partial: bool = True
     max_hold_bars: int = 0
     strategy_cooldown_bars: int = 0
-    entry_experiment_profile: str = "baseline"
 
     def regime_strategy_overrides(self, regime: str) -> dict[str, int | float]:
         key = str(regime or "").strip().lower()
         return dict(REGIME_STRATEGY_PARAM_OVERRIDES.get(key, {}))
-
-    def reentry_cooldown_profile_overrides(self) -> dict[str, bool]:
-        key = str(self.reentry_cooldown_profile or "legacy").strip().lower()
-        overrides = REENTRY_COOLDOWN_PROFILE_OVERRIDES.get(key)
-        if overrides is None:
-            valid_profiles = ", ".join(sorted(REENTRY_COOLDOWN_PROFILE_OVERRIDES))
-            raise ValueError(f"unknown reentry_cooldown_profile '{key}'. valid: {valid_profiles}")
-        return dict(overrides)
 
     @property
     def min_effective_buyable_krw(self) -> int:
@@ -254,11 +215,6 @@ class TradingConfig:
             raise ValueError(f"unknown zone_profile '{profile_name}'. valid: {valid_profiles}")
 
         runtime_overrides = {k: v for k, v in (zone_overrides or {}).items() if v is not None}
-        experiment_profile_name = (self.entry_experiment_profile or "baseline").strip().lower()
-        experiment_profile_overrides = ENTRY_EXPERIMENT_PROFILE_OVERRIDES.get(experiment_profile_name)
-        if experiment_profile_overrides is None:
-            valid_profiles = ", ".join(sorted(ENTRY_EXPERIMENT_PROFILE_OVERRIDES))
-            raise ValueError(f"unknown entry_experiment_profile '{experiment_profile_name}'. valid: {valid_profiles}")
 
         base_params = {
 
@@ -278,7 +234,6 @@ class TradingConfig:
             "macd_histogram_filter_enabled": self.macd_histogram_filter_enabled,
             "engulfing_strict": self.engulfing_strict,
             "engulfing_include_wick": self.engulfing_include_wick,
-            "allow_bullish_close_reversal_trigger": self.allow_bullish_close_reversal_trigger,
             "consecutive_bearish_count": self.consecutive_bearish_count,
             "pivot_left": self.pivot_left,
             "pivot_right": self.pivot_right,
@@ -287,7 +242,6 @@ class TradingConfig:
             "require_band_reentry_on_second_bottom": self.require_band_reentry_on_second_bottom,
             "require_neckline_break": self.require_neckline_break,
             "divergence_signal_enabled": self.divergence_signal_enabled,
-            "required_signal_count": self.required_signal_count,
             "entry_score_threshold": self.entry_score_threshold,
             "rsi_oversold_weight": self.rsi_oversold_weight,
             "bb_touch_weight": self.bb_touch_weight,
@@ -351,6 +305,5 @@ class TradingConfig:
 
         }
         base_params.update(profile_overrides)
-        base_params.update(experiment_profile_overrides)
         base_params.update(runtime_overrides)
         return StrategyParams(**base_params)
