@@ -5,13 +5,21 @@
 
 ## 1) 실행 진입점
 - `main.py`: 실행 엔트리포인트
-- `core/config_loader.py`: 환경변수 기반 설정 로딩/검증
-- `core/engine.py`: 시그널 평가/주문 흐름의 핵심 실행 엔진
+- `core/config_loader.py`: 환경변수 기반 설정 로딩/검증. Task 8 runtime promotion gate는 승인 대상 후보 전략(`candidate_v1`)에만 적용되며, `paper/live`에서만 `TRADING_STRATEGY_DECISION_PATH`의 decision artifact를 fail-closed로 검증한다. 현재 shared runtime seam에서 지원하는 selectable strategy는 `baseline`/`rsi_bb_reversal_long`/`candidate_v1`만이며, `sr_ob_fvg`는 시작 전 config validation에서 reject한다. `dry_run`은 현재 정책상 candidate artifact gate 없이 전략 선택을 허용한다.
+- `core/engine.py`: 실거래 adapter 엔진. raw market/portfolio/runtime snapshot만 조립해 `core.decision_core.evaluate_market`에 전달하고, seam이 돌려준 intent/sizing proposal을 기준으로 broker preflight/주문 실행/알림/정합성만 처리. 다만 live 메모리에 이전 청산 상태가 아직 없을 때의 bootstrap payload(`_default_position_state_payload`) 생성만 엔진 소유로 유지한다.
+- `testing/backtest_runner.py`: 백테스트 adapter. 진입/청산 판단은 `core.decision_core.evaluate_market`에 위임하고, backtest 쪽은 fill/slippage/fee accounting, ledger/segment CSV, stop diagnostics, `sell_decision_rule` 전달과 재진입 cooldown bookkeeping만 유지한다. 진입 context에는 live와 같은 market-damping seam을 위해 synthetic ticker diagnostics(`trade_price`, `ask_price`, `bid_price`, `acc_trade_price_24h`)도 함께 실어 backtest/live sizing divergence를 줄인다.
+- `testing/experiment_runner.py`: walk-forward 세그먼트 CSV와 parity artifact를 재사용해 후보 전략의 `promote/reject` decision artifact를 생성한다. OOS acceptance는 `testing/optimize_walkforward.py`의 scoring/threshold contract를 그대로 사용하고, parity gate는 후보 전략명과 parity artifact의 `strategy_name`이 일치할 때만 통과한다. 기본 parity fixture는 `testing/fixtures/parity_<strategy>_cases.json`가 있으면 그것을 자동 선택한다.
+- `testing/parity_runner.py`: 승인된 parity fixture 세트를 replay해 intent/reason/size 일치 여부를 machine-checkable parity artifact로 기록한다. snapshot이 0건이면 fail-closed로 `pass = false`를 기록한다.
 
 ## 2) 핵심 모듈 맵
 ### Core
 - `core/config.py`: 트레이딩 설정 데이터 구조/기본값
-- `core/strategy.py`, `core/rsi_bb_reversal_long.py`: 전략 인터페이스/구현
+- `core/strategy.py`, `core/rsi_bb_reversal_long.py`: 기존 전략 인터페이스/구현
+- `core/strategy_registry.py`: 전략 이름을 공유 전략 엔트리로 정규화/조회하는 레지스트리
+- `core/decision_models.py`: 공유 의사결정용 순수 데이터 모델(`MarketSnapshot`, `DecisionIntent` 등)
+- `core/decision_core.py`: 전략 진입/청산 판단을 pure function 경계에서 평가하고 `DecisionIntent` + `next_position_state`를 반환하는 공유 decision core. live adapter는 raw snapshot과 정책 payload만 전달하고, seam이 regime 선택, effective strategy params, entry sizing/quality/damping proposal, exit-policy evaluation을 결정한다. 청산 시에는 포지션 cost basis(`PositionSnapshot.entry_price`)와 전략 진입 스냅샷(`position.state.entry_price`)을 분리해 전달하고, `DecisionContext.diagnostics.sell_decision_rule`로 `or/and` 청산 결합 모드를 제어할 수 있음
+- `core/strategies/baseline.py`: 기존 `rsi_bb_reversal_long` 진입/청산 로직을 재사용하는 `baseline` 래퍼
+- `core/strategies/candidate_v1.py`: shared strategy seam 뒤에 붙는 단순한 regime-aware pullback continuation 전략. `strong_trend`/`weak_trend`에서만 1m pullback-and-reclaim 진입을 평가하고, stop basis/레짐 진단값을 고정 스키마로 제공한다. 진입 sizing은 공용 risk-based sizing seam을 그대로 사용하되 baseline의 quality score bucket multiplier는 명시적으로 우회하며, 청산은 공용 `PositionOrderPolicy` 경로에 맡김
 - `core/risk.py`, `core/position_policy.py`: 리스크/포지션 정책
 - `core/order_state.py`, `core/reconciliation.py`: 주문 상태/체결 정합성
 - `core/universe.py`: 거래 대상(유니버스) 구성
@@ -25,7 +33,7 @@
 ### 보조 모듈
 - `apis.py`: 업비트 API 호출 래퍼
 - `message/notifier.py`: 알림 전송
-- `testing/`: pytest 기반 테스트/백테스트 스크립트
+- `testing/`: unittest 기반 테스트/백테스트 스크립트
 
 ## 3) 실행/검증 커맨드 (자주 쓰는 것)
 ```bash
@@ -37,7 +45,16 @@ TRADING_MODE=paper python main.py
 TRADING_MODE=dry_run python main.py
 
 # 테스트
-pytest -q
+python -m unittest discover -s testing
+
+# chunk 1 전략 레지스트리/공유 decision model 검증
+python -m unittest testing.test_strategy_registry testing.test_decision_core testing.test_config_loader
+
+# chunk 2 task 3 shared decision core 검증
+python -m unittest testing.test_decision_core testing.test_risk_and_policy testing.test_main_signals
+
+# chunk 2 task 4 live engine adapter 검증
+python -m unittest testing.test_engine_order_acceptance testing.test_engine_ws_hooks testing.test_engine_candle_trigger testing.test_main_signals
 
 # 최근 1주 백테스트
 python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
@@ -49,6 +66,19 @@ python -m testing.backtest_runner --market KRW-BTC --lookback-days 7
 # 단계형 Walk-forward 튜닝(진입/청산/레짐/사이징, coarse→fine)
 python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --result-csv testing/optimize_walkforward_results.csv
 # (산출: 결과 CSV + 상위 조합 패턴 문서 testing/optimize_walkforward_patterns.md)
+
+# 후보 전략 의사결정 artifact 생성 (기본 smoke fixture 사용)
+python -m testing.experiment_runner --market KRW-BTC --lookback-days 90 --strategy baseline --candidate candidate_v1 --output testing/artifacts/candidate_v1_decision.json
+
+# candidate parity artifact 생성 (승인 fixture replay)
+python -m testing.parity_runner --strategy candidate_v1 --output testing/artifacts/candidate_v1_parity.json
+
+# paper/live 후보 전략 promotion gate 검증
+TRADING_MODE=paper TRADING_STRATEGY_NAME=candidate_v1 TRADING_STRATEGY_DECISION_PATH=testing/artifacts/candidate_v1_decision.json python main.py
+TRADING_MODE=paper TRADING_STRATEGY_NAME=candidate_v1 TRADING_STRATEGY_DECISION_PATH=testing/fixtures/rejected_candidate_v1_decision.json python main.py
+
+# dry_run은 현재 정책상 candidate artifact gate를 적용하지 않음
+TRADING_MODE=dry_run TRADING_STRATEGY_NAME=candidate_v1 python main.py
 ```
 
 
@@ -60,6 +90,8 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 
 ## 4) 환경변수 핵심 포인트
 - `TRADING_MODE`: `live | paper | dry_run`
+- `TRADING_STRATEGY_NAME`: 현재 shared runtime seam이 허용하는 값은 `baseline`, `candidate_v1`, `rsi_bb_reversal_long`뿐이다. 레지스트리는 `rsi_bb_reversal_long` 별칭을 `baseline` canonical identity로 정규화하고, `candidate_v1`는 별도 canonical 엔트리로 조회된다. `sr_ob_fvg`는 레거시 research surface로만 남아 있으며 runtime/backtest config selection에서는 reject된다. `StrategyParams.strategy_name` 자체는 canonical 이름을 유지함
+- `TRADING_STRATEGY_DECISION_PATH`: 승인 대상 후보 전략(`candidate_v1`)을 `paper/live`에서 실행할 때 필요한 promotion decision artifact 경로. baseline 계열(`baseline`, `rsi_bb_reversal_long`)은 gate 대상이 아니며, `dry_run`도 현재 정책상 artifact 없이 실행 가능하다. Gate 대상 후보는 artifact의 `candidate_strategy`, `decision`, `oos_gate.pass`, `parity_gate.pass`, `parity_gate.strategy_name`, `parity_gate.expected_strategy_name`가 런타임 선택과 일치해야 하며, `oos_gate.pass`와 `parity_gate.pass`는 literal boolean `true`여야 한다
 - `TRADING_MIN_ORDER_KRW`: 최소 주문금액 하한
 - `TRADING_MIN_BUYABLE_KRW`: 추가 버퍼(엔진 하한 계산 시 `max` 적용)
 - `TRADING_DO_NOT_TRADING`: 제외 심볼/마켓 목록(쉼표 구분)
@@ -172,6 +204,10 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 ---
 
 ## 최근 업데이트 로그
+- 2026-03-17: `core/config_loader.py`에 runtime promotion gate를 추가/정교화. gate 범위는 승인 대상 후보 전략 `candidate_v1`의 `paper/live` 실행으로 한정되고, `dry_run`은 현재 정책상 ungated로 유지된다. 승인 artifact가 없거나 mismatch/`reject`이면 시작 전 차단되며, 수동 rejection QA용 fixture `testing/fixtures/rejected_candidate_v1_decision.json`를 함께 유지한다.
+- 2026-03-17: final integration blocker fix. `core/config_loader.py`가 shared registry에 없는 `sr_ob_fvg`를 runtime/backtest config 단계에서 fail-closed로 reject하도록 정리했고, `testing/backtest_runner.py`는 market damping seam에 필요한 synthetic ticker diagnostics(`ask/bid/trade_price`, recent 24h trade value proxy)를 entry context에 실어 supported damping configs에서 `final_order_krw`가 0으로 붕괴하지 않도록 맞췄다.
+- 2026-03-17: `testing/experiment_runner.py`, `testing/parity_runner.py`, `testing/fixtures/` 기반 synthetic promote/reject/parity fixture를 추가. decision artifact(`testing/artifacts/candidate_v1_decision.json`)와 parity artifact(`testing/artifacts/candidate_v1_parity.json`)를 machine-checkable JSON으로 생성하고, OOS gate는 `testing/optimize_walkforward.py`/`core/config.py`의 기존 threshold contract를 그대로 재사용하도록 정리.
+- 2026-03-16: profitability redesign chunk 1 착수. `core/strategy_registry.py`, `core/strategies/baseline.py`, `core/decision_models.py`를 추가해 `baseline` 레지스트리 조회와 공유 decision dataclass 계약을 도입하고, `core/config.py`/`core/config_loader.py`가 `baseline` 선택을 허용하도록 확장.
 - 2026-02-26: 초기 참조 문서 작성
 - 2026-02-26: `rsi_bb_reversal_long` 실운영 기준 진입/청산 플로우 문서화(전략/엔진/포지션 정책 반영).
 - 2026-02-27: 청산 정책을 3단계(초기 방어/중기 관리/후기 추적)로 재구성하고, strategy signal 가드를 레짐·보유시간·변동성 기반 동적 R 임계값으로 변경. `testing/backtest_runner.py`에 exit reason별 R 분포(mean/median/p10) 리포트를 추가.
@@ -240,3 +276,28 @@ python -m testing.optimize_walkforward --market KRW-BTC --lookback-days 30 --res
 - 변경 요약: 후보 유니버스 탐색의 거래량 기준을 기존 24시간 누적 거래대금(`acc_trade_price_24h`) 우선순위에서 최근 10분(1분봉 10개 합산 거래대금) 기준으로 전환. 또한 유니버스 재탐색은 매 사이클이 아니라 1시간 캐시 주기로 수행하도록 엔진에 리프레시 간격을 도입.
 - 영향 파일: `core/engine.py`, `core/universe.py`, `testing/test_universe.py`, `testing/test_engine_universe_refresh.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. 정적/단위 검증 시 `python -m unittest testing.test_universe testing.test_engine_universe_refresh`로 10분 거래대금 우선순위와 1시간 리프레시 동작을 확인 가능.
+
+### 변경 요약 (2026-03-16, profitability redesign chunk 1)
+- 변경 요약: `baseline` 전략을 공유 레지스트리 엔트리로 노출하고, 향후 공용 decision core에서 사용할 순수 데이터 모델을 추가. 또한 레지스트리가 canonical strategy identity와 entry/exit hook을 함께 보존하도록 확장하고, `core/config.py`가 `StrategyParams.strategy_name`에 legacy 런타임 이름 대신 canonical 이름을 유지하도록 정리.
+- 영향 파일: `core/strategy_registry.py`, `core/strategies/__init__.py`, `core/strategies/baseline.py`, `core/decision_models.py`, `core/config.py`, `core/config_loader.py`, `testing/test_strategy_registry.py`, `testing/test_decision_core.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. chunk 1 검증용으로 `python -m unittest testing.test_strategy_registry testing.test_decision_core testing.test_config_loader`를 추가 사용.
+
+### 변경 요약 (2026-03-16, profitability redesign chunk 2 task 3)
+- 변경 요약: `core/decision_core.py`를 추가해 baseline 전략 진입과 `PositionOrderPolicy` 기반 청산을 하나의 순수 경계에서 평가하도록 연결. shared core는 adapter 소유 mutable state를 직접 변경하지 않고 `DecisionIntent`와 `next_position_state` payload를 함께 반환하며, `core/position_policy.py`에는 state payload <-> `PositionExitState` 변환 래퍼를 추가. 또한 청산 seam에서 policy용 cost basis와 전략용 entry snapshot을 분리하고, `DecisionContext.diagnostics.sell_decision_rule`로 backtest의 `and/or` 결합 규칙을 전달할 수 있게 함.
+- 영향 파일: `core/decision_core.py`, `core/position_policy.py`, `core/strategy_registry.py`, `testing/test_decision_core.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. task 3 검증용으로 `python -m unittest testing.test_decision_core testing.test_risk_and_policy testing.test_main_signals`를 추가 사용.
+
+### 변경 요약 (2026-03-16, profitability redesign chunk 2 task 4)
+- 변경 요약: `core/engine.py`가 embedded entry/exit 판단 대신 raw `DecisionContext`를 조립해 `core.decision_core.evaluate_market`로 위임하도록 refactor. task 4 경계에 맞춰 seam이 regime 선택, effective strategy params, quality bucket/multiplier, market damping, 최종 proposed order sizing을 반환하고, 엔진은 cooldown/risk gate 확인 후 broker preflight, order execution, notifier/reconciliation, `next_position_state` persistence만 유지한다. 예외적으로 persisted exit state가 아직 없는 live 포지션의 bootstrap payload 생성만 `_default_position_state_payload`로 엔진에 남긴다.
+- 영향 파일: `core/engine.py`, `core/decision_core.py`, `testing/test_engine_order_acceptance.py`, `testing/test_engine_candle_trigger.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. task 4 검증용으로 `python -m unittest testing.test_engine_order_acceptance testing.test_engine_ws_hooks testing.test_engine_candle_trigger testing.test_main_signals`를 추가 사용.
+
+### 변경 요약 (2026-03-16, profitability redesign chunk 2 task 5)
+- 변경 요약: `testing/backtest_runner.py`가 로컬 `check_buy`/`check_sell`/entry sizing 중복 경로 대신 `core.decision_core.evaluate_market`로 진입 intent, sizing proposal, 청산 intent, `next_position_state`를 받아 쓰는 얇은 adapter로 전환. 백테스트는 기존 fill/slippage/fee accounting, ledger/segment metrics, stop diagnostics, debug fail 요약, `sell_decision_rule`/재진입 cooldown semantics를 유지하면서, 보유 중 hold cycle에서도 seam이 돌려준 `next_position_state`를 계속 반영하고 realized-R은 실제 포지션 risk (`entry_quantity * risk_per_unit`) 기준으로 계산한다.
+- 영향 파일: `testing/backtest_runner.py`, `testing/test_backtest_runner.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. task 5 검증용으로 `python3 -m unittest testing.test_backtest_runner`와 `python3 -m testing.backtest_runner --market KRW-BTC --lookback-days 30`를 사용.
+
+### 변경 요약 (2026-03-16, profitability redesign chunk 2 task 6)
+- 변경 요약: `candidate_v1` 전략을 shared registry seam 뒤에 추가. 이 전략은 `sideways`를 건너뛰고 `strong_trend`/`weak_trend`에서만 5m trend continuation + 1m pullback-and-reclaim 패턴을 평가하며, `stop_basis`와 `regime`을 포함한 안정적인 진단값을 반환한다. 진입 sizing은 공용 risk-based sizing 경로를 그대로 재사용하지만 baseline의 quality bucket multiplier는 적용하지 않는다. 독자적 청산 로직은 두지 않고 기존 공용 `PositionOrderPolicy` 경로를 그대로 사용한다.
+- 영향 파일: `core/strategies/candidate_v1.py`, `core/strategies/__init__.py`, `core/strategy_registry.py`, `testing/test_candidate_strategy_v1.py`, `testing/test_decision_core.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. task 6 검증용으로 `python3 -m unittest testing.test_candidate_strategy_v1 testing.test_decision_core testing.test_strategy_registry`를 사용.

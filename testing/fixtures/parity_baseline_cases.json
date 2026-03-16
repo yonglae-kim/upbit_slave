@@ -1,0 +1,241 @@
+[
+  {
+    "name": "baseline_hold_score_below_threshold",
+    "market": {
+      "symbol": "KRW-BTC",
+      "price": 80.25,
+      "diagnostics": {
+        "current_atr": 1.5,
+        "swing_low": 78.0,
+        "regime": "weak_trend"
+      },
+      "candles_by_timeframe": {
+        "1m": {
+          "series": "linear_ohlc",
+          "count": 80,
+          "open_start": 100.0,
+          "open_step": -0.2,
+          "high_start": 101.0,
+          "high_step": -0.2,
+          "low_start": 99.0,
+          "low_step": -0.25,
+          "close_start": 100.0,
+          "close_step": -0.25
+        },
+        "15m": {
+          "series": "step_path_ohlc",
+          "start_price": 100.0,
+          "steps": [0.85, -0.35, 0.75, -0.25, 0.65, -0.2],
+          "repeat": 8,
+          "open_offset": -0.25,
+          "high_offset": 0.55,
+          "low_offset": -0.7
+        }
+      }
+    },
+    "position": {
+      "state": {
+        "cooldown": 2
+      }
+    },
+    "portfolio": {
+      "available_krw": 1000000.0,
+      "open_positions": 0,
+      "state": {}
+    },
+    "context_diagnostics": {
+      "entry_sizing_policy": {
+        "risk_per_trade_pct": 0.1,
+        "fee_rate": 0.0005,
+        "max_holdings": 1,
+        "position_sizing_mode": "risk_first",
+        "max_order_krw_by_cash_management": 0.0,
+        "quality_score_low_threshold": 0.35,
+        "quality_score_high_threshold": 0.7,
+        "quality_multiplier_low": 0.7,
+        "quality_multiplier_mid": 1.0,
+        "quality_multiplier_high": 1.15,
+        "quality_multiplier_min_bound": 0.7,
+        "quality_multiplier_max_bound": 1.2,
+        "baseline_equity": 1000000.0,
+        "realized_pnl_today": 0.0,
+        "max_daily_loss_pct": 0.05
+      },
+      "market_damping_policy": {
+        "enabled": false,
+        "max_spread": 0.003,
+        "min_trade_value_24h": 10000000000.0,
+        "atr_period": 14,
+        "max_atr_ratio": 0.03
+      }
+    },
+    "strategy_params_overrides": {
+      "rsi_period": 2,
+      "bb_period": 2,
+      "pivot_left": 1,
+      "pivot_right": 1,
+      "regime_ema_fast": 5,
+      "regime_ema_slow": 10,
+      "regime_adx_period": 5,
+      "regime_adx_min": 10.0,
+      "regime_slope_lookback": 2,
+      "entry_score_threshold": 2.2
+    },
+    "expected": {
+      "action": "hold",
+      "reason": "score_below_threshold",
+      "size": 0.0
+    }
+  },
+  {
+    "name": "baseline_enter_with_explicit_size",
+    "market": {
+      "symbol": "KRW-BTC",
+      "price": 80.25,
+      "diagnostics": {
+        "current_atr": 1.5,
+        "swing_low": 78.0,
+        "regime": "weak_trend"
+      },
+      "candles_by_timeframe": {
+        "1m": {
+          "series": "linear_ohlc",
+          "count": 80,
+          "open_start": 100.0,
+          "open_step": -0.2,
+          "high_start": 101.0,
+          "high_step": -0.2,
+          "low_start": 99.0,
+          "low_step": -0.25,
+          "close_start": 100.0,
+          "close_step": -0.25
+        },
+        "15m": {
+          "series": "step_path_ohlc",
+          "start_price": 100.0,
+          "steps": [0.85, -0.35, 0.75, -0.25, 0.65, -0.2],
+          "repeat": 8,
+          "open_offset": -0.25,
+          "high_offset": 0.55,
+          "low_offset": -0.7
+        }
+      }
+    },
+    "position": {
+      "state": {}
+    },
+    "portfolio": {
+      "available_krw": 1000000.0,
+      "open_positions": 0,
+      "state": {}
+    },
+    "context_diagnostics": {
+      "entry_sizing_policy": {
+        "risk_per_trade_pct": 0.1,
+        "fee_rate": 0.0005,
+        "max_holdings": 1,
+        "position_sizing_mode": "risk_first",
+        "max_order_krw_by_cash_management": 0.0,
+        "quality_score_low_threshold": 0.35,
+        "quality_score_high_threshold": 0.7,
+        "quality_multiplier_low": 0.7,
+        "quality_multiplier_mid": 1.0,
+        "quality_multiplier_high": 1.15,
+        "quality_multiplier_min_bound": 0.7,
+        "quality_multiplier_max_bound": 1.2,
+        "baseline_equity": 1000000.0,
+        "realized_pnl_today": 0.0,
+        "max_daily_loss_pct": 0.05
+      },
+      "market_damping_policy": {
+        "enabled": false,
+        "max_spread": 0.003,
+        "min_trade_value_24h": 10000000000.0,
+        "atr_period": 14,
+        "max_atr_ratio": 0.03
+      }
+    },
+    "strategy_params_overrides": {
+      "rsi_period": 2,
+      "bb_period": 2,
+      "pivot_left": 1,
+      "pivot_right": 1,
+      "regime_ema_fast": 5,
+      "regime_ema_slow": 10,
+      "regime_adx_period": 5,
+      "regime_adx_min": 10.0,
+      "regime_slope_lookback": 2,
+      "entry_score_threshold": 2.0
+    },
+    "expected": {
+      "action": "enter",
+      "reason": "ok",
+      "size": 699650.0
+    }
+  },
+  {
+    "name": "baseline_partial_exit_matches_qty_ratio",
+    "market": {
+      "symbol": "KRW-BTC",
+      "price": 103.0,
+      "diagnostics": {
+        "current_atr": 1.0,
+        "swing_low": 95.0,
+        "regime": "strong_trend"
+      },
+      "candles_by_timeframe": {
+        "1m": [
+          {
+            "opening_price": 102.0,
+            "high_price": 103.5,
+            "low_price": 101.8,
+            "trade_price": 103.0
+          }
+        ],
+        "15m": [
+          {
+            "opening_price": 102.0,
+            "high_price": 103.5,
+            "low_price": 101.8,
+            "trade_price": 103.0
+          }
+        ]
+      }
+    },
+    "position": {
+      "market": "KRW-BTC",
+      "quantity": 0.1,
+      "entry_price": 100.0,
+      "state": {
+        "peak_price": 100.0,
+        "entry_price": 100.0,
+        "initial_stop_price": 95.0,
+        "risk_per_unit": 5.0,
+        "bars_held": 7
+      }
+    },
+    "portfolio": {
+      "available_krw": 500000.0,
+      "open_positions": 1,
+      "state": {}
+    },
+    "context_diagnostics": {},
+    "strategy_params_overrides": {
+      "rsi_period": 2,
+      "bb_period": 2,
+      "pivot_left": 1,
+      "pivot_right": 1,
+      "regime_ema_fast": 5,
+      "regime_ema_slow": 10,
+      "regime_adx_period": 5,
+      "regime_adx_min": 10.0,
+      "regime_slope_lookback": 2,
+      "entry_score_threshold": 2.0
+    },
+    "expected": {
+      "action": "exit_partial",
+      "reason": "partial_take_profit",
+      "size": 0.5
+    }
+  }
+]

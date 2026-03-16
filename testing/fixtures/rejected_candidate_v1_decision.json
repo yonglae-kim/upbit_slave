@@ -1,0 +1,84 @@
+{
+  "baseline_metrics": {
+    "accepted": true,
+    "cagr_is": 20.0,
+    "cagr_oos": 18.0,
+    "efficiency_gap": 0.6666666666666672,
+    "mdd_is": 8.0,
+    "mdd_oos": 9.0,
+    "objective_score": 39.6,
+    "overfit_gap_pct": 2.0,
+    "reject_reason": "accepted",
+    "trades_is": 6,
+    "trades_oos": 8,
+    "win_rate_is": 45.0,
+    "win_rate_oos": 40.0
+  },
+  "baseline_strategy": "baseline",
+  "candidate_metrics": {
+    "accepted": false,
+    "cagr_is": 22.0,
+    "cagr_oos": 3.0,
+    "efficiency_gap": 1.9,
+    "mdd_is": 8.0,
+    "mdd_oos": 15.0,
+    "objective_score": 7.4,
+    "overfit_gap_pct": 54.0,
+    "reject_reason": "trades_below_min",
+    "trades_is": 7,
+    "trades_oos": 4,
+    "win_rate_is": 47.0,
+    "win_rate_oos": 25.0
+  },
+  "candidate_strategy": "candidate_v1",
+  "cost_model": {
+    "fee_rate": 0.0005,
+    "source": "core.config.TradingConfig.fee_rate"
+  },
+  "decision": "reject",
+  "delta_metrics": {
+    "cagr_is": 2.0,
+    "cagr_oos": -15.0,
+    "efficiency_gap": 1.2333333333333334,
+    "mdd_is": 0.0,
+    "mdd_oos": 6.0,
+    "objective_score": -32.2,
+    "overfit_gap_pct": 52.0,
+    "trades_is": 1.0,
+    "trades_oos": -4.0,
+    "win_rate_is": 2.0,
+    "win_rate_oos": -15.0
+  },
+  "oos_gate": {
+    "baseline_objective_score": 39.6,
+    "candidate_accepted": false,
+    "candidate_objective_score": 7.4,
+    "candidate_reject_reason": "trades_below_min",
+    "pass": false
+  },
+  "parity_gate": {
+    "artifact_path": "testing/artifacts/candidate_v1_parity.json",
+    "expected_strategy_name": "candidate_v1",
+    "mismatch_rows": [],
+    "pass": true,
+    "snapshot_count": 3,
+    "strategy_name": "candidate_v1"
+  },
+  "reasons": [
+    "candidate_oos_reject_reason:trades_below_min"
+  ],
+  "run_config": {
+    "baseline_report_path": "testing/fixtures/baseline_segments.csv",
+    "candidate_report_path": "testing/fixtures/candidate_worse_segments.csv",
+    "lookback_days": 90,
+    "market": "KRW-BTC",
+    "parity_fixture_path": "testing/fixtures/parity_candidate_v1_cases.json",
+    "parity_output_path": "testing/artifacts/candidate_v1_parity.json",
+    "thresholds": {
+      "max_efficiency_gap": 1.2,
+      "max_overfit_gap_pct": 40.0,
+      "min_oos_trades": 8,
+      "min_oos_win_rate": 38.0
+    }
+  }
+}

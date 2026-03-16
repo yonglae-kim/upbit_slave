@@ -1,0 +1,9 @@
+{
+  "matched_intent_count": 3,
+  "matched_reason_count": 3,
+  "matched_size_count": 3,
+  "mismatch_rows": [],
+  "pass": true,
+  "snapshot_count": 3,
+  "strategy_name": "candidate_v1"
+}

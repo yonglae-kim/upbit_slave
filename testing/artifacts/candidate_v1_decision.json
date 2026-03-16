@@ -1,0 +1,82 @@
+{
+  "baseline_metrics": {
+    "accepted": true,
+    "cagr_is": 20.0,
+    "cagr_oos": 18.0,
+    "efficiency_gap": 0.6666666666666672,
+    "mdd_is": 8.0,
+    "mdd_oos": 9.0,
+    "objective_score": 39.599999999999994,
+    "overfit_gap_pct": 2.0000000000000018,
+    "reject_reason": "accepted",
+    "trades_is": 6,
+    "trades_oos": 8,
+    "win_rate_is": 45.0,
+    "win_rate_oos": 40.0
+  },
+  "baseline_strategy": "baseline",
+  "candidate_metrics": {
+    "accepted": true,
+    "cagr_is": 22.0,
+    "cagr_oos": 26.0,
+    "efficiency_gap": 0.21428571428571663,
+    "mdd_is": 8.0,
+    "mdd_oos": 9.0,
+    "objective_score": 49.2,
+    "overfit_gap_pct": -2.9999999999999805,
+    "reject_reason": "accepted",
+    "trades_is": 7,
+    "trades_oos": 10,
+    "win_rate_is": 47.0,
+    "win_rate_oos": 52.0
+  },
+  "candidate_strategy": "candidate_v1",
+  "cost_model": {
+    "fee_rate": 0.0005,
+    "source": "core.config.TradingConfig.fee_rate"
+  },
+  "decision": "promote",
+  "delta_metrics": {
+    "cagr_is": 2.0,
+    "cagr_oos": 8.0,
+    "efficiency_gap": -0.45238095238095055,
+    "mdd_is": 0.0,
+    "mdd_oos": 0.0,
+    "objective_score": 9.600000000000009,
+    "overfit_gap_pct": -4.999999999999982,
+    "trades_is": 1.0,
+    "trades_oos": 2.0,
+    "win_rate_is": 2.0,
+    "win_rate_oos": 12.0
+  },
+  "oos_gate": {
+    "baseline_objective_score": 39.599999999999994,
+    "candidate_accepted": true,
+    "candidate_objective_score": 49.2,
+    "candidate_reject_reason": "accepted",
+    "pass": true
+  },
+  "parity_gate": {
+    "artifact_path": "testing/artifacts/candidate_v1_parity.json",
+    "expected_strategy_name": "candidate_v1",
+    "mismatch_rows": [],
+    "pass": true,
+    "snapshot_count": 3,
+    "strategy_name": "candidate_v1"
+  },
+  "reasons": [],
+  "run_config": {
+    "baseline_report_path": "testing/fixtures/baseline_segments.csv",
+    "candidate_report_path": "testing/fixtures/candidate_better_segments.csv",
+    "lookback_days": 90,
+    "market": "KRW-BTC",
+    "parity_fixture_path": "testing/fixtures/parity_candidate_v1_cases.json",
+    "parity_output_path": "testing/artifacts/candidate_v1_parity.json",
+    "thresholds": {
+      "max_efficiency_gap": 1.2,
+      "max_overfit_gap_pct": 40.0,
+      "min_oos_trades": 8,
+      "min_oos_win_rate": 38.0
+    }
+  }
+}

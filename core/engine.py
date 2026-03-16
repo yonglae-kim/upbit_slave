@@ -3,24 +3,32 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
+from typing import Any
 
 from core.candle_buffer import CandleBuffer
-from core.config import TradingConfig
+from core.config import REGIME_STRATEGY_PARAM_OVERRIDES, TradingConfig
+from core.decision_core import evaluate_market
+from core.decision_models import (
+    DecisionContext,
+    MarketSnapshot,
+    PortfolioSnapshot,
+    PositionSnapshot,
+)
 from core.interfaces import Broker
 from core.order_state import OrderRecord, OrderStatus
 from core.price_rules import krw_tick_size, round_down_to_tick
-from core.position_policy import PositionExitState, PositionOrderPolicy
+from core.position_policy import (
+    PositionExitState,
+    PositionOrderPolicy,
+    dump_position_exit_state,
+    load_position_exit_state,
+)
 from core.portfolio import normalize_accounts
 from core.reconciliation import apply_my_asset_event, apply_my_order_event
 from core.risk import RiskManager
 from core.strategy import (
     StrategyParams,
-    check_buy,
-    check_sell,
-    classify_market_regime,
-    evaluate_long_entry,
     preprocess_candles,
-    regime_filter_diagnostics,
 )
 from core.universe import UniverseBuilder
 from infra.upbit_ws_client import UpbitWebSocketClient
@@ -46,11 +54,19 @@ class TradingEngine:
         self.portfolio_snapshot: dict[str, dict[str, float]] = {}
         self.order_timeout_seconds = 120
         self.max_order_retries = max(0, int(config.max_order_retries))
-        self.timeout_retry_cooldown_seconds = max(0.0, float(config.timeout_retry_cooldown_seconds))
-        self.partial_fill_timeout_scale = max(0.1, float(config.partial_fill_timeout_scale))
-        self.partial_fill_reduce_ratio = min(1.0, max(0.1, float(config.partial_fill_reduce_ratio)))
+        self.timeout_retry_cooldown_seconds = max(
+            0.0, float(config.timeout_retry_cooldown_seconds)
+        )
+        self.partial_fill_timeout_scale = max(
+            0.1, float(config.partial_fill_timeout_scale)
+        )
+        self.partial_fill_reduce_ratio = min(
+            1.0, max(0.1, float(config.partial_fill_reduce_ratio))
+        )
         self.universe = UniverseBuilder(config)
-        self.candle_buffer = CandleBuffer(maxlen_by_interval={1: 300, 5: 300, 15: 300, config.candle_interval: 300})
+        self.candle_buffer = CandleBuffer(
+            maxlen_by_interval={1: 300, 5: 300, 15: 300, config.candle_interval: 300}
+        )
         self.last_universe_selection_result = None
         self._cached_watch_markets: list[str] = []
         self._last_universe_refreshed_at: datetime | None = None
@@ -79,11 +95,15 @@ class TradingEngine:
             swing_lookback=config.swing_lookback,
         )
         self._position_exit_states: dict[str, PositionExitState] = {}
-        self._entry_tracking_by_market: dict[str, dict[str, float | str | datetime]] = {}
+        self._entry_tracking_by_market: dict[
+            str, dict[str, float | str | datetime]
+        ] = {}
         self._entry_strategy_params_by_market: dict[str, StrategyParams] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
         self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
-        self._last_strategy_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
+        self._last_strategy_exit_snapshot_by_market: dict[
+            str, dict[str, datetime | str]
+        ] = {}
         self.debug_counters: dict[str, int] = {
             "fail_reentry_cooldown": 0,
             "fail_strategy_cooldown": 0,
@@ -99,11 +119,17 @@ class TradingEngine:
         self.initialize_markets()
         self.bootstrap_open_orders()
         self.ws_client.connect()
-        self.ws_client.subscribe("ticker", self.config.krw_markets, data_format=self.config.ws_data_format)
+        self.ws_client.subscribe(
+            "ticker", self.config.krw_markets, data_format=self.config.ws_data_format
+        )
 
         if self._should_subscribe_private_channels():
-            self.ws_client.subscribe("myOrder", data_format=self.config.ws_data_format, is_private=True)
-            self.ws_client.subscribe("myAsset", data_format=self.config.ws_data_format, is_private=True)
+            self.ws_client.subscribe(
+                "myOrder", data_format=self.config.ws_data_format, is_private=True
+            )
+            self.ws_client.subscribe(
+                "myAsset", data_format=self.config.ws_data_format, is_private=True
+            )
 
     def shutdown(self) -> None:
         if self.ws_client:
@@ -152,55 +178,110 @@ class TradingEngine:
                 continue
             current_price = float(data["1m"][0]["trade_price"])
 
-            effective_strategy_params = self._entry_strategy_params_by_market.get(market, strategy_params)
-            decision = self._should_exit_position(market, data, avg_buy_price, current_price, effective_strategy_params)
-            if decision.should_exit:
-                held_volume = float(account["balance"])
-                requested_volume = held_volume * decision.qty_ratio
-                if requested_volume <= 0:
-                    continue
-                preflight = self._preflight_order(
+            effective_strategy_params = self._entry_strategy_params_by_market.get(
+                market, strategy_params
+            )
+            regime = self._resolve_entry_regime(data, effective_strategy_params)
+            current_state_payload = self._current_position_state_payload(
+                market=market,
+                data=data,
+                avg_buy_price=avg_buy_price,
+                current_price=current_price,
+                strategy_params=effective_strategy_params,
+            )
+            decision_context = self._build_exit_decision_context(
+                market=market,
+                data=data,
+                price=current_price,
+                regime=regime,
+                strategy_name=str(
+                    getattr(effective_strategy_params, "strategy_name", "")
+                ),
+                quantity=float(account["balance"]),
+                entry_price=avg_buy_price,
+                state_payload=current_state_payload,
+                available_krw=portfolio.available_krw,
+                held_markets=portfolio.held_markets,
+            )
+            intent = evaluate_market(
+                decision_context,
+                strategy_params=effective_strategy_params,
+                order_policy=self.order_policy,
+            )
+            next_position_state = dict(intent.next_position_state or {})
+            if intent.action not in {"exit_partial", "exit_full"}:
+                self._persist_position_state(market, next_position_state)
+                continue
+
+            qty_ratio = self._intent_qty_ratio(intent)
+            held_volume = float(account["balance"])
+            requested_volume = held_volume * qty_ratio
+            if requested_volume <= 0:
+                continue
+            preflight = self._preflight_order(
+                market=market,
+                side="ask",
+                requested_value=requested_volume,
+                reference_price=current_price,
+            )
+            if not preflight["ok"]:
+                self._notify_preflight_failure(preflight)
+                continue
+            identifier = self._next_order_identifier(market, "ask")
+            response = self.broker.sell_market(
+                market, preflight["order_value"], identifier=identifier
+            )
+            self._record_accepted_order(
+                response, identifier, market, "ask", preflight["order_value"]
+            )
+            print(
+                "SELL_ACCEPTED",
+                market,
+                str(account["balance"]) + account["currency"],
+                current_price,
+            )
+            self.risk.record_trade_result(
+                (current_price - avg_buy_price) * requested_volume
+            )
+            self._log_exit_diagnostics(
+                market=market,
+                reason=intent.reason,
+                qty_ratio=qty_ratio,
+                avg_buy_price=avg_buy_price,
+                current_price=current_price,
+                sold_volume=preflight["order_value"],
+            )
+            if intent.action == "exit_full":
+                self._reset_position_exit_state(market)
+                latest_candle = data.get("1m", [{}])[0]
+                exit_time = self.candle_buffer.parse_candle_time(
+                    latest_candle
+                ) or datetime.now(timezone.utc)
+                exit_time = self._to_utc_aware(exit_time)
+                self._last_exit_snapshot_by_market[market] = {
+                    "time": exit_time,
+                    "reason": intent.reason,
+                }
+                if intent.reason == "strategy_signal":
+                    self._last_strategy_exit_snapshot_by_market[market] = {
+                        "time": exit_time,
+                        "reason": intent.reason,
+                    }
+            else:
+                self._persist_position_state(market, next_position_state)
+            self.notifier.send(
+                format_exit_summary(
                     market=market,
-                    side="ask",
-                    requested_value=requested_volume,
-                    reference_price=current_price,
-                )
-                if not preflight["ok"]:
-                    self._notify_preflight_failure(preflight)
-                    continue
-                identifier = self._next_order_identifier(market, "ask")
-                response = self.broker.sell_market(market, preflight["order_value"], identifier=identifier)
-                self._record_accepted_order(response, identifier, market, "ask", preflight["order_value"])
-                print("SELL_ACCEPTED", market, str(account["balance"]) + account["currency"], current_price)
-                delta = ((current_price - avg_buy_price) / avg_buy_price) * 100
-                self.risk.record_trade_result((current_price - avg_buy_price) * requested_volume)
-                self._log_exit_diagnostics(
-                    market=market,
-                    decision=decision,
-                    avg_buy_price=avg_buy_price,
-                    current_price=current_price,
-                    sold_volume=preflight["order_value"],
-                )
-                if decision.qty_ratio >= 1.0:
-                    self._reset_position_exit_state(market)
-                    latest_candle = data.get("1m", [{}])[0]
-                    exit_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
-                    exit_time = self._to_utc_aware(exit_time)
-                    self._last_exit_snapshot_by_market[market] = {"time": exit_time, "reason": decision.reason}
-                    if decision.reason == "strategy_signal":
-                        self._last_strategy_exit_snapshot_by_market[market] = {
-                            "time": exit_time,
-                            "reason": decision.reason,
-                        }
-                self.notifier.send(
-                    format_exit_summary(
+                    exit_price=current_price,
+                    reason=intent.reason,
+                    realized_r=self._compute_realized_r(
                         market=market,
-                        exit_price=current_price,
-                        reason=decision.reason,
-                        realized_r=self._compute_realized_r(market=market, current_price=current_price, avg_buy_price=avg_buy_price),
-                        daily_pnl_krw=self._daily_realized_pnl_krw(),
-                    )
+                        current_price=current_price,
+                        avg_buy_price=avg_buy_price,
+                    ),
+                    daily_pnl_krw=self._daily_realized_pnl_krw(),
                 )
+            )
 
         self._print_runtime_status(stage="evaluating_entries", portfolio=portfolio)
         self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
@@ -212,7 +293,9 @@ class TradingEngine:
         for candle in candles_1m:
             candle_trade_value = self._safe_float(candle.get("candle_acc_trade_price"))
             if candle_trade_value <= 0:
-                candle_trade_volume = self._safe_float(candle.get("candle_acc_trade_volume"))
+                candle_trade_volume = self._safe_float(
+                    candle.get("candle_acc_trade_volume")
+                )
                 trade_price = self._safe_float(candle.get("trade_price"))
                 candle_trade_value = candle_trade_volume * trade_price
             trade_value += max(0.0, candle_trade_value)
@@ -223,22 +306,34 @@ class TradingEngine:
         should_refresh = (
             not self._cached_watch_markets
             or self._last_universe_refreshed_at is None
-            or (now_at - self._last_universe_refreshed_at) >= self._universe_refresh_interval
+            or (now_at - self._last_universe_refreshed_at)
+            >= self._universe_refresh_interval
         )
 
         if not should_refresh:
             return list(self._cached_watch_markets)
 
         tickers = self.broker.get_ticker(", ".join(self.config.krw_markets))
-        tickers_for_selection = [dict(ticker) for ticker in tickers if ticker.get("market")]
+        tickers_for_selection = [
+            dict(ticker) for ticker in tickers if ticker.get("market")
+        ]
         for ticker in tickers_for_selection:
-            ticker["recent_trade_value_10m"] = self._compute_recent_trade_value_10m(str(ticker.get("market")))
+            ticker["recent_trade_value_10m"] = self._compute_recent_trade_value_10m(
+                str(ticker.get("market"))
+            )
 
-        top_and_spread_result = self.universe.select_watch_markets_with_report(tickers_for_selection)
-        candles_by_market = {market: self._get_strategy_candles(market) for market in top_and_spread_result.watch_markets}
+        top_and_spread_result = self.universe.select_watch_markets_with_report(
+            tickers_for_selection
+        )
+        candles_by_market = {
+            market: self._get_strategy_candles(market)
+            for market in top_and_spread_result.watch_markets
+        }
         universe_result = self.universe.select_watch_markets_with_report(
             tickers_for_selection,
-            candles_by_market={market: candles["1m"] for market, candles in candles_by_market.items()},
+            candles_by_market={
+                market: candles["1m"] for market, candles in candles_by_market.items()
+            },
         )
 
         self._cached_watch_markets = list(universe_result.watch_markets)
@@ -246,7 +341,9 @@ class TradingEngine:
         self._last_universe_refreshed_at = now_at
         return list(self._cached_watch_markets)
 
-    def _try_buy(self, available_krw: float, held_markets: list[str], strategy_params) -> None:
+    def _try_buy(
+        self, available_krw: float, held_markets: list[str], strategy_params
+    ) -> None:
         if available_krw < self.config.min_effective_buyable_krw:
             return
 
@@ -255,98 +352,117 @@ class TradingEngine:
             return
 
         tickers = self.broker.get_ticker(", ".join(watch_markets))
-        ticker_by_market = {str(ticker.get("market")): ticker for ticker in tickers if ticker.get("market")}
-        candles_by_market = {market: self._get_strategy_candles(market) for market in watch_markets}
+        ticker_by_market = {
+            str(ticker.get("market")): ticker
+            for ticker in tickers
+            if ticker.get("market")
+        }
+        candles_by_market = {
+            market: self._get_strategy_candles(market) for market in watch_markets
+        }
 
         for market in watch_markets:
             if market in held_markets:
                 continue
 
             data = candles_by_market[market]
-            regime = classify_market_regime(data.get("15m", []), strategy_params)
-            effective_strategy_params = self._resolve_strategy_params_for_regime(strategy_params, regime)
-            regime_diag = regime_filter_diagnostics(data.get("15m", []), effective_strategy_params)
             if not self._should_run_strategy(market, data):
                 continue
             latest_candle = data.get("1m", [{}])[0]
-            latest_time = self.candle_buffer.parse_candle_time(latest_candle) or datetime.now(timezone.utc)
+            latest_time = self.candle_buffer.parse_candle_time(
+                latest_candle
+            ) or datetime.now(timezone.utc)
             latest_time = self._to_utc_aware(latest_time)
             if self._is_reentry_cooldown_active(market, latest_time):
-                self.debug_counters["fail_reentry_cooldown"] = self.debug_counters.get("fail_reentry_cooldown", 0) + 1
-                continue
-
-            strategy_entry_result = None
-            if str(effective_strategy_params.strategy_name).lower().strip() == "rsi_bb_reversal_long":
-                strategy_entry_result = evaluate_long_entry(data, effective_strategy_params)
-                if not strategy_entry_result.final_pass:
-                    continue
-            elif not check_buy(data, effective_strategy_params):
-                continue
-
-            if self._is_strategy_cooldown_active(market, latest_time, effective_strategy_params):
-                self.debug_counters["fail_strategy_cooldown"] = self.debug_counters.get("fail_strategy_cooldown", 0) + 1
+                self.debug_counters["fail_reentry_cooldown"] = (
+                    self.debug_counters.get("fail_reentry_cooldown", 0) + 1
+                )
                 continue
 
             reference_price = float(data["1m"][0]["trade_price"])
-            stop_price = reference_price * self.config.stop_loss_threshold
-            strategy_entry_price = reference_price
-            strategy_risk_per_unit = max(reference_price - stop_price, 0.0)
-            if strategy_entry_result is not None:
-                diagnostics = strategy_entry_result.diagnostics if isinstance(strategy_entry_result.diagnostics, dict) else {}
-                strategy_entry_price = float(diagnostics.get("entry_price", strategy_entry_price) or strategy_entry_price)
-                stop_price = float(diagnostics.get("stop_price", stop_price) or stop_price)
-                strategy_risk_per_unit = max(float(diagnostics.get("r_value", strategy_risk_per_unit) or strategy_risk_per_unit), 0.0)
-
-            risk_sized_order_krw = self.risk.compute_risk_sized_order_krw(
+            decision_context = self._build_entry_decision_context(
+                market=market,
+                data=data,
+                price=reference_price,
+                regime="unknown",
+                strategy_name=str(getattr(strategy_params, "strategy_name", "")),
                 available_krw=available_krw,
-                entry_price=strategy_entry_price,
-                stop_price=stop_price,
+                held_markets=held_markets,
+                ticker=ticker_by_market.get(market, {}),
             )
-            if risk_sized_order_krw <= 0:
+            intent = evaluate_market(
+                decision_context,
+                strategy_params=strategy_params,
+                order_policy=self.order_policy,
+            )
+            if intent.action != "enter":
                 continue
 
-            cash_split_divisor = max(1, int(self.config.max_holdings))
-            cash_split_order_krw = (available_krw / cash_split_divisor) * (1 - self.config.fee_rate)
-            hard_cash_limit_krw = available_krw * (1 - self.config.fee_rate)
-            configured_cash_management_cap_krw = float(self.config.max_order_krw_by_cash_management)
-            if configured_cash_management_cap_krw <= 0:
-                configured_cash_management_cap_krw = cash_split_order_krw
-
-            if self.config.position_sizing_mode == "cash_split_first":
-                cash_cap_order_krw = min(cash_split_order_krw, hard_cash_limit_krw)
-                if self.config.max_order_krw_by_cash_management > 0:
-                    cash_cap_order_krw = min(cash_cap_order_krw, float(self.config.max_order_krw_by_cash_management))
-            else:
-                cash_cap_order_krw = min(hard_cash_limit_krw, configured_cash_management_cap_krw)
-
-            base_order_krw = min(risk_sized_order_krw, cash_cap_order_krw)
-            diagnostics = strategy_entry_result.diagnostics if strategy_entry_result is not None and isinstance(strategy_entry_result.diagnostics, dict) else {}
-            quality_score = float(diagnostics.get("quality_score", 0.0) or 0.0)
-            if quality_score >= float(self.config.quality_score_high_threshold):
-                quality_bucket = "high"
-                raw_quality_multiplier = float(self.config.quality_multiplier_high)
-            elif quality_score >= float(self.config.quality_score_low_threshold):
-                quality_bucket = "mid"
-                raw_quality_multiplier = float(self.config.quality_multiplier_mid)
-            else:
-                quality_bucket = "low"
-                raw_quality_multiplier = float(self.config.quality_multiplier_low)
-            quality_multiplier = self.risk.clamp_quality_multiplier(raw_quality_multiplier)
-            final_order_krw = base_order_krw * quality_multiplier
-            damping_log = None
-            if self.config.market_damping_enabled:
-                liquidity_factor, volatility_factor, damping_reasons = self._compute_market_damping_factors(
-                    ticker=ticker_by_market.get(market, {}),
-                    candles_1m=data.get("1m", []),
+            if self._is_strategy_cooldown_active(market, latest_time, strategy_params):
+                self.debug_counters["fail_strategy_cooldown"] = (
+                    self.debug_counters.get("fail_strategy_cooldown", 0) + 1
                 )
-                damping_factor = min(liquidity_factor, volatility_factor)
-                final_order_krw = base_order_krw * quality_multiplier * damping_factor
-                damping_log = {
-                    "liquidity_factor": liquidity_factor,
-                    "volatility_factor": volatility_factor,
-                    "damping_factor": damping_factor,
-                    "reasons": damping_reasons,
-                }
+                continue
+
+            next_position_state = self._coerce_str_object_dict(
+                intent.next_position_state
+            )
+            diagnostics = self._coerce_str_object_dict(intent.diagnostics)
+            sizing = self._coerce_str_object_dict(diagnostics.get("sizing"))
+            strategy_entry_price = self._safe_float(
+                sizing.get("entry_price"),
+                self._safe_float(
+                    next_position_state.get("entry_price"), reference_price
+                ),
+            )
+            stop_price = self._safe_float(
+                sizing.get("stop_price"),
+                self._safe_float(
+                    next_position_state.get("initial_stop_price"),
+                    reference_price * self.config.stop_loss_threshold,
+                ),
+            )
+            strategy_risk_per_unit = max(
+                self._safe_float(
+                    sizing.get("risk_per_unit"),
+                    self._safe_float(
+                        next_position_state.get("risk_per_unit"),
+                        max(strategy_entry_price - stop_price, 0.0),
+                    ),
+                ),
+                0.0,
+            )
+
+            risk_sized_order_krw = self._safe_float(
+                sizing.get("risk_sized_order_krw"),
+                0.0,
+            )
+            cash_cap_order_krw = self._safe_float(
+                sizing.get("cash_cap_order_krw"),
+                0.0,
+            )
+            base_order_krw = self._safe_float(sizing.get("base_order_krw"), 0.0)
+            quality_score = self._safe_float(diagnostics.get("quality_score"), 0.0)
+            quality_bucket = str(diagnostics.get("quality_bucket", "low") or "low")
+            quality_multiplier = self._safe_float(
+                diagnostics.get("quality_multiplier"),
+                self._safe_float(sizing.get("quality_multiplier"), 1.0),
+            )
+            final_order_krw = self._safe_float(sizing.get("final_order_krw"), 0.0)
+            damping_log = self._coerce_optional_str_object_dict(
+                diagnostics.get("market_damping")
+            )
+            effective_strategy_params = self._strategy_params_from_intent(
+                diagnostics,
+                fallback=strategy_params,
+            )
+            regime = str(diagnostics.get("entry_regime", "unknown") or "unknown")
+            regime_diag = self._coerce_str_object_dict(
+                diagnostics.get("regime_diagnostics")
+            )
+
+            if final_order_krw <= 0:
+                continue
 
             if len(held_markets) >= self.config.max_holdings:
                 print(
@@ -394,8 +510,13 @@ class TradingEngine:
                     f"quality_multiplier={quality_multiplier:.2f}",
                 )
                 continue
-            residual_slots_after_buy = max(int(self.config.max_holdings) - (len(held_markets) + 1), 0)
-            if residual_slots_after_buy > 0 and available_krw - final_order_krw < self.config.min_order_krw:
+            residual_slots_after_buy = max(
+                int(self.config.max_holdings) - (len(held_markets) + 1), 0
+            )
+            if (
+                residual_slots_after_buy > 0
+                and available_krw - final_order_krw < self.config.min_order_krw
+            ):
                 print(
                     "BUY_SIZING_SKIPPED",
                     market,
@@ -419,37 +540,41 @@ class TradingEngine:
                 self._notify_preflight_failure(preflight)
                 continue
 
-            if damping_log is not None and damping_log["damping_factor"] < 1.0:
+            damping_factor_value = self._safe_float(
+                damping_log.get("damping_factor") if damping_log is not None else None,
+                1.0,
+            )
+            damping_reasons = (
+                [str(reason) for reason in damping_log.get("reasons", [])]
+                if damping_log is not None
+                else []
+            )
+            if damping_log is not None and damping_factor_value < 1.0:
                 print(
                     "BUY_DAMPING_APPLIED",
                     market,
                     f"base_order_krw={int(base_order_krw)}",
-                    f"liquidity_factor={damping_log['liquidity_factor']:.4f}",
-                    f"volatility_factor={damping_log['volatility_factor']:.4f}",
-                    f"damping_factor={damping_log['damping_factor']:.4f}",
+                    f"liquidity_factor={self._safe_float(damping_log.get('liquidity_factor'), 1.0):.4f}",
+                    f"volatility_factor={self._safe_float(damping_log.get('volatility_factor'), 1.0):.4f}",
+                    f"damping_factor={damping_factor_value:.4f}",
                     f"final_order_krw={int(final_order_krw)}",
-                    f"reasons={','.join(damping_log['reasons']) if damping_log['reasons'] else 'none'}",
+                    f"reasons={','.join(damping_reasons) if damping_reasons else 'none'}",
                 )
 
             identifier = self._next_order_identifier(market, "bid")
-            response = self.broker.buy_market(market, preflight["order_value"], identifier=identifier)
-            self._record_accepted_order(response, identifier, market, "bid", preflight["order_value"])
-            entry_atr = self._latest_atr(data["1m"], self.config.atr_period)
-            entry_swing_low = self._latest_swing_low(data["1m"], self.config.swing_lookback)
-            self._position_exit_states[market] = PositionExitState(
-                peak_price=reference_price,
-                entry_atr=entry_atr,
-                entry_swing_low=entry_swing_low,
-                entry_price=strategy_entry_price,
-                initial_stop_price=stop_price,
-                risk_per_unit=strategy_risk_per_unit,
-                entry_regime=regime,
+            order_value = self._safe_float(preflight.get("order_value"), 0.0)
+            response = self.broker.buy_market(
+                market, order_value, identifier=identifier
             )
+            self._record_accepted_order(
+                response, identifier, market, "bid", order_value
+            )
+            self._persist_position_state(market, next_position_state)
             self._entry_tracking_by_market[market] = {
                 "entry_time": latest_time,
                 "entry_price": strategy_entry_price,
                 "risk_per_unit": strategy_risk_per_unit,
-                "entry_score": float(diagnostics.get("entry_score", 0.0) or 0.0),
+                "entry_score": self._safe_float(diagnostics.get("entry_score"), 0.0),
                 "quality_score": quality_score,
                 "quality_bucket": quality_bucket,
                 "quality_multiplier": quality_multiplier,
@@ -482,7 +607,7 @@ class TradingEngine:
             print(
                 "BUY_ACCEPTED",
                 market,
-                str(int(preflight["order_value"])) + "원",
+                str(int(order_value)) + "원",
                 data["1m"][0]["trade_price"],
                 f"risk_sized_order_krw={int(risk_sized_order_krw)}",
                 f"cash_cap_order_krw={int(cash_cap_order_krw)}",
@@ -496,14 +621,16 @@ class TradingEngine:
                 format_entry_summary(
                     market=market,
                     entry_price=float(data["1m"][0]["trade_price"]),
-                    entry_score=float(diagnostics.get("entry_score", 0.0) or 0.0),
+                    entry_score=self._safe_float(diagnostics.get("entry_score"), 0.0),
                     quality_bucket=quality_bucket,
                     final_order_krw=final_order_krw,
                 )
             )
             break
 
-    def _compute_market_damping_factors(self, ticker: dict, candles_1m: list[dict]) -> tuple[float, float, list[str]]:
+    def _compute_market_damping_factors(
+        self, ticker: dict[str, Any], candles_1m: list[dict[str, Any]]
+    ) -> tuple[float, float, list[str]]:
         liquidity_factor = 1.0
         volatility_factor = 1.0
         reasons: list[str] = []
@@ -511,39 +638,286 @@ class TradingEngine:
         ask = self._safe_float(ticker.get("ask_price"))
         bid = self._safe_float(ticker.get("bid_price"))
         last = self._safe_float(ticker.get("trade_price", ticker.get("last")))
-        relative_spread = (ask - bid) / last if ask > 0 and bid > 0 and last > 0 else 0.0
+        relative_spread = (
+            (ask - bid) / last if ask > 0 and bid > 0 and last > 0 else 0.0
+        )
         max_spread = max(1e-9, float(self.config.market_damping_max_spread))
-        spread_factor = min(1.0, max_spread / relative_spread) if relative_spread > 0 else 1.0
+        spread_factor = (
+            min(1.0, max_spread / relative_spread) if relative_spread > 0 else 1.0
+        )
 
         trade_value_24h = self._safe_float(
-            ticker.get("acc_trade_price_24h", ticker.get("acc_trade_price", ticker.get("trade_volume")))
+            ticker.get(
+                "acc_trade_price_24h",
+                ticker.get("acc_trade_price", ticker.get("trade_volume")),
+            )
         )
-        min_trade_value = max(1.0, float(self.config.market_damping_min_trade_value_24h))
-        trade_value_factor = min(1.0, trade_value_24h / min_trade_value) if trade_value_24h > 0 else 0.0
+        min_trade_value = max(
+            1.0, float(self.config.market_damping_min_trade_value_24h)
+        )
+        trade_value_factor = (
+            min(1.0, trade_value_24h / min_trade_value) if trade_value_24h > 0 else 0.0
+        )
 
         liquidity_factor = min(spread_factor, trade_value_factor)
         if spread_factor < 1.0:
             reasons.append(f"high_spread:{relative_spread:.6f}>{max_spread:.6f}")
         if trade_value_factor < 1.0:
-            reasons.append(f"low_trade_value_24h:{trade_value_24h:.0f}<{min_trade_value:.0f}")
+            reasons.append(
+                f"low_trade_value_24h:{trade_value_24h:.0f}<{min_trade_value:.0f}"
+            )
 
         atr_period = max(2, int(self.config.market_damping_atr_period))
         atr = self._latest_atr(candles_1m, atr_period)
         atr_ratio = atr / last if atr > 0 and last > 0 else 0.0
         max_atr_ratio = max(1e-9, float(self.config.market_damping_max_atr_ratio))
-        volatility_factor = min(1.0, max_atr_ratio / atr_ratio) if atr_ratio > 0 else 1.0
+        volatility_factor = (
+            min(1.0, max_atr_ratio / atr_ratio) if atr_ratio > 0 else 1.0
+        )
         if volatility_factor < 1.0:
             reasons.append(f"high_atr_ratio:{atr_ratio:.6f}>{max_atr_ratio:.6f}")
 
         return liquidity_factor, volatility_factor, reasons
 
-    @staticmethod
-    def _safe_float(value, default: float = 0.0) -> float:
-        try:
+    def _safe_float(self, value: object, default: float = 0.0) -> float:
+        if isinstance(value, bool):
             return float(value)
-        except (TypeError, ValueError):
-            return default
+        if isinstance(value, (int, float, str)):
+            try:
+                return float(value)
+            except ValueError:
+                return default
+        return default
 
+    @staticmethod
+    def _coerce_str_object_dict(value: object) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            result[str(key)] = item
+        return result
+
+    def _coerce_optional_str_object_dict(self, value: object) -> dict[str, Any] | None:
+        resolved = self._coerce_str_object_dict(value)
+        return resolved or None
+
+    def _build_market_snapshot(
+        self,
+        *,
+        market: str,
+        data: dict[str, list[dict[str, Any]]],
+        price: float,
+        regime: str,
+    ) -> MarketSnapshot:
+        return MarketSnapshot(
+            symbol=market,
+            candles_by_timeframe={
+                timeframe: list(candles) for timeframe, candles in data.items()
+            },
+            price=price,
+            diagnostics={
+                "current_atr": self._latest_atr(
+                    data.get("1m", []), self.config.atr_period
+                ),
+                "swing_low": self._latest_swing_low(
+                    data.get("1m", []), self.config.swing_lookback
+                ),
+                "regime": regime,
+            },
+        )
+
+    def _build_entry_decision_context(
+        self,
+        *,
+        market: str,
+        data: dict[str, list[dict[str, Any]]],
+        price: float,
+        regime: str,
+        strategy_name: str,
+        available_krw: float,
+        held_markets: list[str],
+        ticker: dict[str, Any],
+    ) -> DecisionContext:
+        market_snapshot = self._build_market_snapshot(
+            market=market,
+            data=data,
+            price=price,
+            regime=regime,
+        )
+        market_diagnostics = dict(market_snapshot.diagnostics)
+        market_diagnostics["ticker"] = dict(ticker)
+        return DecisionContext(
+            strategy_name=strategy_name,
+            market=MarketSnapshot(
+                symbol=market_snapshot.symbol,
+                candles_by_timeframe=market_snapshot.candles_by_timeframe,
+                price=market_snapshot.price,
+                diagnostics=market_diagnostics,
+            ),
+            position=PositionSnapshot(market=market),
+            portfolio=PortfolioSnapshot(
+                available_krw=available_krw,
+                open_positions=len(held_markets),
+            ),
+            diagnostics={
+                "regime_strategy_overrides": {
+                    regime_name: dict(overrides)
+                    for regime_name, overrides in REGIME_STRATEGY_PARAM_OVERRIDES.items()
+                },
+                "entry_sizing_policy": self._entry_sizing_policy_payload(),
+                "market_damping_policy": self._market_damping_policy_payload(),
+            },
+        )
+
+    def _build_exit_decision_context(
+        self,
+        *,
+        market: str,
+        data: dict[str, list[dict[str, Any]]],
+        price: float,
+        regime: str,
+        strategy_name: str,
+        quantity: float,
+        entry_price: float,
+        state_payload: dict[str, object],
+        available_krw: float,
+        held_markets: list[str],
+    ) -> DecisionContext:
+        return DecisionContext(
+            strategy_name=strategy_name,
+            market=self._build_market_snapshot(
+                market=market,
+                data=data,
+                price=price,
+                regime=regime,
+            ),
+            position=PositionSnapshot(
+                market=market,
+                quantity=quantity,
+                entry_price=entry_price,
+                state=dict(state_payload),
+            ),
+            portfolio=PortfolioSnapshot(
+                available_krw=available_krw,
+                open_positions=len(held_markets),
+            ),
+        )
+
+    def _current_position_state_payload(
+        self,
+        *,
+        market: str,
+        data: dict[str, list[dict[str, Any]]],
+        avg_buy_price: float,
+        current_price: float,
+        strategy_params: StrategyParams,
+    ) -> dict[str, object]:
+        current_state = self._position_exit_states.get(market)
+        if current_state is not None:
+            return dump_position_exit_state(current_state)
+        return self._default_position_state_payload(
+            data=data,
+            avg_buy_price=avg_buy_price,
+            current_price=current_price,
+            strategy_params=strategy_params,
+        )
+
+    def _default_position_state_payload(
+        self,
+        *,
+        data: dict[str, list[dict[str, Any]]],
+        avg_buy_price: float,
+        current_price: float,
+        strategy_params: StrategyParams,
+    ) -> dict[str, object]:
+        return dump_position_exit_state(
+            PositionExitState(
+                peak_price=current_price,
+                entry_atr=self._latest_atr(data.get("1m", []), self.config.atr_period),
+                entry_swing_low=self._latest_swing_low(
+                    data.get("1m", []), self.config.swing_lookback
+                ),
+                entry_price=avg_buy_price,
+                initial_stop_price=avg_buy_price * self.config.stop_loss_threshold,
+                risk_per_unit=max(
+                    avg_buy_price - (avg_buy_price * self.config.stop_loss_threshold),
+                    0.0,
+                ),
+                entry_regime=self._resolve_entry_regime(data, strategy_params),
+            )
+        )
+
+    def _persist_position_state(
+        self, market: str, state_payload: dict[str, object]
+    ) -> None:
+        self._position_exit_states[market] = load_position_exit_state(
+            dict(state_payload or {})
+        )
+
+    def _entry_sizing_policy_payload(self) -> dict[str, object]:
+        return {
+            "risk_per_trade_pct": float(self.config.risk_per_trade_pct),
+            "fee_rate": float(self.config.fee_rate),
+            "max_holdings": int(self.config.max_holdings),
+            "position_sizing_mode": str(self.config.position_sizing_mode),
+            "max_order_krw_by_cash_management": float(
+                self.config.max_order_krw_by_cash_management
+            ),
+            "quality_score_low_threshold": float(
+                self.config.quality_score_low_threshold
+            ),
+            "quality_score_high_threshold": float(
+                self.config.quality_score_high_threshold
+            ),
+            "quality_multiplier_low": float(self.config.quality_multiplier_low),
+            "quality_multiplier_mid": float(self.config.quality_multiplier_mid),
+            "quality_multiplier_high": float(self.config.quality_multiplier_high),
+            "quality_multiplier_min_bound": float(
+                self.config.quality_multiplier_min_bound
+            ),
+            "quality_multiplier_max_bound": float(
+                self.config.quality_multiplier_max_bound
+            ),
+            "baseline_equity": float(
+                getattr(self.risk, "_baseline_equity", 0.0) or 0.0
+            ),
+            "realized_pnl_today": float(
+                getattr(self.risk, "_realized_pnl_today", 0.0) or 0.0
+            ),
+            "max_daily_loss_pct": float(self.config.max_daily_loss_pct),
+        }
+
+    def _market_damping_policy_payload(self) -> dict[str, object]:
+        return {
+            "enabled": bool(self.config.market_damping_enabled),
+            "max_spread": float(self.config.market_damping_max_spread),
+            "min_trade_value_24h": float(
+                self.config.market_damping_min_trade_value_24h
+            ),
+            "atr_period": int(self.config.market_damping_atr_period),
+            "max_atr_ratio": float(self.config.market_damping_max_atr_ratio),
+        }
+
+    def _strategy_params_from_intent(
+        self, diagnostics: dict[str, object], *, fallback: StrategyParams
+    ) -> StrategyParams:
+        payload = diagnostics.get("effective_strategy_params")
+        if not isinstance(payload, dict):
+            return fallback
+        merged = asdict(fallback)
+        for key, value in payload.items():
+            if key in merged:
+                merged[key] = value
+        return StrategyParams(**merged)
+
+    def _intent_qty_ratio(self, intent: Any) -> float:
+        if intent.action == "exit_full":
+            return 1.0
+        if intent.action != "exit_partial":
+            return 0.0
+        diagnostics = dict(intent.diagnostics or {})
+        return min(1.0, max(0.0, self._safe_float(diagnostics.get("qty_ratio"), 0.0)))
 
     def _is_reentry_cooldown_active(self, market: str, now_at: datetime) -> bool:
         cooldown_bars = max(0, int(self.config.reentry_cooldown_bars))
@@ -555,7 +929,10 @@ class TradingEngine:
             return False
 
         last_reason = str(last_exit.get("reason", ""))
-        if self.config.cooldown_on_loss_exits_only and last_reason not in {"trailing_stop", "stop_loss"}:
+        if self.config.cooldown_on_loss_exits_only and last_reason not in {
+            "trailing_stop",
+            "stop_loss",
+        }:
             return False
 
         last_time = last_exit.get("time")
@@ -565,8 +942,12 @@ class TradingEngine:
         elapsed_bars = self._compute_elapsed_bars(last_time, now_at)
         return elapsed_bars < cooldown_bars
 
-    def _is_strategy_cooldown_active(self, market: str, now_at: datetime, strategy_params) -> bool:
-        cooldown_bars = max(0, int(getattr(strategy_params, "strategy_cooldown_bars", 0)))
+    def _is_strategy_cooldown_active(
+        self, market: str, now_at: datetime, strategy_params: StrategyParams
+    ) -> bool:
+        cooldown_bars = max(
+            0, int(getattr(strategy_params, "strategy_cooldown_bars", 0))
+        )
         if cooldown_bars <= 0:
             return False
 
@@ -584,7 +965,9 @@ class TradingEngine:
     def _compute_elapsed_bars(self, before_at: datetime, now_at: datetime) -> int:
         normalized_before = self._to_utc_aware(before_at)
         normalized_now = self._to_utc_aware(now_at)
-        elapsed_minutes = max(0.0, (normalized_now - normalized_before).total_seconds() / 60.0)
+        elapsed_minutes = max(
+            0.0, (normalized_now - normalized_before).total_seconds() / 60.0
+        )
         bar_minutes = max(1, int(self.config.candle_interval))
         return int(elapsed_minutes // bar_minutes)
 
@@ -593,9 +976,9 @@ class TradingEngine:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
-    def _get_strategy_candles(self, market: str) -> dict[str, list[dict]]:
+    def _get_strategy_candles(self, market: str) -> dict[str, list[dict[str, Any]]]:
         intervals = {1: "1m", 5: "5m", 15: "15m"}
-        result: dict[str, list[dict]] = {}
+        result: dict[str, list[dict[str, Any]]] = {}
         for interval, key in intervals.items():
             raw = self.candle_buffer.get_candles(
                 market,
@@ -613,7 +996,9 @@ class TradingEngine:
         timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
         return f"{market}:{side}:{timestamp}:{self._order_sequence}"
 
-    def _should_run_strategy(self, market: str, data: dict[str, list[dict]]) -> bool:
+    def _should_run_strategy(
+        self, market: str, data: dict[str, list[dict[str, Any]]]
+    ) -> bool:
         if not self._is_strategy_data_healthy(data):
             return False
 
@@ -649,7 +1034,7 @@ class TradingEngine:
         latest_time: datetime,
         regime: str,
         effective_strategy_params: StrategyParams,
-        diagnostics: dict,
+        diagnostics: dict[str, Any],
         risk_sized_order_krw: float,
         cash_cap_order_krw: float,
         base_order_krw: float,
@@ -660,8 +1045,8 @@ class TradingEngine:
         quality_score: float,
         quality_bucket: str,
         quality_multiplier: float,
-        damping_log: dict | None,
-        regime_diag: dict,
+        damping_log: dict[str, Any] | None,
+        regime_diag: dict[str, Any],
     ) -> None:
         self._emit_structured_log(
             "ENTRY_DIAGNOSTICS",
@@ -687,16 +1072,22 @@ class TradingEngine:
             market_damping=damping_log or {},
         )
 
-    def _compute_realized_r(self, *, market: str, current_price: float, avg_buy_price: float) -> float:
+    def _compute_realized_r(
+        self, *, market: str, current_price: float, avg_buy_price: float
+    ) -> float:
         state = self._position_exit_states.get(market)
         if state and state.risk_per_unit > 0 and state.entry_price > 0:
             return (current_price - state.entry_price) / state.risk_per_unit
-        fallback_risk = max(avg_buy_price - (avg_buy_price * self.config.stop_loss_threshold), 0.0)
+        fallback_risk = max(
+            avg_buy_price - (avg_buy_price * self.config.stop_loss_threshold), 0.0
+        )
         if fallback_risk <= 0:
             return 0.0
         return (current_price - avg_buy_price) / fallback_risk
 
-    def _estimate_exit_costs(self, *, market: str, sold_volume: float, current_price: float) -> tuple[float, float]:
+    def _estimate_exit_costs(
+        self, *, market: str, sold_volume: float, current_price: float
+    ) -> tuple[float, float]:
         notional = max(0.0, sold_volume * current_price)
         fee_estimate = notional * float(self.config.fee_rate)
         tickers = self.broker.get_ticker(market)
@@ -704,7 +1095,11 @@ class TradingEngine:
         if isinstance(tickers, list) and tickers:
             bid = self._safe_float(tickers[0].get("bid_price"))
             ask = self._safe_float(tickers[0].get("ask_price"))
-        rel_spread = ((ask - bid) / current_price) if bid > 0 and ask > 0 and current_price > 0 else 0.0
+        rel_spread = (
+            ((ask - bid) / current_price)
+            if bid > 0 and ask > 0 and current_price > 0
+            else 0.0
+        )
         slippage_estimate = notional * max(0.0, rel_spread / 2)
         return fee_estimate, slippage_estimate
 
@@ -712,7 +1107,8 @@ class TradingEngine:
         self,
         *,
         market: str,
-        decision,
+        reason: str,
+        qty_ratio: float,
         avg_buy_price: float,
         current_price: float,
         sold_volume: float,
@@ -726,11 +1122,15 @@ class TradingEngine:
             entry_time = self._to_utc_aware(entry_time)
             holding_minutes = max(0.0, (now_at - entry_time).total_seconds() / 60.0)
         elif state is not None:
-            holding_minutes = float(max(0, int(state.bars_held)) * max(1, int(self.config.candle_interval)))
+            holding_minutes = float(
+                max(0, int(state.bars_held)) * max(1, int(self.config.candle_interval))
+            )
         mfe_r = float(state.highest_r) if state is not None else 0.0
         lowest_r = float(state.lowest_r) if state is not None else 0.0
         mae_r = abs(min(0.0, lowest_r))
-        realized_r = self._compute_realized_r(market=market, current_price=current_price, avg_buy_price=avg_buy_price)
+        realized_r = self._compute_realized_r(
+            market=market, current_price=current_price, avg_buy_price=avg_buy_price
+        )
         fee_estimate, slippage_estimate = self._estimate_exit_costs(
             market=market,
             sold_volume=sold_volume,
@@ -739,15 +1139,15 @@ class TradingEngine:
         self._emit_structured_log(
             "EXIT_DIAGNOSTICS",
             market=market,
-            exit_reason=decision.reason,
-            qty_ratio=float(decision.qty_ratio),
+            exit_reason=reason,
+            qty_ratio=float(qty_ratio),
             holding_minutes=holding_minutes,
             mfe_r=mfe_r,
             mae_r=mae_r,
             realized_r=realized_r,
             fee_estimate_krw=fee_estimate,
             slippage_estimate_krw=slippage_estimate,
-            entry_score=float(entry_tracking.get("entry_score", 0.0) or 0.0),
+            entry_score=self._safe_float(entry_tracking.get("entry_score"), 0.0),
             entry_regime=str(entry_tracking.get("regime", "unknown") or "unknown"),
             daily_realized_pnl_krw=self._daily_realized_pnl_krw(),
         )
@@ -755,7 +1155,9 @@ class TradingEngine:
     def _daily_realized_pnl_krw(self) -> float:
         return float(getattr(self.risk, "_realized_pnl_today", 0.0))
 
-    def _resolve_strategy_params_for_regime(self, base_params: StrategyParams, regime: str) -> StrategyParams:
+    def _resolve_strategy_params_for_regime(
+        self, base_params: StrategyParams, regime: str
+    ) -> StrategyParams:
         overrides = self.config.regime_strategy_overrides(regime)
         if not overrides:
             return base_params
@@ -763,7 +1165,7 @@ class TradingEngine:
         merged.update(overrides)
         return StrategyParams(**merged)
 
-    def _is_strategy_data_healthy(self, data: dict[str, list[dict]]) -> bool:
+    def _is_strategy_data_healthy(self, data: dict[str, list[dict[str, Any]]]) -> bool:
         max_missing_rate = max(0.0, float(self.config.max_candle_missing_rate))
         for timeframe in ("1m", "5m", "15m"):
             candles = data.get(timeframe, [])
@@ -778,12 +1180,11 @@ class TradingEngine:
                 return False
         return True
 
-
     def _should_subscribe_private_channels(self) -> bool:
         mode = str(self.config.mode or "").lower()
         return mode not in {"paper", "dry_run"} and hasattr(self.broker, "get_order")
 
-    def _route_ws_message(self, message: dict) -> None:
+    def _route_ws_message(self, message: dict[str, Any]) -> None:
         message_type = message.get("type") or message.get("ty")
         if message_type == "myOrder":
             apply_my_order_event(message, self.orders_by_identifier)
@@ -796,7 +1197,11 @@ class TradingEngine:
         self._reconcile_orders_via_rest()
         now = datetime.now(timezone.utc)
         for order in list(self.orders_by_identifier.values()):
-            if order.state in {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}:
+            if order.state in {
+                OrderStatus.FILLED,
+                OrderStatus.CANCELED,
+                OrderStatus.REJECTED,
+            }:
                 continue
 
             timeout_limit = self.order_timeout_seconds
@@ -807,7 +1212,10 @@ class TradingEngine:
             if age_seconds >= timeout_limit:
                 self._on_order_timeout(order)
 
-            if 0 < order.filled_qty < order.requested_qty and order.state == OrderStatus.ACCEPTED:
+            if (
+                0 < order.filled_qty < order.requested_qty
+                and order.state == OrderStatus.ACCEPTED
+            ):
                 order.state = OrderStatus.PARTIALLY_FILLED
 
     def _reconcile_orders_via_rest(self) -> None:
@@ -815,7 +1223,11 @@ class TradingEngine:
             return
 
         for order in list(self.orders_by_identifier.values()):
-            if order.state in {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED}:
+            if order.state in {
+                OrderStatus.FILLED,
+                OrderStatus.CANCELED,
+                OrderStatus.REJECTED,
+            }:
                 continue
 
             if not order.uuid:
@@ -837,13 +1249,25 @@ class TradingEngine:
             remote_event.setdefault("volume", order.requested_qty)
 
             remote_state = str(remote_event.get("state") or "").lower()
-            remote_requested = float(remote_event.get("volume") or order.requested_qty or 0.0)
+            remote_requested = float(
+                remote_event.get("volume") or order.requested_qty or 0.0
+            )
             remote_filled = remote_event.get("executed_volume")
-            if remote_filled is None and remote_event.get("remaining_volume") is not None:
-                remote_filled = max(0.0, remote_requested - float(remote_event.get("remaining_volume") or 0.0))
+            if (
+                remote_filled is None
+                and remote_event.get("remaining_volume") is not None
+            ):
+                remote_filled = max(
+                    0.0,
+                    remote_requested
+                    - float(remote_event.get("remaining_volume") or 0.0),
+                )
             remote_filled_qty = float(remote_filled or 0.0)
 
-            if remote_state in {"wait", "watch"} and remote_filled_qty <= order.filled_qty:
+            if (
+                remote_state in {"wait", "watch"}
+                and remote_filled_qty <= order.filled_qty
+            ):
                 continue
 
             apply_my_order_event(remote_event, self.orders_by_identifier)
@@ -879,7 +1303,9 @@ class TradingEngine:
             retry_target_qty = order.requested_qty
             action = "CANCEL_AND_REORDER"
 
-        should_retry = retry_target_qty >= 1e-12 and order.retry_count < self.max_order_retries
+        should_retry = (
+            retry_target_qty >= 1e-12 and order.retry_count < self.max_order_retries
+        )
         if not should_retry:
             if order.retry_count >= self.max_order_retries:
                 result = "MAX_RETRIES_REACHED"
@@ -939,9 +1365,13 @@ class TradingEngine:
 
         identifier = self._next_retry_identifier(origin)
         if origin.side == "bid":
-            response = self.broker.buy_market(origin.market, preflight["order_value"], identifier=identifier)
+            response = self.broker.buy_market(
+                origin.market, preflight["order_value"], identifier=identifier
+            )
         else:
-            response = self.broker.sell_market(origin.market, preflight["order_value"], identifier=identifier)
+            response = self.broker.sell_market(
+                origin.market, preflight["order_value"], identifier=identifier
+            )
 
         retried = self._record_accepted_order(
             response,
@@ -963,7 +1393,10 @@ class TradingEngine:
 
     def _next_retry_identifier(self, origin: OrderRecord) -> str:
         root = self._root_identifier(origin.identifier)
-        return self._next_order_identifier(origin.market, origin.side) + f":r{origin.retry_count + 1}:root={root}"
+        return (
+            self._next_order_identifier(origin.market, origin.side)
+            + f":r{origin.retry_count + 1}:root={root}"
+        )
 
     def _is_in_timeout_cooldown(self, order: OrderRecord) -> bool:
         root = self._root_identifier(order.identifier)
@@ -983,7 +1416,9 @@ class TradingEngine:
             f"identifier={order.identifier} retries={order.retry_count}/{self.max_order_retries}"
         )
 
-    def _log_timeout_policy_event(self, order: OrderRecord, action: str, result: str) -> None:
+    def _log_timeout_policy_event(
+        self, order: OrderRecord, action: str, result: str
+    ) -> None:
         event = {
             "type": "ORDER_TIMEOUT_POLICY",
             "order_id": order.uuid,
@@ -1009,7 +1444,9 @@ class TradingEngine:
     def _round_to_tick(self, value: float, tick: float) -> float:
         return round_down_to_tick(value, tick)
 
-    def _preflight_order(self, market: str, side: str, requested_value: float, reference_price: float) -> dict:
+    def _preflight_order(
+        self, market: str, side: str, requested_value: float, reference_price: float
+    ) -> dict[str, Any]:
         if requested_value <= 0 or reference_price <= 0:
             return {
                 "ok": False,
@@ -1058,7 +1495,11 @@ class TradingEngine:
             }
 
         recomputed_notional = rounded_qty * rounded_price
-        if order_value <= 0 or rounded_qty <= 0 or recomputed_notional < self.config.min_order_krw:
+        if (
+            order_value <= 0
+            or rounded_qty <= 0
+            or recomputed_notional < self.config.min_order_krw
+        ):
             return {
                 "ok": False,
                 "code": "PREFLIGHT_RECOMPUTE_INVALID",
@@ -1081,73 +1522,34 @@ class TradingEngine:
             "notional": recomputed_notional,
         }
 
-    def _notify_preflight_failure(self, result: dict) -> None:
+    def _notify_preflight_failure(self, result: dict[str, Any]) -> None:
         code = result.get("code", "PREFLIGHT_UNKNOWN")
         market = result.get("market")
         side = result.get("side")
         requested = result.get("requested")
         rounded_price = result.get("rounded_price")
         notional = result.get("notional")
-        print("ORDER_PREFLIGHT_BLOCKED", code, market, side, requested, rounded_price, notional)
-        self.notifier.send(f"ORDER_PREFLIGHT_BLOCKED {code} {market} {side} req={requested} notional={notional}")
-
-    def _should_exit_position(self, market: str, data: dict[str, list[dict]], avg_buy_price: float, current_price: float, strategy_params):
-        current_atr = self._latest_atr(data["1m"], self.config.atr_period)
-        swing_low = self._latest_swing_low(data["1m"], self.config.swing_lookback)
-        state = self._position_exit_states.setdefault(
+        print(
+            "ORDER_PREFLIGHT_BLOCKED",
+            code,
             market,
-            PositionExitState(
-                peak_price=current_price,
-                entry_atr=current_atr,
-                entry_swing_low=swing_low,
-                entry_price=avg_buy_price,
-                initial_stop_price=avg_buy_price * self.config.stop_loss_threshold,
-                risk_per_unit=max(avg_buy_price - (avg_buy_price * self.config.stop_loss_threshold), 0.0),
-                entry_regime=self._resolve_entry_regime(data, strategy_params),
-            ),
+            side,
+            requested,
+            rounded_price,
+            notional,
         )
-        state.bars_held = max(0, int(state.bars_held)) + 1
-        signal_exit = check_sell(
-            data,
-            avg_buy_price,
-            strategy_params,
-            entry_price=state.entry_price,
-            initial_stop_price=state.initial_stop_price,
-            risk_per_unit=state.risk_per_unit,
-        )
-        return self.order_policy.evaluate(
-            state=state,
-            avg_buy_price=avg_buy_price,
-            current_price=current_price,
-            signal_exit=signal_exit,
-            current_atr=current_atr,
-            swing_low=swing_low,
-            strategy_name=str(getattr(strategy_params, "strategy_name", "")),
-            partial_take_profit_enabled=bool(getattr(strategy_params, "partial_take_profit_enabled", False)),
-            partial_take_profit_r=float(getattr(strategy_params, "partial_take_profit_r", 1.0)),
-            partial_take_profit_size=float(getattr(strategy_params, "partial_take_profit_size", 0.0)),
-            move_stop_to_breakeven_after_partial=bool(
-                getattr(strategy_params, "move_stop_to_breakeven_after_partial", False)
-            ),
-            max_hold_bars=int(getattr(strategy_params, "max_hold_bars", 0)),
+        self.notifier.send(
+            f"ORDER_PREFLIGHT_BLOCKED {code} {market} {side} req={requested} notional={notional}"
         )
 
     @staticmethod
-    def _resolve_entry_regime(data: dict[str, list[dict]], strategy_params) -> str:
-        c15 = data.get("15m", []) if isinstance(data, dict) else []
-        try:
-            diag = regime_filter_diagnostics(c15, strategy_params)
-        except Exception:
-            return "unknown"
-
-        if not isinstance(diag, dict):
-            return "unknown"
-        regime = str(diag.get("regime", "unknown") or "unknown").strip().lower()
-        if regime in {"strong_trend", "weak_trend", "sideways"}:
-            return regime
+    def _resolve_entry_regime(
+        data: dict[str, list[dict[str, Any]]], strategy_params: StrategyParams
+    ) -> str:
+        _ = data, strategy_params
         return "unknown"
 
-    def _latest_atr(self, candles_newest: list[dict], period: int) -> float:
+    def _latest_atr(self, candles_newest: list[dict[str, Any]], period: int) -> float:
         if period <= 0:
             return 0.0
         candles = list(reversed(candles_newest))
@@ -1165,11 +1567,16 @@ class TradingEngine:
         window = trs[-min(period, len(trs)) :]
         return sum(window) / len(window)
 
-    def _latest_swing_low(self, candles_newest: list[dict], lookback: int) -> float:
+    def _latest_swing_low(
+        self, candles_newest: list[dict[str, Any]], lookback: int
+    ) -> float:
         window = candles_newest[: max(1, lookback)]
         if not window:
             return 0.0
-        return min(float(candle.get("low_price", candle.get("trade_price", 0.0))) for candle in window)
+        return min(
+            float(candle.get("low_price", candle.get("trade_price", 0.0)))
+            for candle in window
+        )
 
     def bootstrap_open_orders(self) -> None:
         if not hasattr(self.broker, "get_open_orders"):

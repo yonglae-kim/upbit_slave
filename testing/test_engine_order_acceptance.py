@@ -1,8 +1,14 @@
+import json
+import os
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
+import core.engine as engine_module
 from core.config import TradingConfig
+from core.decision_models import DecisionIntent
 from core.engine import TradingEngine
 from core.order_state import OrderStatus
 
@@ -25,11 +31,12 @@ class BuyOnlyBroker:
             }
         ]
 
-    def get_ticker(self, _markets):
+    def get_ticker(self, markets):
+        _ = markets
         return [{"market": "KRW-BTC", "trade_price": 100000.0, "trade_volume": 1000}]
 
-    def get_candles(self, _market, interval, count=200):
-        _ = interval, count
+    def get_candles(self, market, interval, count=200):
+        _ = market, interval, count
         return [{"trade_price": 100.0} for _ in range(3)]
 
     def buy_market(self, market, price, identifier=None):
@@ -51,6 +58,57 @@ class BuyOnlyBroker:
     def get_order(self, order_uuid):
         _ = order_uuid
         return {"state": "wait"}
+
+
+def _entry_candles() -> list[dict[str, float]]:
+    candles_oldest = [
+        {
+            "opening_price": 100 - i * 0.2,
+            "high_price": 101 - i * 0.2,
+            "low_price": 99 - i * 0.25,
+            "trade_price": 100 - i * 0.25,
+        }
+        for i in range(80)
+    ]
+    return list(reversed(candles_oldest))
+
+
+class RealSeamEntryBroker(BuyOnlyBroker):
+    def get_ticker(self, markets):
+        _ = markets
+        return [
+            {
+                "market": "KRW-BTC",
+                "trade_price": 80.25,
+                "trade_volume": 1000.0,
+                "bid_price": 80.2,
+                "ask_price": 80.3,
+            }
+        ]
+
+    def get_candles(self, market, interval, count=200):
+        _ = market, count
+        if interval == 1:
+            return list(_entry_candles())
+        if interval == 5:
+            return list(_entry_candles())
+        if interval == 15:
+            candles_oldest = []
+            price = 100.0
+            for _ in range(240):
+                open_price = price
+                close_price = price + 0.4
+                candles_oldest.append(
+                    {
+                        "opening_price": open_price,
+                        "high_price": close_price + 0.1,
+                        "low_price": open_price - 0.1,
+                        "trade_price": close_price,
+                    }
+                )
+                price += 0.35
+            return list(reversed(candles_oldest))
+        return super().get_candles(market, interval, count)
 
 
 class DummyNotifier:
@@ -91,38 +149,288 @@ class TimeoutFlowBroker(BuyOnlyBroker):
 
 
 class TradingEngineOrderAcceptanceTest(unittest.TestCase):
-    @patch("core.engine.check_buy", return_value=True)
-    def test_market_buy_is_recorded_as_accepted(self, _mock_check_buy):
+    def test_paper_candidate_runtime_accepts_matching_promote_artifact(self):
         broker = BuyOnlyBroker()
         notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
+        decision_path = (
+            Path(__file__).resolve().parent / "artifacts" / "candidate_v1_decision.json"
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "paper",
+                "TRADING_STRATEGY_NAME": "candidate_v1",
+                "TRADING_STRATEGY_DECISION_PATH": str(decision_path),
+            },
+            clear=False,
+        ):
+            from core.config_loader import load_trading_config
+
+            config = load_trading_config()
+
         engine = TradingEngine(broker, notifier, config)
 
-        engine.run_once()
+        intent = DecisionIntent(
+            action="enter",
+            reason="ok",
+            diagnostics={
+                "strategy_name": "candidate_v1",
+                "entry_score": 3.1,
+                "entry_regime": "weak_trend",
+                "regime_diagnostics": {"regime": "weak_trend", "pass": True},
+                "quality_score": 0.82,
+                "quality_bucket": "high",
+                "quality_multiplier": 1.0,
+                "effective_strategy_params": {
+                    "strategy_name": "candidate_v1",
+                    "take_profit_r": 2.0,
+                    "entry_score_threshold": 2.2,
+                },
+                "sizing": {
+                    "risk_sized_order_krw": 18000.0,
+                    "cash_cap_order_krw": 15000.0,
+                    "base_order_krw": 15000.0,
+                    "final_order_krw": 12345.0,
+                    "entry_price": 101.0,
+                    "stop_price": 95.0,
+                    "risk_per_unit": 6.0,
+                },
+            },
+            next_position_state={
+                "peak_price": 100.0,
+                "entry_atr": 1.5,
+                "entry_swing_low": 95.0,
+                "entry_price": 101.0,
+                "initial_stop_price": 95.0,
+                "risk_per_unit": 6.0,
+                "bars_held": 0,
+                "entry_regime": "weak_trend",
+                "partial_take_profit_done": False,
+                "strategy_partial_done": False,
+                "breakeven_armed": False,
+                "highest_r": 0.0,
+                "lowest_r": 0.0,
+                "drawdown_from_peak_r": 0.0,
+            },
+        )
+
+        with (
+            patch(
+                "core.engine.evaluate_market",
+                create=True,
+                return_value=intent,
+            ) as evaluate_market_mock,
+            patch.object(
+                engine,
+                "_refresh_watch_markets_if_needed",
+                return_value=["KRW-BTC"],
+            ),
+        ):
+            engine.run_once()
+
+        self.assertEqual(config.strategy_decision_path, str(decision_path))
+        self.assertEqual(
+            evaluate_market_mock.call_args.args[0].strategy_name, "candidate_v1"
+        )
+        self.assertEqual(len(broker.buy_calls), 1)
+
+    def test_paper_candidate_runtime_rejects_reject_decision_artifact(self):
+        with tempfile.TemporaryDirectory() as td:
+            decision_path = Path(td) / "rejected_candidate_v1_decision.json"
+            decision_path.write_text(
+                json.dumps(
+                    {
+                        "candidate_strategy": "candidate_v1",
+                        "decision": "reject",
+                        "oos_gate": {"pass": False},
+                        "parity_gate": {
+                            "pass": True,
+                            "strategy_name": "candidate_v1",
+                            "expected_strategy_name": "candidate_v1",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "TRADING_MODE": "paper",
+                    "TRADING_STRATEGY_NAME": "candidate_v1",
+                    "TRADING_STRATEGY_DECISION_PATH": str(decision_path),
+                },
+                clear=False,
+            ):
+                from core.config_loader import (
+                    ConfigValidationError,
+                    load_trading_config,
+                )
+
+                with self.assertRaises(ConfigValidationError):
+                    load_trading_config()
+
+    def test_paper_candidate_runtime_rejects_mismatched_decision_artifact(self):
+        with tempfile.TemporaryDirectory() as td:
+            decision_path = Path(td) / "baseline_decision.json"
+            decision_path.write_text(
+                json.dumps(
+                    {
+                        "candidate_strategy": "baseline",
+                        "decision": "promote",
+                        "oos_gate": {"pass": True},
+                        "parity_gate": {
+                            "pass": True,
+                            "strategy_name": "baseline",
+                            "expected_strategy_name": "baseline",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "TRADING_MODE": "paper",
+                    "TRADING_STRATEGY_NAME": "candidate_v1",
+                    "TRADING_STRATEGY_DECISION_PATH": str(decision_path),
+                },
+                clear=False,
+            ):
+                from core.config_loader import (
+                    ConfigValidationError,
+                    load_trading_config,
+                )
+
+                with self.assertRaises(ConfigValidationError):
+                    load_trading_config()
+
+    def test_market_buy_is_recorded_as_accepted(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(
+            do_not_trading=[], krw_markets=["KRW-BTC"], strategy_name="baseline"
+        )
+        engine = TradingEngine(broker, notifier, config)
+
+        intent = DecisionIntent(
+            action="enter",
+            reason="ok",
+            diagnostics={
+                "strategy_name": "baseline",
+                "entry_score": 3.1,
+                "entry_regime": "weak_trend",
+                "regime_diagnostics": {"regime": "weak_trend", "pass": True},
+                "quality_score": 0.82,
+                "quality_bucket": "high",
+                "quality_multiplier": 1.15,
+                "effective_strategy_params": {
+                    "strategy_name": "baseline",
+                    "take_profit_r": 2.6,
+                    "entry_score_threshold": 2.9,
+                },
+                "sizing": {
+                    "risk_sized_order_krw": 18000.0,
+                    "cash_cap_order_krw": 15000.0,
+                    "base_order_krw": 15000.0,
+                    "final_order_krw": 12345.0,
+                    "entry_price": 101.0,
+                    "stop_price": 95.0,
+                    "risk_per_unit": 6.0,
+                },
+            },
+            next_position_state={
+                "peak_price": 100.0,
+                "entry_atr": 1.5,
+                "entry_swing_low": 95.0,
+                "entry_price": 101.0,
+                "initial_stop_price": 95.0,
+                "risk_per_unit": 6.0,
+                "bars_held": 0,
+                "entry_regime": "weak_trend",
+                "partial_take_profit_done": False,
+                "strategy_partial_done": False,
+                "breakeven_armed": False,
+                "highest_r": 0.0,
+                "lowest_r": 0.0,
+                "drawdown_from_peak_r": 0.0,
+            },
+        )
+
+        with (
+            patch(
+                "core.engine.evaluate_market",
+                create=True,
+                return_value=intent,
+            ) as evaluate_market_mock,
+            patch.object(
+                engine,
+                "_refresh_watch_markets_if_needed",
+                return_value=["KRW-BTC"],
+            ),
+        ):
+            engine.run_once()
+
+        evaluate_market_mock.assert_called_once()
+        context = evaluate_market_mock.call_args.args[0]
+        self.assertEqual(context.strategy_name, "baseline")
+        self.assertEqual(context.market.symbol, "KRW-BTC")
+        self.assertEqual(context.position.quantity, 0.0)
+        self.assertEqual(context.portfolio.available_krw, 100000.0)
 
         self.assertEqual(len(broker.buy_calls), 1)
-        _, _, identifier = broker.buy_calls[0]
+        _, order_value, identifier = broker.buy_calls[0]
         self.assertIsNotNone(identifier)
+        self.assertEqual(order_value, 12345.0)
         self.assertIn(identifier, engine.orders_by_identifier)
 
         order = engine.orders_by_identifier[identifier]
         self.assertEqual(order.state, OrderStatus.ACCEPTED)
         self.assertEqual(order.filled_qty, 0.0)
         self.assertEqual(order.uuid, "order-uuid-1")
+        self.assertEqual(engine._position_exit_states["KRW-BTC"].entry_price, 101.0)
+        self.assertEqual(engine._position_exit_states["KRW-BTC"].risk_per_unit, 6.0)
+        self.assertEqual(
+            engine._position_exit_states["KRW-BTC"].entry_regime, "weak_trend"
+        )
+        self.assertEqual(
+            engine._entry_tracking_by_market["KRW-BTC"]["final_order_krw"], 12345.0
+        )
+        self.assertEqual(
+            engine._entry_tracking_by_market["KRW-BTC"]["quality_bucket"], "high"
+        )
+        self.assertEqual(
+            engine._entry_strategy_params_by_market["KRW-BTC"].strategy_name,
+            "baseline",
+        )
+        self.assertEqual(
+            engine._entry_strategy_params_by_market["KRW-BTC"].take_profit_r,
+            2.6,
+        )
 
-
-
-    @patch("core.engine.check_buy", return_value=False)
-    def test_run_once_prints_runtime_status_with_balance_and_stage(self, _mock_check_buy):
+    def test_run_once_prints_runtime_status_with_balance_and_stage(self):
         broker = BuyOnlyBroker()
         notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"])
+        config = TradingConfig(
+            do_not_trading=[], krw_markets=["KRW-BTC"], strategy_name="baseline"
+        )
         engine = TradingEngine(broker, notifier, config)
 
-        with patch("builtins.print") as mock_print:
+        with (
+            patch(
+                "core.engine.evaluate_market",
+                create=True,
+                return_value=DecisionIntent(action="hold", reason="hold"),
+            ),
+            patch("builtins.print") as mock_print,
+        ):
             engine.run_once()
 
-        printed = "\n".join(" ".join(map(str, call.args)) for call in mock_print.call_args_list)
+        printed = "\n".join(
+            " ".join(map(str, call.args)) for call in mock_print.call_args_list
+        )
         self.assertIn("[STATUS] stage=evaluating_positions", printed)
         self.assertIn("available_krw=100000", printed)
         self.assertIn("holdings=0/1", printed)
@@ -131,7 +439,9 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
     def test_preflight_blocks_buy_when_notional_below_exchange_minimum(self):
         broker = BuyOnlyBroker()
         notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], min_order_krw=5000)
+        config = TradingConfig(
+            do_not_trading=[], krw_markets=["KRW-BTC"], min_order_krw=5000
+        )
         engine = TradingEngine(broker, notifier, config)
 
         result = engine._preflight_order(
@@ -147,7 +457,9 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
     def test_preflight_blocks_sell_when_recomputed_notional_is_invalid(self):
         broker = BuyOnlyBroker()
         notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], min_order_krw=5000)
+        config = TradingConfig(
+            do_not_trading=[], krw_markets=["KRW-BTC"], min_order_krw=5000
+        )
         engine = TradingEngine(broker, notifier, config)
 
         result = engine._preflight_order(
@@ -160,10 +472,12 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "PREFLIGHT_MIN_NOTIONAL")
 
-
-    @patch("core.engine.check_buy", return_value=True)
-    def test_buy_entry_boundary_by_final_order_amount(self, _mock_check_buy):
-        for available_krw, expected_buy in ((8_000, False), (15_000, True), (25_000, True)):
+    def test_buy_entry_boundary_by_final_order_amount(self):
+        for available_krw, expected_buy in (
+            (8_000, False),
+            (15_000, True),
+            (25_000, True),
+        ):
             with self.subTest(available_krw=available_krw):
                 broker = BuyOnlyBroker()
                 broker.get_accounts = lambda value=available_krw: [
@@ -179,35 +493,258 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
                 config = TradingConfig(
                     do_not_trading=[],
                     krw_markets=["KRW-BTC"],
+                    strategy_name="baseline",
                     min_order_krw=5_000,
                     min_buyable_krw=0,
                     max_holdings=2,
                 )
                 engine = TradingEngine(broker, notifier, config)
 
-                engine.run_once()
+                with (
+                    patch(
+                        "core.engine.evaluate_market",
+                        create=True,
+                        return_value=DecisionIntent(
+                            action="enter",
+                            reason="ok",
+                            diagnostics={
+                                "strategy_name": "baseline",
+                                "entry_score": 2.8,
+                                "quality_score": 0.4,
+                                "quality_bucket": "mid",
+                                "quality_multiplier": 1.0,
+                                "entry_regime": "weak_trend",
+                                "regime_diagnostics": {
+                                    "regime": "weak_trend",
+                                    "pass": True,
+                                },
+                                "sizing": {
+                                    "risk_sized_order_krw": float(available_krw),
+                                    "cash_cap_order_krw": 6000.0,
+                                    "base_order_krw": 6000.0,
+                                    "final_order_krw": 4000.0
+                                    if not expected_buy
+                                    else 6000.0,
+                                    "entry_price": 100.0,
+                                    "stop_price": 97.5,
+                                    "risk_per_unit": 2.5,
+                                },
+                            },
+                            next_position_state={
+                                "peak_price": 100.0,
+                                "entry_atr": 1.0,
+                                "entry_swing_low": 95.0,
+                                "entry_price": 100.0,
+                                "initial_stop_price": 97.5,
+                                "risk_per_unit": 2.5,
+                                "bars_held": 0,
+                                "entry_regime": "weak_trend",
+                                "partial_take_profit_done": False,
+                                "strategy_partial_done": False,
+                                "breakeven_armed": False,
+                                "highest_r": 0.0,
+                                "lowest_r": 0.0,
+                                "drawdown_from_peak_r": 0.0,
+                            },
+                        ),
+                    ) as evaluate_market_mock,
+                    patch.object(
+                        engine,
+                        "_refresh_watch_markets_if_needed",
+                        return_value=["KRW-BTC"],
+                    ),
+                ):
+                    engine.run_once()
+
+                self.assertTrue(evaluate_market_mock.called)
 
                 self.assertEqual(len(broker.buy_calls) == 1, expected_buy)
 
-    @patch("core.engine.check_buy", return_value=True)
-    def test_risk_gate_blocks_buy_on_loss_streak(self, _mock_check_buy):
+    def test_risk_gate_blocks_buy_on_loss_streak(self):
         broker = BuyOnlyBroker()
         notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], max_consecutive_losses=2)
+        config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=["KRW-BTC"],
+            strategy_name="baseline",
+            max_consecutive_losses=2,
+        )
         engine = TradingEngine(broker, notifier, config)
         engine.risk.record_trade_result(-1000)
         engine.risk.record_trade_result(-1000)
 
-        engine.run_once()
+        with (
+            patch(
+                "core.engine.evaluate_market",
+                create=True,
+                return_value=DecisionIntent(
+                    action="enter",
+                    reason="ok",
+                    diagnostics={"strategy_name": "baseline", "entry_score": 2.8},
+                    next_position_state={
+                        "peak_price": 100.0,
+                        "entry_atr": 1.0,
+                        "entry_swing_low": 95.0,
+                        "entry_price": 100.0,
+                        "initial_stop_price": 97.5,
+                        "risk_per_unit": 2.5,
+                        "bars_held": 0,
+                        "entry_regime": "weak_trend",
+                        "partial_take_profit_done": False,
+                        "strategy_partial_done": False,
+                        "breakeven_armed": False,
+                        "highest_r": 0.0,
+                        "lowest_r": 0.0,
+                        "drawdown_from_peak_r": 0.0,
+                    },
+                ),
+            ) as evaluate_market_mock,
+            patch.object(
+                engine,
+                "_refresh_watch_markets_if_needed",
+                return_value=["KRW-BTC"],
+            ),
+        ):
+            engine.run_once()
 
+        self.assertTrue(evaluate_market_mock.called)
         self.assertEqual(len(broker.buy_calls), 0)
         self.assertEqual(engine.orders_by_identifier, {})
 
+    def test_try_buy_uses_shared_seam_for_regime_and_sizing(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=["KRW-BTC"],
+            strategy_name="baseline",
+            min_order_krw=5_000,
+            min_buyable_krw=0,
+            max_holdings=2,
+        )
+        engine = TradingEngine(broker, notifier, config)
+
+        with (
+            patch.object(
+                engine, "_refresh_watch_markets_if_needed", return_value=["KRW-BTC"]
+            ),
+            patch.object(
+                engine,
+                "_resolve_strategy_params_for_regime",
+                side_effect=AssertionError("engine should not branch strategy params"),
+            ),
+            patch(
+                "core.engine.evaluate_market",
+                create=True,
+                return_value=DecisionIntent(
+                    action="enter",
+                    reason="ok",
+                    diagnostics={
+                        "strategy_name": "baseline",
+                        "entry_score": 2.8,
+                        "entry_regime": "strong_trend",
+                        "regime_diagnostics": {"regime": "strong_trend", "pass": True},
+                        "quality_score": 0.75,
+                        "quality_bucket": "high",
+                        "quality_multiplier": 1.15,
+                        "sizing": {
+                            "risk_sized_order_krw": 22000.0,
+                            "cash_cap_order_krw": 18000.0,
+                            "base_order_krw": 18000.0,
+                            "final_order_krw": 7777.0,
+                            "entry_price": 100.0,
+                            "stop_price": 97.5,
+                            "risk_per_unit": 2.5,
+                        },
+                    },
+                    next_position_state={
+                        "peak_price": 100.0,
+                        "entry_atr": 1.0,
+                        "entry_swing_low": 95.0,
+                        "entry_price": 100.0,
+                        "initial_stop_price": 97.5,
+                        "risk_per_unit": 2.5,
+                        "bars_held": 0,
+                        "entry_regime": "strong_trend",
+                        "partial_take_profit_done": False,
+                        "strategy_partial_done": False,
+                        "breakeven_armed": False,
+                        "highest_r": 0.0,
+                        "lowest_r": 0.0,
+                        "drawdown_from_peak_r": 0.0,
+                    },
+                ),
+            ),
+        ):
+            engine.run_once()
+
+        self.assertFalse(hasattr(engine_module, "classify_market_regime"))
+        self.assertEqual(len(broker.buy_calls), 1)
+        self.assertEqual(broker.buy_calls[0][1], 7777.0)
+        self.assertEqual(
+            engine._entry_tracking_by_market["KRW-BTC"]["regime"], "strong_trend"
+        )
+        self.assertEqual(
+            engine._entry_tracking_by_market["KRW-BTC"]["final_order_krw"], 7777.0
+        )
+
+    def test_real_entry_seam_supports_legacy_default_strategy_surface(self):
+        broker = RealSeamEntryBroker()
+        notifier = DummyNotifier()
+        config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=["KRW-BTC"],
+            min_order_krw=5_000,
+            min_buyable_krw=0,
+            entry_score_threshold=0.0,
+        )
+        engine = TradingEngine(broker, notifier, config)
+
+        with (
+            patch.object(
+                engine,
+                "_refresh_watch_markets_if_needed",
+                return_value=["KRW-BTC"],
+            ),
+            patch.dict(
+                engine_module.REGIME_STRATEGY_PARAM_OVERRIDES,
+                {
+                    "strong_trend": {
+                        "entry_score_threshold": 0.0,
+                        "take_profit_r": 3.3,
+                    }
+                },
+                clear=False,
+            ),
+        ):
+            engine.run_once()
+
+        self.assertEqual(config.strategy_name, "rsi_bb_reversal_long")
+        self.assertEqual(len(broker.buy_calls), 1)
+        self.assertEqual(
+            engine._entry_strategy_params_by_market["KRW-BTC"].strategy_name,
+            "baseline",
+        )
+        self.assertEqual(
+            engine._entry_strategy_params_by_market["KRW-BTC"].take_profit_r,
+            3.3,
+        )
+        self.assertIn("KRW-BTC", engine._position_exit_states)
+        final_order_krw = engine._entry_tracking_by_market["KRW-BTC"]["final_order_krw"]
+        self.assertIsInstance(final_order_krw, float)
+        assert isinstance(final_order_krw, float)
+        self.assertEqual(final_order_krw, 69965.0)
+        self.assertEqual(
+            engine._position_exit_states["KRW-BTC"].entry_regime,
+            engine._entry_tracking_by_market["KRW-BTC"]["regime"],
+        )
 
     def test_preflight_rounds_price_with_same_krw_tick_boundaries(self):
         broker = BuyOnlyBroker()
         notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], min_order_krw=5000)
+        config = TradingConfig(
+            do_not_trading=[], krw_markets=["KRW-BTC"], min_order_krw=5000
+        )
         engine = TradingEngine(broker, notifier, config)
 
         boundary_cases = [
@@ -229,13 +766,17 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
     def test_timeout_cancel_and_reorder_flow(self):
         broker = TimeoutFlowBroker()
         notifier = DummyNotifier()
-        config = TradingConfig(do_not_trading=[], krw_markets=["KRW-BTC"], max_order_retries=1)
+        config = TradingConfig(
+            do_not_trading=[], krw_markets=["KRW-BTC"], max_order_retries=1
+        )
         engine = TradingEngine(broker, notifier, config)
         engine.bootstrap_open_orders()
 
         stale = engine.orders_by_identifier["open-1"]
         stale.state = OrderStatus.ACCEPTED
-        stale.updated_at = datetime.now(timezone.utc) - timedelta(seconds=engine.order_timeout_seconds + 1)
+        stale.updated_at = datetime.now(timezone.utc) - timedelta(
+            seconds=engine.order_timeout_seconds + 1
+        )
 
         engine.reconcile_orders()
 

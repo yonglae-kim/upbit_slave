@@ -1,0 +1,207 @@
+[
+  {
+    "name": "candidate_v1_hold_reclaim_missing",
+    "market": {
+      "symbol": "KRW-BTC",
+      "price": 101.95,
+      "diagnostics": {
+        "current_atr": 0.8,
+        "swing_low": 101.1
+      },
+      "candles_by_timeframe": {
+        "1m": [
+          {"opening_price": 102.15, "high_price": 102.57, "low_price": 101.73, "trade_price": 101.95},
+          {"opening_price": 101.2, "high_price": 102.17, "low_price": 100.98, "trade_price": 102.35},
+          {"opening_price": 101.45, "high_price": 101.67, "low_price": 100.98, "trade_price": 101.2},
+          {"opening_price": 101.8, "high_price": 102.02, "low_price": 101.23, "trade_price": 101.45},
+          {"opening_price": 102.1, "high_price": 102.32, "low_price": 101.58, "trade_price": 101.8},
+          {"opening_price": 101.9, "high_price": 102.32, "low_price": 101.68, "trade_price": 102.1},
+          {"opening_price": 101.6, "high_price": 102.12, "low_price": 101.38, "trade_price": 101.9},
+          {"opening_price": 101.35, "high_price": 101.82, "low_price": 101.13, "trade_price": 101.6},
+          {"opening_price": 101.1, "high_price": 101.57, "low_price": 100.88, "trade_price": 101.35},
+          {"opening_price": 100.8, "high_price": 101.32, "low_price": 100.58, "trade_price": 101.1},
+          {"opening_price": 100.5, "high_price": 101.02, "low_price": 100.28, "trade_price": 100.8},
+          {"opening_price": 100.25, "high_price": 100.72, "low_price": 100.03, "trade_price": 100.5},
+          {"opening_price": 99.8, "high_price": 100.47, "low_price": 99.58, "trade_price": 100.25}
+        ],
+        "5m": {
+          "series": "linear_ohlc",
+          "count": 18,
+          "open_start": 99.8,
+          "open_step": 0.45,
+          "high_start": 100.4,
+          "high_step": 0.45,
+          "low_start": 99.4,
+          "low_step": 0.45,
+          "close_start": 100.0,
+          "close_step": 0.45
+        },
+        "15m": {
+          "series": "linear_ohlc",
+          "count": 40,
+          "open_start": 99.8,
+          "open_step": 0.9,
+          "high_start": 100.6,
+          "high_step": 0.9,
+          "low_start": 99.4,
+          "low_step": 0.9,
+          "close_start": 100.0,
+          "close_step": 0.9
+        }
+      }
+    },
+    "position": {"state": {}},
+    "portfolio": {"available_krw": 1000000.0, "open_positions": 0, "state": {}},
+    "context_diagnostics": {
+      "entry_sizing_policy": {
+        "risk_per_trade_pct": 0.1,
+        "fee_rate": 0.0005,
+        "max_holdings": 1,
+        "position_sizing_mode": "risk_first",
+        "max_order_krw_by_cash_management": 0.0,
+        "quality_score_low_threshold": 0.35,
+        "quality_score_high_threshold": 0.7,
+        "quality_multiplier_low": 0.7,
+        "quality_multiplier_mid": 1.0,
+        "quality_multiplier_high": 1.15,
+        "quality_multiplier_min_bound": 0.7,
+        "quality_multiplier_max_bound": 1.2,
+        "baseline_equity": 1000000.0,
+        "realized_pnl_today": 0.0,
+        "max_daily_loss_pct": 0.05
+      },
+      "market_damping_policy": {"enabled": false}
+    },
+    "strategy_params_overrides": {
+      "strategy_name": "candidate_v1",
+      "regime_ema_fast": 5,
+      "regime_ema_slow": 10,
+      "regime_adx_period": 5,
+      "regime_adx_min": 10.0,
+      "regime_slope_lookback": 2
+    },
+    "expected": {"action": "hold", "reason": "pullback_missing", "size": 0.0}
+  },
+  {
+    "name": "candidate_v1_enter_pullback_reclaim",
+    "market": {
+      "symbol": "KRW-BTC",
+      "price": 102.35,
+      "diagnostics": {
+        "current_atr": 0.8,
+        "swing_low": 101.1
+      },
+      "candles_by_timeframe": {
+        "1m": [
+          {"opening_price": 101.2, "high_price": 102.57, "low_price": 100.98, "trade_price": 102.35},
+          {"opening_price": 101.45, "high_price": 101.67, "low_price": 100.98, "trade_price": 101.2},
+          {"opening_price": 101.8, "high_price": 102.02, "low_price": 101.23, "trade_price": 101.45},
+          {"opening_price": 102.1, "high_price": 102.32, "low_price": 101.58, "trade_price": 101.8},
+          {"opening_price": 101.9, "high_price": 102.32, "low_price": 101.68, "trade_price": 102.1},
+          {"opening_price": 101.6, "high_price": 102.12, "low_price": 101.38, "trade_price": 101.9},
+          {"opening_price": 101.35, "high_price": 101.82, "low_price": 101.13, "trade_price": 101.6},
+          {"opening_price": 101.1, "high_price": 101.57, "low_price": 100.88, "trade_price": 101.35},
+          {"opening_price": 100.8, "high_price": 101.32, "low_price": 100.58, "trade_price": 101.1},
+          {"opening_price": 100.5, "high_price": 101.02, "low_price": 100.28, "trade_price": 100.8},
+          {"opening_price": 100.25, "high_price": 100.72, "low_price": 100.03, "trade_price": 100.5},
+          {"opening_price": 100.0, "high_price": 100.47, "low_price": 99.78, "trade_price": 100.25},
+          {"opening_price": 99.8, "high_price": 100.22, "low_price": 99.58, "trade_price": 100.0}
+        ],
+        "5m": {
+          "series": "linear_ohlc",
+          "count": 18,
+          "open_start": 99.8,
+          "open_step": 0.45,
+          "high_start": 100.4,
+          "high_step": 0.45,
+          "low_start": 99.4,
+          "low_step": 0.45,
+          "close_start": 100.0,
+          "close_step": 0.45
+        },
+        "15m": {
+          "series": "linear_ohlc",
+          "count": 40,
+          "open_start": 99.8,
+          "open_step": 0.9,
+          "high_start": 100.6,
+          "high_step": 0.9,
+          "low_start": 99.4,
+          "low_step": 0.9,
+          "close_start": 100.0,
+          "close_step": 0.9
+        }
+      }
+    },
+    "position": {"state": {}},
+    "portfolio": {"available_krw": 1000000.0, "open_positions": 0, "state": {}},
+    "context_diagnostics": {
+      "entry_sizing_policy": {
+        "risk_per_trade_pct": 0.1,
+        "fee_rate": 0.0005,
+        "max_holdings": 1,
+        "position_sizing_mode": "risk_first",
+        "max_order_krw_by_cash_management": 0.0,
+        "quality_score_low_threshold": 0.35,
+        "quality_score_high_threshold": 0.7,
+        "quality_multiplier_low": 0.7,
+        "quality_multiplier_mid": 1.0,
+        "quality_multiplier_high": 1.15,
+        "quality_multiplier_min_bound": 0.7,
+        "quality_multiplier_max_bound": 1.2,
+        "baseline_equity": 1000000.0,
+        "realized_pnl_today": 0.0,
+        "max_daily_loss_pct": 0.05
+      },
+      "market_damping_policy": {"enabled": false}
+    },
+    "strategy_params_overrides": {
+      "strategy_name": "candidate_v1",
+      "regime_ema_fast": 5,
+      "regime_ema_slow": 10,
+      "regime_adx_period": 5,
+      "regime_adx_min": 10.0,
+      "regime_slope_lookback": 2
+    },
+    "expected": {"action": "enter", "reason": "ok", "size": 999500.0}
+  },
+  {
+    "name": "candidate_v1_partial_exit_matches_qty_ratio",
+    "market": {
+      "symbol": "KRW-BTC",
+      "price": 103.0,
+      "diagnostics": {
+        "current_atr": 1.0,
+        "swing_low": 95.0
+      },
+      "candles_by_timeframe": {
+        "1m": [{"opening_price": 102.0, "high_price": 103.5, "low_price": 101.8, "trade_price": 103.0}],
+        "5m": [{"opening_price": 102.0, "high_price": 103.5, "low_price": 101.8, "trade_price": 103.0}],
+        "15m": [{"opening_price": 102.0, "high_price": 103.5, "low_price": 101.8, "trade_price": 103.0}]
+      }
+    },
+    "position": {
+      "market": "KRW-BTC",
+      "quantity": 0.1,
+      "entry_price": 100.0,
+      "state": {
+        "peak_price": 100.0,
+        "entry_price": 100.0,
+        "initial_stop_price": 95.0,
+        "risk_per_unit": 5.0,
+        "bars_held": 7
+      }
+    },
+    "portfolio": {"available_krw": 500000.0, "open_positions": 1, "state": {}},
+    "context_diagnostics": {},
+    "strategy_params_overrides": {
+      "strategy_name": "candidate_v1",
+      "regime_ema_fast": 5,
+      "regime_ema_slow": 10,
+      "regime_adx_period": 5,
+      "regime_adx_min": 10.0,
+      "regime_slope_lookback": 2
+    },
+    "expected": {"action": "exit_partial", "reason": "partial_take_profit", "size": 0.5}
+  }
+]

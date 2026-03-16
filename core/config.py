@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+
+from core.strategy_registry import UnknownStrategyError, get_strategy
 
 
 ZONE_PROFILE_OVERRIDES: dict[str, dict[str, int | float]] = {
@@ -145,7 +147,8 @@ class TradingConfig:
     zone_profile: str = "aggressive"
     reentry_cooldown_bars: int = 10
     cooldown_on_loss_exits_only: bool = False
-    strategy_name: str = "sr_ob_fvg"
+    strategy_name: str = "rsi_bb_reversal_long"
+    strategy_decision_path: str = ""
     rsi_period: int = 14
     rsi_long_threshold: float = 30.0
     rsi_neutral_filter_enabled: bool = True
@@ -212,98 +215,107 @@ class TradingConfig:
         profile_overrides = ZONE_PROFILE_OVERRIDES.get(profile_name)
         if profile_overrides is None:
             valid_profiles = ", ".join(sorted(ZONE_PROFILE_OVERRIDES))
-            raise ValueError(f"unknown zone_profile '{profile_name}'. valid: {valid_profiles}")
+            raise ValueError(
+                f"unknown zone_profile '{profile_name}'. valid: {valid_profiles}"
+            )
 
-        runtime_overrides = {k: v for k, v in (zone_overrides or {}).items() if v is not None}
+        runtime_overrides = dict(zone_overrides or {})
 
-        base_params = {
+        canonical_strategy_name = self.strategy_name
+        try:
+            canonical_strategy_name = get_strategy(self.strategy_name).canonical_name
+        except UnknownStrategyError:
+            pass
 
-            "buy_rsi_threshold": self.buy_rsi_threshold,
-            "strategy_name": self.strategy_name,
-            "rsi_period": self.rsi_period,
-            "rsi_long_threshold": self.rsi_long_threshold,
-            "rsi_neutral_filter_enabled": self.rsi_neutral_filter_enabled,
-            "rsi_neutral_low": self.rsi_neutral_low,
-            "rsi_neutral_high": self.rsi_neutral_high,
-            "bb_period": self.bb_period,
-            "bb_std": self.bb_std,
-            "bb_touch_mode": self.bb_touch_mode,
-            "macd_fast": self.macd_fast,
-            "macd_slow": self.macd_slow,
-            "macd_signal": self.macd_signal,
-            "macd_histogram_filter_enabled": self.macd_histogram_filter_enabled,
-            "engulfing_strict": self.engulfing_strict,
-            "engulfing_include_wick": self.engulfing_include_wick,
-            "consecutive_bearish_count": self.consecutive_bearish_count,
-            "pivot_left": self.pivot_left,
-            "pivot_right": self.pivot_right,
-            "double_bottom_lookback_bars": self.double_bottom_lookback_bars,
-            "double_bottom_tolerance_pct": self.double_bottom_tolerance_pct,
-            "require_band_reentry_on_second_bottom": self.require_band_reentry_on_second_bottom,
-            "require_neckline_break": self.require_neckline_break,
-            "divergence_signal_enabled": self.divergence_signal_enabled,
-            "entry_score_threshold": self.entry_score_threshold,
-            "rsi_oversold_weight": self.rsi_oversold_weight,
-            "bb_touch_weight": self.bb_touch_weight,
-            "divergence_weight": self.divergence_weight,
-            "macd_cross_weight": self.macd_cross_weight,
-            "engulfing_weight": self.engulfing_weight,
-            "band_deviation_weight": self.band_deviation_weight,
-            "quality_score_low_threshold": self.quality_score_low_threshold,
-            "quality_score_high_threshold": self.quality_score_high_threshold,
-            "quality_multiplier_low": self.quality_multiplier_low,
-            "quality_multiplier_mid": self.quality_multiplier_mid,
-            "quality_multiplier_high": self.quality_multiplier_high,
-            "entry_mode": self.entry_mode,
-            "stop_mode_long": self.stop_mode_long,
-            "take_profit_r": self.take_profit_r,
-            "partial_take_profit_enabled": self.partial_take_profit_enabled,
-            "partial_take_profit_r": self.partial_take_profit_r,
-            "partial_take_profit_size": self.partial_take_profit_size,
-            "move_stop_to_breakeven_after_partial": self.move_stop_to_breakeven_after_partial,
-            "max_hold_bars": self.max_hold_bars,
-            "strategy_cooldown_bars": self.strategy_cooldown_bars,
-            "macd_n_fast": self.macd_n_fast,
-            "macd_n_slow": self.macd_n_slow,
-            "macd_n_signal": self.macd_n_signal,
-            "min_candle_extra": self.min_candle_extra,
-            "sell_profit_threshold": self.sell_profit_threshold,
-            "sell_requires_profit": self.sell_requires_profit,
-            "stop_loss_threshold": self.stop_loss_threshold,
-            "sr_pivot_left": self.sr_pivot_left,
-            "sr_pivot_right": self.sr_pivot_right,
-            "sr_cluster_band_pct": self.sr_cluster_band_pct,
-            "sr_min_touches": self.sr_min_touches,
-            "sr_lookback_bars": self.sr_lookback_bars,
-            "sr_touch_weight": self.sr_touch_weight,
-            "sr_recency_weight": self.sr_recency_weight,
-            "sr_volume_weight": self.sr_volume_weight,
-            "zone_priority_mode": self.zone_priority_mode,
-            "fvg_atr_period": self.fvg_atr_period,
-            "fvg_min_width_atr_mult": self.fvg_min_width_atr_mult,
-            "fvg_min_width_ticks": self.fvg_min_width_ticks,
-            "displacement_min_body_ratio": self.displacement_min_body_ratio,
-            "displacement_min_atr_mult": self.displacement_min_atr_mult,
-            "ob_lookback_bars": self.ob_lookback_bars,
-            "ob_max_base_bars": self.ob_max_base_bars,
-            "zone_expiry_bars_5m": self.zone_expiry_bars_5m,
-            "zone_reentry_buffer_pct": self.zone_reentry_buffer_pct,
-            "trigger_rejection_wick_ratio": self.trigger_rejection_wick_ratio,
-            "trigger_breakout_lookback": self.trigger_breakout_lookback,
-            "trigger_zone_lookback": self.trigger_zone_lookback,
-            "trigger_confirm_lookback": self.trigger_confirm_lookback,
-            "trigger_mode": self.trigger_mode,
-            "min_candles_1m": self.min_candles_1m,
-            "min_candles_5m": self.min_candles_5m,
-            "min_candles_15m": self.min_candles_15m,
-            "regime_filter_enabled": self.regime_filter_enabled,
-            "regime_ema_fast": self.regime_ema_fast,
-            "regime_ema_slow": self.regime_ema_slow,
-            "regime_adx_period": self.regime_adx_period,
-            "regime_adx_min": self.regime_adx_min,
-            "regime_slope_lookback": self.regime_slope_lookback,
-
-        }
-        base_params.update(profile_overrides)
-        base_params.update(runtime_overrides)
-        return StrategyParams(**base_params)
+        params = StrategyParams(
+            buy_rsi_threshold=self.buy_rsi_threshold,
+            strategy_name=canonical_strategy_name,
+            rsi_period=self.rsi_period,
+            rsi_long_threshold=self.rsi_long_threshold,
+            rsi_neutral_filter_enabled=self.rsi_neutral_filter_enabled,
+            rsi_neutral_low=self.rsi_neutral_low,
+            rsi_neutral_high=self.rsi_neutral_high,
+            bb_period=self.bb_period,
+            bb_std=self.bb_std,
+            bb_touch_mode=self.bb_touch_mode,
+            macd_fast=self.macd_fast,
+            macd_slow=self.macd_slow,
+            macd_signal=self.macd_signal,
+            macd_histogram_filter_enabled=self.macd_histogram_filter_enabled,
+            engulfing_strict=self.engulfing_strict,
+            engulfing_include_wick=self.engulfing_include_wick,
+            consecutive_bearish_count=self.consecutive_bearish_count,
+            pivot_left=self.pivot_left,
+            pivot_right=self.pivot_right,
+            double_bottom_lookback_bars=self.double_bottom_lookback_bars,
+            double_bottom_tolerance_pct=self.double_bottom_tolerance_pct,
+            require_band_reentry_on_second_bottom=self.require_band_reentry_on_second_bottom,
+            require_neckline_break=self.require_neckline_break,
+            divergence_signal_enabled=self.divergence_signal_enabled,
+            entry_score_threshold=self.entry_score_threshold,
+            rsi_oversold_weight=self.rsi_oversold_weight,
+            bb_touch_weight=self.bb_touch_weight,
+            divergence_weight=self.divergence_weight,
+            macd_cross_weight=self.macd_cross_weight,
+            engulfing_weight=self.engulfing_weight,
+            band_deviation_weight=self.band_deviation_weight,
+            quality_score_low_threshold=self.quality_score_low_threshold,
+            quality_score_high_threshold=self.quality_score_high_threshold,
+            quality_multiplier_low=self.quality_multiplier_low,
+            quality_multiplier_mid=self.quality_multiplier_mid,
+            quality_multiplier_high=self.quality_multiplier_high,
+            entry_mode=self.entry_mode,
+            stop_mode_long=self.stop_mode_long,
+            take_profit_r=self.take_profit_r,
+            partial_take_profit_enabled=self.partial_take_profit_enabled,
+            partial_take_profit_r=self.partial_take_profit_r,
+            partial_take_profit_size=self.partial_take_profit_size,
+            move_stop_to_breakeven_after_partial=self.move_stop_to_breakeven_after_partial,
+            max_hold_bars=self.max_hold_bars,
+            strategy_cooldown_bars=self.strategy_cooldown_bars,
+            macd_n_fast=self.macd_n_fast,
+            macd_n_slow=self.macd_n_slow,
+            macd_n_signal=self.macd_n_signal,
+            min_candle_extra=self.min_candle_extra,
+            sell_profit_threshold=self.sell_profit_threshold,
+            sell_requires_profit=self.sell_requires_profit,
+            stop_loss_threshold=self.stop_loss_threshold,
+            sr_pivot_left=self.sr_pivot_left,
+            sr_pivot_right=self.sr_pivot_right,
+            sr_cluster_band_pct=self.sr_cluster_band_pct,
+            sr_min_touches=self.sr_min_touches,
+            sr_lookback_bars=self.sr_lookback_bars,
+            sr_touch_weight=self.sr_touch_weight,
+            sr_recency_weight=self.sr_recency_weight,
+            sr_volume_weight=self.sr_volume_weight,
+            zone_priority_mode=self.zone_priority_mode,
+            fvg_atr_period=self.fvg_atr_period,
+            fvg_min_width_atr_mult=self.fvg_min_width_atr_mult,
+            fvg_min_width_ticks=self.fvg_min_width_ticks,
+            displacement_min_body_ratio=self.displacement_min_body_ratio,
+            displacement_min_atr_mult=self.displacement_min_atr_mult,
+            ob_lookback_bars=self.ob_lookback_bars,
+            ob_max_base_bars=self.ob_max_base_bars,
+            zone_expiry_bars_5m=self.zone_expiry_bars_5m,
+            zone_reentry_buffer_pct=self.zone_reentry_buffer_pct,
+            trigger_rejection_wick_ratio=self.trigger_rejection_wick_ratio,
+            trigger_breakout_lookback=self.trigger_breakout_lookback,
+            trigger_zone_lookback=self.trigger_zone_lookback,
+            trigger_confirm_lookback=self.trigger_confirm_lookback,
+            trigger_mode=self.trigger_mode,
+            min_candles_1m=self.min_candles_1m,
+            min_candles_5m=self.min_candles_5m,
+            min_candles_15m=self.min_candles_15m,
+            regime_filter_enabled=self.regime_filter_enabled,
+            regime_ema_fast=self.regime_ema_fast,
+            regime_ema_slow=self.regime_ema_slow,
+            regime_adx_period=self.regime_adx_period,
+            regime_adx_min=self.regime_adx_min,
+            regime_slope_lookback=self.regime_slope_lookback,
+        )
+        for override_key, override_value in {
+            **profile_overrides,
+            **runtime_overrides,
+        }.items():
+            params = replace(params, **{override_key: override_value})
+        return params

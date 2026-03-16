@@ -1,23 +1,78 @@
 from __future__ import annotations
 
 import datetime
+import importlib
 import json
 import math
 import os.path
+import sys
+import types
 from argparse import ArgumentParser
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from statistics import median, pstdev
 
 import openpyxl  # noqa: F401
-import pandas as pd
+
+pd = importlib.import_module("pandas")
+
+if "slave_constants" not in sys.modules:
+    slave_constants = types.ModuleType("slave_constants")
+    setattr(slave_constants, "ACCESS_KEY", "")
+    setattr(slave_constants, "SECRET_KEY", "")
+    setattr(slave_constants, "SERVER_URL", "https://api.upbit.com")
+    sys.modules["slave_constants"] = slave_constants
 
 import apis
-from core.rsi_bb_reversal_long import evaluate_long_entry
-from core.config import TradingConfig
+from core.config import REGIME_STRATEGY_PARAM_OVERRIDES, TradingConfig
 from core.config_loader import load_trading_config
-from core.position_policy import ExitDecision, PositionExitState, PositionOrderPolicy
-from core.strategy import check_buy, check_sell, classify_market_regime, debug_entry, preprocess_candles, zone_debug_metrics
+from core.decision_core import evaluate_market
+from core.decision_models import (
+    Candle,
+    DecisionContext,
+    MarketSnapshot,
+    PortfolioSnapshot,
+    PositionSnapshot,
+    SnapshotState,
+)
+from core.position_policy import (
+    ExitDecision,
+    PositionExitState,
+    PositionOrderPolicy,
+    load_position_exit_state,
+)
+from core.strategy import (
+    classify_market_regime,
+    debug_entry,
+    preprocess_candles,
+    zone_debug_metrics,
+)
+
+NumericLike = int | float
+ReportValue = float | int | str
+TradeStateValue = float | str
+TradeState = dict[str, TradeStateValue]
+
+
+def _snapshot_state(value: object) -> SnapshotState:
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _as_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _as_str(value: object, default: str = "") -> str:
+    if value is None:
+        return default
+    resolved = str(value)
+    return resolved if resolved else default
 
 
 @dataclass
@@ -68,8 +123,6 @@ class SegmentResult:
     stop_recovery_stats: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
-
-
 @dataclass
 class TradeLedgerEntry:
     entry_price: float
@@ -105,7 +158,12 @@ class BacktestRunner:
     MIN_CAGR_OBSERVATION_DAYS = 90
     ABNORMAL_CAGR_THRESHOLD_PCT = 500
     STOP_EXIT_REASONS = {"stop_loss", "partial_stop_loss", "trailing_stop"}
-    EXIT_REASON_R_COMPARE_TARGETS = ("strategy_signal", "trailing_stop", "partial_stop_loss", "stop_loss")
+    EXIT_REASON_R_COMPARE_TARGETS = (
+        "strategy_signal",
+        "trailing_stop",
+        "partial_stop_loss",
+        "stop_loss",
+    )
     STOP_RECOVERY_WINDOWS = (3, 5, 10)
 
     def __init__(
@@ -137,11 +195,17 @@ class BacktestRunner:
         self.config = load_trading_config()
         self.mtf_timeframes = self._resolve_mtf_timeframes()
         self.zone_profile = zone_profile
-        self.zone_overrides = {
-            "zone_expiry_bars_5m": zone_expiry_bars_5m,
-            "fvg_min_width_atr_mult": fvg_min_width_atr_mult,
-            "displacement_min_atr_mult": displacement_min_atr_mult,
-        }
+        self.zone_overrides: dict[str, NumericLike] = {}
+        if zone_expiry_bars_5m is not None:
+            self.zone_overrides["zone_expiry_bars_5m"] = int(zone_expiry_bars_5m)
+        if fvg_min_width_atr_mult is not None:
+            self.zone_overrides["fvg_min_width_atr_mult"] = float(
+                fvg_min_width_atr_mult
+            )
+        if displacement_min_atr_mult is not None:
+            self.zone_overrides["displacement_min_atr_mult"] = float(
+                displacement_min_atr_mult
+            )
         self.strategy_params = self._build_effective_strategy_params()
         self.spread_rate = max(0.0, float(spread_rate))
         self.slippage_rate = max(0.0, float(slippage_rate))
@@ -173,7 +237,9 @@ class BacktestRunner:
         self.stop_recovery_rows: list[dict[str, float | int | str]] = []
         self.stop_gap_trade_rows: list[dict[str, float | int | str]] = []
         self.required_base_bars_for_regime = self._required_base_bars_for_regime()
-        self.required_base_bars_for_mtf_minimums = self._required_base_bars_for_mtf_minimums()
+        self.required_base_bars_for_mtf_minimums = (
+            self._required_base_bars_for_mtf_minimums()
+        )
         if self.sell_decision_rule not in {"or", "and"}:
             raise ValueError("sell_decision_rule must be 'or' or 'and'")
         self._validate_mtf_capacity(raise_on_failure=False)
@@ -193,7 +259,9 @@ class BacktestRunner:
         }
 
     def _build_effective_strategy_params(self):
-        raw_params = self.config.to_strategy_params(zone_profile=self.zone_profile, zone_overrides=self.zone_overrides)
+        raw_params = self.config.to_strategy_params(
+            zone_profile=self.zone_profile, zone_overrides=self.zone_overrides
+        )
 
         def scaled_min(target_tf: int, target_min: int, actual_tf: int) -> int:
             target_duration = max(1, int(target_min)) * target_tf
@@ -201,9 +269,15 @@ class BacktestRunner:
 
         return replace(
             raw_params,
-            min_candles_1m=scaled_min(1, raw_params.min_candles_1m, self.mtf_timeframes["1m"]),
-            min_candles_5m=scaled_min(5, raw_params.min_candles_5m, self.mtf_timeframes["5m"]),
-            min_candles_15m=scaled_min(15, raw_params.min_candles_15m, self.mtf_timeframes["15m"]),
+            min_candles_1m=scaled_min(
+                1, raw_params.min_candles_1m, self.mtf_timeframes["1m"]
+            ),
+            min_candles_5m=scaled_min(
+                5, raw_params.min_candles_5m, self.mtf_timeframes["5m"]
+            ),
+            min_candles_15m=scaled_min(
+                15, raw_params.min_candles_15m, self.mtf_timeframes["15m"]
+            ),
         )
 
     def _validate_mtf_capacity(self, raise_on_failure: bool = False) -> dict[str, int]:
@@ -217,12 +291,20 @@ class BacktestRunner:
             "5m": int(self.strategy_params.min_candles_5m),
             "15m": int(self.strategy_params.min_candles_15m),
         }
-        regime_required_15m = self._required_regime_15m_candles() if bool(self.strategy_params.regime_filter_enabled) else 0
+        regime_required_15m = (
+            self._required_regime_15m_candles()
+            if bool(self.strategy_params.regime_filter_enabled)
+            else 0
+        )
         required = dict(required_min)
         if regime_required_15m > 0:
             required["15m"] = max(required_min["15m"], regime_required_15m)
 
-        insufficient = {key: (available[key], required[key]) for key in required if available[key] < required[key]}
+        insufficient = {
+            key: (available[key], required[key])
+            for key in required
+            if available[key] < required[key]
+        }
         if insufficient:
             details = []
             for key, values in insufficient.items():
@@ -256,7 +338,9 @@ class BacktestRunner:
             int(self.strategy_params.regime_slope_lookback) + 1,
         )
 
-    def _required_base_bars_for_target_tf(self, *, target_tf_minutes: int, target_tf_bars: int) -> int:
+    def _required_base_bars_for_target_tf(
+        self, *, target_tf_minutes: int, target_tf_bars: int
+    ) -> int:
         base_interval = max(1, int(self.config.candle_interval))
         ratio = max(1, int(math.ceil(max(1, int(target_tf_minutes)) / base_interval)))
         return max(1, int(target_tf_bars)) * ratio
@@ -265,7 +349,9 @@ class BacktestRunner:
         if not bool(self.strategy_params.regime_filter_enabled):
             return 0
         required_15m = self._required_regime_15m_candles()
-        return self._required_base_bars_for_target_tf(target_tf_minutes=self.mtf_timeframes["15m"], target_tf_bars=required_15m)
+        return self._required_base_bars_for_target_tf(
+            target_tf_minutes=self.mtf_timeframes["15m"], target_tf_bars=required_15m
+        )
 
     def _required_base_bars_for_mtf_minimums(self) -> int:
         requirements = (
@@ -285,18 +371,215 @@ class BacktestRunner:
         return max(requirements)
 
     @staticmethod
-    def _resolve_entry_regime(mtf_data: dict[str, list[dict]], strategy_params) -> str:
+    def _resolve_entry_regime(
+        mtf_data: dict[str, list[Candle]], strategy_params
+    ) -> str:
         try:
             regime = classify_market_regime(mtf_data.get("15m", []), strategy_params)
         except Exception:
             return "unknown"
-        return regime if regime in {"strong_trend", "weak_trend", "sideways"} else "unknown"
+        return (
+            regime
+            if regime in {"strong_trend", "weak_trend", "sideways"}
+            else "unknown"
+        )
+
+    def _build_market_snapshot(
+        self,
+        *,
+        data: dict[str, list[Candle]],
+        price: float,
+        current_atr: float,
+        swing_low: float,
+    ) -> MarketSnapshot:
+        regime = self._resolve_entry_regime(data, self.strategy_params)
+        return MarketSnapshot(
+            symbol=self.market,
+            candles_by_timeframe={
+                timeframe: list(candles) for timeframe, candles in data.items()
+            },
+            price=price,
+            diagnostics={
+                "current_atr": float(current_atr),
+                "swing_low": float(swing_low),
+                "regime": regime,
+            },
+        )
+
+    def _entry_sizing_policy_payload(
+        self, *, baseline_equity: float = 0.0, realized_pnl_today: float = 0.0
+    ) -> SnapshotState:
+        return {
+            "risk_per_trade_pct": float(self.config.risk_per_trade_pct),
+            "fee_rate": float(self.config.fee_rate),
+            "max_holdings": int(self.config.max_holdings),
+            "position_sizing_mode": str(self.config.position_sizing_mode),
+            "max_order_krw_by_cash_management": float(
+                self.config.max_order_krw_by_cash_management
+            ),
+            "quality_score_low_threshold": float(
+                self.config.quality_score_low_threshold
+            ),
+            "quality_score_high_threshold": float(
+                self.config.quality_score_high_threshold
+            ),
+            "quality_multiplier_low": float(self.config.quality_multiplier_low),
+            "quality_multiplier_mid": float(self.config.quality_multiplier_mid),
+            "quality_multiplier_high": float(self.config.quality_multiplier_high),
+            "quality_multiplier_min_bound": float(
+                self.config.quality_multiplier_min_bound
+            ),
+            "quality_multiplier_max_bound": float(
+                self.config.quality_multiplier_max_bound
+            ),
+            "baseline_equity": float(baseline_equity),
+            "realized_pnl_today": float(realized_pnl_today),
+            "max_daily_loss_pct": float(self.config.max_daily_loss_pct),
+        }
+
+    def _market_damping_policy_payload(self) -> SnapshotState:
+        return {
+            "enabled": bool(self.config.market_damping_enabled),
+            "max_spread": float(self.config.market_damping_max_spread),
+            "min_trade_value_24h": float(
+                self.config.market_damping_min_trade_value_24h
+            ),
+            "atr_period": int(self.config.market_damping_atr_period),
+            "max_atr_ratio": float(self.config.market_damping_max_atr_ratio),
+        }
+
+    def _backtest_ticker_payload(
+        self, *, data: dict[str, list[Candle]], price: float
+    ) -> SnapshotState:
+        last_price = max(0.0, float(price))
+        half_spread = last_price * max(0.0, float(self.spread_rate)) / 2.0
+        ask_price = last_price + half_spread if last_price > 0 else 0.0
+        bid_price = max(0.0, last_price - half_spread)
+        candles_1m = list(data.get("1m", []))
+        tf_minutes = max(1, int(self.mtf_timeframes.get("1m", 1)))
+        bars_per_day = max(1, int(math.ceil((24 * 60) / tf_minutes)))
+        recent_candles = candles_1m[:bars_per_day]
+        trade_value_24h = 0.0
+        for candle in recent_candles:
+            candle_trade_value = _as_float(candle.get("candle_acc_trade_price"))
+            if candle_trade_value <= 0:
+                candle_trade_volume = _as_float(candle.get("candle_acc_trade_volume"))
+                candle_trade_price = _as_float(candle.get("trade_price"), last_price)
+                candle_trade_value = candle_trade_volume * candle_trade_price
+            trade_value_24h += max(0.0, candle_trade_value)
+        return {
+            "market": self.market,
+            "trade_price": last_price,
+            "ask_price": ask_price,
+            "bid_price": bid_price,
+            "acc_trade_price_24h": trade_value_24h,
+            "acc_trade_price": trade_value_24h,
+        }
+
+    def _build_entry_decision_context(
+        self,
+        *,
+        data: dict[str, list[Candle]],
+        price: float,
+        current_atr: float,
+        swing_low: float,
+        available_krw: float,
+        baseline_equity: float,
+        realized_pnl_today: float,
+    ) -> DecisionContext:
+        market_snapshot = self._build_market_snapshot(
+            data=data,
+            price=price,
+            current_atr=current_atr,
+            swing_low=swing_low,
+        )
+        market_diagnostics = dict(market_snapshot.diagnostics)
+        market_diagnostics["ticker"] = self._backtest_ticker_payload(
+            data=data,
+            price=price,
+        )
+        return DecisionContext(
+            strategy_name=str(self.strategy_params.strategy_name),
+            market=MarketSnapshot(
+                symbol=market_snapshot.symbol,
+                candles_by_timeframe=market_snapshot.candles_by_timeframe,
+                price=market_snapshot.price,
+                diagnostics=market_diagnostics,
+            ),
+            position=PositionSnapshot(market=self.market),
+            portfolio=PortfolioSnapshot(
+                available_krw=float(available_krw), open_positions=0
+            ),
+            diagnostics={
+                "regime_strategy_overrides": {
+                    regime_name: dict(overrides)
+                    for regime_name, overrides in REGIME_STRATEGY_PARAM_OVERRIDES.items()
+                },
+                "entry_sizing_policy": self._entry_sizing_policy_payload(
+                    baseline_equity=baseline_equity,
+                    realized_pnl_today=realized_pnl_today,
+                ),
+                "market_damping_policy": self._market_damping_policy_payload(),
+            },
+        )
+
+    def _build_exit_decision_context(
+        self,
+        *,
+        data: dict[str, list[Candle]],
+        price: float,
+        current_atr: float,
+        swing_low: float,
+        quantity: float,
+        entry_price: float,
+        state_payload: dict[str, object],
+        available_krw: float,
+    ) -> DecisionContext:
+        return DecisionContext(
+            strategy_name=str(self.strategy_params.strategy_name),
+            market=self._build_market_snapshot(
+                data=data,
+                price=price,
+                current_atr=current_atr,
+                swing_low=swing_low,
+            ),
+            position=PositionSnapshot(
+                market=self.market,
+                quantity=float(quantity),
+                entry_price=float(entry_price),
+                state=dict(state_payload),
+            ),
+            portfolio=PortfolioSnapshot(
+                available_krw=float(available_krw), open_positions=1
+            ),
+            diagnostics={"sell_decision_rule": self.sell_decision_rule},
+        )
 
     @staticmethod
-    def _build_regime_trade_stats(ledger: list[TradeLedgerEntry]) -> dict[str, dict[str, float]]:
-        grouped: dict[str, list[TradeLedgerEntry]] = {"strong_trend": [], "weak_trend": [], "sideways": [], "unknown": []}
+    def _intent_qty_ratio(intent) -> float:
+        if intent.action == "exit_full":
+            return 1.0
+        if intent.action != "exit_partial":
+            return 0.0
+        diagnostics = dict(intent.diagnostics or {})
+        return min(1.0, max(0.0, float(diagnostics.get("qty_ratio", 0.0) or 0.0)))
+
+    @staticmethod
+    def _build_regime_trade_stats(
+        ledger: list[TradeLedgerEntry],
+    ) -> dict[str, dict[str, float]]:
+        grouped: dict[str, list[TradeLedgerEntry]] = {
+            "strong_trend": [],
+            "weak_trend": [],
+            "sideways": [],
+            "unknown": [],
+        }
         for trade in ledger:
-            regime = str(getattr(trade, "entry_regime", "unknown") or "unknown").strip().lower()
+            regime = (
+                str(getattr(trade, "entry_regime", "unknown") or "unknown")
+                .strip()
+                .lower()
+            )
             grouped.setdefault(regime, []).append(trade)
 
         summary: dict[str, dict[str, float]] = {}
@@ -311,7 +594,9 @@ class BacktestRunner:
         return summary
 
     @staticmethod
-    def _build_quality_bucket_stats(rows: list[tuple[str, float]]) -> dict[str, dict[str, float]]:
+    def _build_quality_bucket_stats(
+        rows: list[tuple[str, float]],
+    ) -> dict[str, dict[str, float]]:
         grouped: dict[str, list[float]] = {"low": [], "mid": [], "high": []}
         for bucket, pnl in rows:
             key = str(bucket or "low").strip().lower()
@@ -328,7 +613,9 @@ class BacktestRunner:
         return result
 
     @staticmethod
-    def _score_win_rates_by_quantile(score_pnl_rows: list[tuple[float, float]]) -> dict[str, float]:
+    def _score_win_rates_by_quantile(
+        score_pnl_rows: list[tuple[float, float]],
+    ) -> dict[str, float]:
         if not score_pnl_rows:
             return {"q1": 0.0, "q2": 0.0, "q3": 0.0, "q4": 0.0}
 
@@ -337,7 +624,9 @@ class BacktestRunner:
             win_rate = float((df["pnl"] > 0).mean() * 100.0)
             return {"q1": win_rate, "q2": win_rate, "q3": win_rate, "q4": win_rate}
 
-        df["bucket"] = pd.qcut(df["score"], q=4, labels=["q1", "q2", "q3", "q4"], duplicates="drop")
+        df["bucket"] = pd.qcut(
+            df["score"], q=4, labels=["q1", "q2", "q3", "q4"], duplicates="drop"
+        )
         result = {"q1": 0.0, "q2": 0.0, "q3": 0.0, "q4": 0.0}
         grouped = df.dropna(subset=["bucket"]).groupby("bucket", observed=False)["pnl"]
         for bucket, pnl_series in grouped:
@@ -345,12 +634,16 @@ class BacktestRunner:
         return result
 
     @staticmethod
-    def _build_exit_reason_r_stats(ledger: list[TradeLedgerEntry]) -> dict[str, dict[str, float]]:
+    def _build_exit_reason_r_stats(
+        ledger: list[TradeLedgerEntry],
+    ) -> dict[str, dict[str, float]]:
         by_reason: dict[str, list[float]] = {}
         by_reason_bars_held: dict[str, list[int]] = {}
         for entry in ledger:
             by_reason.setdefault(str(entry.reason), []).append(float(entry.r_multiple))
-            by_reason_bars_held.setdefault(str(entry.reason), []).append(max(0, int(entry.exit_bars_held)))
+            by_reason_bars_held.setdefault(str(entry.reason), []).append(
+                max(0, int(entry.exit_bars_held))
+            )
 
         result: dict[str, dict[str, float]] = {}
         for reason, values in by_reason.items():
@@ -370,24 +663,40 @@ class BacktestRunner:
                     {
                         "bars_held_mean": float(sum(bars) / len(bars)),
                         "bars_held_median": float(median(bars)),
-                        "bars_held_p75": float(bars[max(0, int((len(bars) - 1) * 0.75))]),
-                        "early_bar_share_pct": float(sum(1 for value in bars if value <= early_bar_cut) / len(bars) * 100.0),
+                        "bars_held_p75": float(
+                            bars[max(0, int((len(bars) - 1) * 0.75))]
+                        ),
+                        "early_bar_share_pct": float(
+                            sum(1 for value in bars if value <= early_bar_cut)
+                            / len(bars)
+                            * 100.0
+                        ),
                     }
                 )
                 for hold_bars in range(1, early_bar_cut + 1):
                     result[reason][f"early_bar_share_{hold_bars}_pct"] = float(
-                        sum(1 for value in bars if value <= hold_bars) / len(bars) * 100.0
+                        sum(1 for value in bars if value <= hold_bars)
+                        / len(bars)
+                        * 100.0
                     )
         return result
 
     @staticmethod
-    def _build_exit_reason_r_comparison(exit_reason_r_stats: dict[str, dict[str, float]]) -> dict[str, float]:
+    def _build_exit_reason_r_comparison(
+        exit_reason_r_stats: dict[str, dict[str, float]],
+    ) -> dict[str, float]:
         comparison: dict[str, float] = {}
         for reason in BacktestRunner.EXIT_REASON_R_COMPARE_TARGETS:
             reason_stats = exit_reason_r_stats.get(reason, {})
-            comparison[f"exit_reason_compare_{reason}_mean_r"] = float(reason_stats.get("mean", 0.0) or 0.0)
-            comparison[f"exit_reason_compare_{reason}_median_r"] = float(reason_stats.get("median", 0.0) or 0.0)
-            comparison[f"exit_reason_compare_{reason}_p10_r"] = float(reason_stats.get("p10", 0.0) or 0.0)
+            comparison[f"exit_reason_compare_{reason}_mean_r"] = float(
+                reason_stats.get("mean", 0.0) or 0.0
+            )
+            comparison[f"exit_reason_compare_{reason}_median_r"] = float(
+                reason_stats.get("median", 0.0) or 0.0
+            )
+            comparison[f"exit_reason_compare_{reason}_p10_r"] = float(
+                reason_stats.get("p10", 0.0) or 0.0
+            )
         return comparison
 
     def _print_config_default_vs_effective(self) -> None:
@@ -430,7 +739,7 @@ class BacktestRunner:
     def _calc_post_exit_recovery(
         cls,
         *,
-        data_newest: list[dict],
+        data_newest: list[Candle],
         exit_index: int,
         exit_price: float,
         risk_per_unit: float,
@@ -440,34 +749,53 @@ class BacktestRunner:
         result: dict[str, float | int] = {}
         for window in cls.STOP_RECOVERY_WINDOWS:
             start = max(0, int(exit_index) - int(window))
-            forward_bars = data_newest[start:int(exit_index)]
+            forward_bars = data_newest[start : int(exit_index)]
             max_high = max(
-                (float(bar.get("high_price", bar.get("trade_price", safe_exit_price)) or safe_exit_price) for bar in forward_bars),
+                (
+                    _as_float(
+                        bar.get("high_price", bar.get("trade_price", safe_exit_price)),
+                        safe_exit_price,
+                    )
+                    for bar in forward_bars
+                ),
                 default=safe_exit_price,
             )
             mfe_r = ((max_high - safe_exit_price) / safe_risk) if safe_risk > 0 else 0.0
             result[f"mfe_r_{window}"] = float(max(0.0, mfe_r))
-            result[f"recovered_1r_{window}"] = int(1 if safe_risk > 0 and max_high >= (safe_exit_price + safe_risk) else 0)
+            result[f"recovered_1r_{window}"] = int(
+                1 if safe_risk > 0 and max_high >= (safe_exit_price + safe_risk) else 0
+            )
             result[f"bars_available_{window}"] = int(len(forward_bars))
         return result
 
     @classmethod
-    def _build_stop_recovery_stats(cls, rows: list[dict[str, float | int | str]]) -> dict[str, dict[str, float]]:
+    def _build_stop_recovery_stats(
+        cls, rows: list[dict[str, float | int | str]]
+    ) -> dict[str, dict[str, float]]:
         if not rows:
             return {}
         df = pd.DataFrame(rows)
         summary: dict[str, dict[str, float]] = {}
         for reason in cls.STOP_EXIT_REASONS:
-            subset = df[df["reason"] == reason] if "reason" in df.columns else pd.DataFrame()
+            subset = (
+                df[df["reason"] == reason] if "reason" in df.columns else pd.DataFrame()
+            )
             if subset.empty:
                 continue
             reason_summary: dict[str, float] = {"count": float(len(subset))}
             for window in cls.STOP_RECOVERY_WINDOWS:
                 mfe_col = f"mfe_r_{window}"
                 rec_col = f"recovered_1r_{window}"
-                reason_summary[f"mfe_r_{window}_mean"] = float(pd.to_numeric(subset.get(mfe_col, 0.0), errors="coerce").fillna(0.0).mean())
+                reason_summary[f"mfe_r_{window}_mean"] = float(
+                    pd.to_numeric(subset.get(mfe_col, 0.0), errors="coerce")
+                    .fillna(0.0)
+                    .mean()
+                )
                 reason_summary[f"recovered_1r_{window}_share_pct"] = float(
-                    pd.to_numeric(subset.get(rec_col, 0.0), errors="coerce").fillna(0.0).mean() * 100.0
+                    pd.to_numeric(subset.get(rec_col, 0.0), errors="coerce")
+                    .fillna(0.0)
+                    .mean()
+                    * 100.0
                 )
             summary[reason] = reason_summary
         return summary
@@ -487,7 +815,9 @@ class BacktestRunner:
             return "entry_lower_band_mode"
         if hard_stop_price >= entry_price > 0:
             return "breakeven_or_higher"
-        if risk_per_unit > 0 and hard_stop_price >= (entry_price - (risk_per_unit * 0.85)):
+        if risk_per_unit > 0 and hard_stop_price >= (
+            entry_price - (risk_per_unit * 0.85)
+        ):
             return "initial_defense_tightening"
         if entry_swing_low > 0 and hard_stop_price > entry_swing_low:
             return "atr_or_policy_overrides_swing"
@@ -496,18 +826,24 @@ class BacktestRunner:
         return "structure_respected"
 
     @staticmethod
-    def _build_stop_gap_deterioration_stats(rows: list[dict[str, float | int | str]]) -> dict[str, float]:
+    def _build_stop_gap_deterioration_stats(
+        rows: list[dict[str, float | int | str]],
+    ) -> dict[str, float]:
         if not rows:
             return {}
         df = pd.DataFrame(rows)
         if df.empty:
             return {}
-        df["stop_gap_from_entry_r"] = pd.to_numeric(df.get("stop_gap_from_entry_r", 0.0), errors="coerce").fillna(0.0)
+        df["stop_gap_from_entry_r"] = pd.to_numeric(
+            df.get("stop_gap_from_entry_r", 0.0), errors="coerce"
+        ).fillna(0.0)
         df["pnl"] = pd.to_numeric(df.get("pnl", 0.0), errors="coerce").fillna(0.0)
         df["large_gap"] = False
 
         positive_gaps = df[df["stop_gap_from_entry_r"] > 0]["stop_gap_from_entry_r"]
-        threshold = float(positive_gaps.quantile(0.75)) if not positive_gaps.empty else 0.0
+        threshold = (
+            float(positive_gaps.quantile(0.75)) if not positive_gaps.empty else 0.0
+        )
         if threshold > 0:
             df["large_gap"] = df["stop_gap_from_entry_r"] >= threshold
 
@@ -517,7 +853,10 @@ class BacktestRunner:
             "non_large_gap_trades": float((~df["large_gap"]).sum()),
         }
 
-        for label, mask in (("large_gap", df["large_gap"]), ("non_large_gap", ~df["large_gap"])):
+        for label, mask in (
+            ("large_gap", df["large_gap"]),
+            ("non_large_gap", ~df["large_gap"]),
+        ):
             subset = df[mask]
             if subset.empty:
                 result[f"{label}_win_rate"] = 0.0
@@ -527,58 +866,28 @@ class BacktestRunner:
             losses = subset[subset["pnl"] < 0]["pnl"]
             result[f"{label}_win_rate"] = float((subset["pnl"] > 0).mean() * 100.0)
             result[f"{label}_expectancy"] = float(subset["pnl"].mean())
-            result[f"{label}_avg_loss"] = float(losses.mean()) if not losses.empty else 0.0
+            result[f"{label}_avg_loss"] = (
+                float(losses.mean()) if not losses.empty else 0.0
+            )
         return result
 
-    def _resolve_exit_decision(
-        self,
-        *,
-        state: BacktestPositionState,
-        current_price: float,
-        signal_exit: bool,
-        current_atr: float = 0.0,
-        swing_low: float = 0.0,
-    ) -> ExitDecision:
-        policy_signal_exit = signal_exit if self.sell_decision_rule != "and" else False
-        policy_decision = self.order_policy.evaluate(
-            state=state.exit_state,
-            avg_buy_price=state.avg_buy_price,
-            current_price=current_price,
-            signal_exit=policy_signal_exit,
-            current_atr=current_atr,
-            swing_low=swing_low,
-            strategy_name=str(getattr(self.strategy_params, "strategy_name", "")),
-            partial_take_profit_enabled=bool(getattr(self.strategy_params, "partial_take_profit_enabled", False)),
-            partial_take_profit_r=float(getattr(self.strategy_params, "partial_take_profit_r", 1.0)),
-            partial_take_profit_size=float(getattr(self.strategy_params, "partial_take_profit_size", 0.0)),
-            move_stop_to_breakeven_after_partial=bool(
-                getattr(self.strategy_params, "move_stop_to_breakeven_after_partial", False)
-            ),
-            max_hold_bars=int(getattr(self.strategy_params, "max_hold_bars", 0)),
-        )
-        if self.sell_decision_rule == "and":
-            if signal_exit and policy_decision.should_exit:
-                return policy_decision
-            return ExitDecision(should_exit=False)
-
-        if policy_decision.should_exit:
-            return policy_decision
-        return ExitDecision(should_exit=False)
-
-
-    def _is_reentry_cooldown_active(self, state: BacktestPositionState, bar_index: int) -> bool:
+    def _is_reentry_cooldown_active(
+        self, state: BacktestPositionState, bar_index: int
+    ) -> bool:
         cooldown_bars = max(0, int(self.config.reentry_cooldown_bars))
         if cooldown_bars <= 0 or state.last_exit_bar_index < 0:
             return False
 
-        if self.config.cooldown_on_loss_exits_only and state.last_exit_reason not in {"trailing_stop", "stop_loss"}:
+        if self.config.cooldown_on_loss_exits_only and state.last_exit_reason not in {
+            "trailing_stop",
+            "stop_loss",
+        }:
             return False
 
         elapsed_bars = max(0, bar_index - state.last_exit_bar_index)
         return elapsed_bars < cooldown_bars
 
-
-    def _latest_atr(self, candles_newest: list[dict], period: int) -> float:
+    def _latest_atr(self, candles_newest: list[Candle], period: int) -> float:
         if period <= 0:
             return 0.0
         candles = list(reversed(candles_newest))
@@ -587,20 +896,23 @@ class BacktestRunner:
         trs: list[float] = []
         for i in range(1, len(candles)):
             cur, prev = candles[i], candles[i - 1]
-            high = float(cur.get("high_price", cur.get("trade_price", 0.0)))
-            low = float(cur.get("low_price", cur.get("trade_price", 0.0)))
-            prev_close = float(prev.get("trade_price", 0.0))
+            high = _as_float(cur.get("high_price", cur.get("trade_price", 0.0)))
+            low = _as_float(cur.get("low_price", cur.get("trade_price", 0.0)))
+            prev_close = _as_float(prev.get("trade_price", 0.0))
             trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
         if not trs:
             return 0.0
         window = trs[-min(period, len(trs)) :]
         return sum(window) / len(window)
 
-    def _latest_swing_low(self, candles_newest: list[dict], lookback: int) -> float:
+    def _latest_swing_low(self, candles_newest: list[Candle], lookback: int) -> float:
         window = candles_newest[: max(1, lookback)]
         if not window:
             return 0.0
-        return min(float(candle.get("low_price", candle.get("trade_price", 0.0))) for candle in window)
+        return min(
+            _as_float(candle.get("low_price", candle.get("trade_price", 0.0)))
+            for candle in window
+        )
 
     def _target_count(self) -> int:
         base_count = self.buffer_cnt * self.multiple_cnt
@@ -610,14 +922,20 @@ class BacktestRunner:
         required_count = candles_per_day * self.lookback_days
         return max(base_count, required_count)
 
-    def _normalize_candle(self, candle: dict) -> dict:
-        normalized = dict(candle)
-        for key in ("opening_price", "high_price", "low_price", "trade_price", "candle_acc_trade_volume"):
+    def _normalize_candle(self, candle: Candle) -> Candle:
+        normalized: Candle = dict(candle)
+        for key in (
+            "opening_price",
+            "high_price",
+            "low_price",
+            "trade_price",
+            "candle_acc_trade_volume",
+        ):
             if key in normalized:
-                normalized[key] = float(normalized[key])
+                normalized[key] = _as_float(normalized[key])
         return normalized
 
-    def _fetch_chunk(self, to_dt: datetime.datetime | None) -> list[dict]:
+    def _fetch_chunk(self, to_dt: datetime.datetime | None) -> list[Candle]:
         to_arg = to_dt.strftime("%Y-%m-%d %H:%M:%S") if to_dt else None
         response = apis.get_candles(
             self.market,
@@ -625,10 +943,15 @@ class BacktestRunner:
             count=min(self.buffer_cnt, self.MAX_CANDLE_LIMIT),
             to=to_arg,
         )
-        return [self._normalize_candle(candle) for candle in response]
+        normalized_response = response or []
+        return [
+            self._normalize_candle(candle)
+            for candle in normalized_response
+            if isinstance(candle, dict)
+        ]
 
-    def _backfill_rest_chunks(self) -> list[dict]:
-        candles: list[dict] = []
+    def _backfill_rest_chunks(self) -> list[Candle]:
+        candles: list[Candle] = []
         seen_times: set[str] = set()
         cursor: datetime.datetime | None = None
         target_count = self._target_count()
@@ -648,14 +971,18 @@ class BacktestRunner:
                 appended += 1
 
             oldest = chunk[-1]
-            oldest_ts = datetime.datetime.strptime(oldest["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
+            oldest_ts = datetime.datetime.strptime(
+                _as_str(oldest["candle_date_time_kst"]), "%Y-%m-%dT%H:%M:%S"
+            )
             cursor = oldest_ts - datetime.timedelta(minutes=self.config.candle_interval)
             if appended == 0:
                 break
 
         return candles[:target_count]
 
-    def _apply_shortage_policy(self, candles_newest: list[dict]) -> tuple[list[dict], int]:
+    def _apply_shortage_policy(
+        self, candles_newest: list[Candle]
+    ) -> tuple[list[Candle], int]:
         """When backfill is shorter than target, prepend synthetic missing candles using prior close."""
         target_count = self._target_count()
         if len(candles_newest) >= target_count or not candles_newest:
@@ -663,9 +990,11 @@ class BacktestRunner:
 
         short_cnt = target_count - len(candles_newest)
         last = candles_newest[-1]
-        last_time = datetime.datetime.strptime(last["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
-        close_price = float(last["trade_price"])
-        padding: list[dict] = []
+        last_time = datetime.datetime.strptime(
+            _as_str(last["candle_date_time_kst"]), "%Y-%m-%dT%H:%M:%S"
+        )
+        close_price = _as_float(last["trade_price"])
+        padding: list[Candle] = []
 
         for i in range(short_cnt, 0, -1):
             ts = last_time - datetime.timedelta(minutes=self.config.candle_interval * i)
@@ -684,19 +1013,24 @@ class BacktestRunner:
 
         return candles_newest + padding, short_cnt
 
-    def _filter_recent_days(self, candles_newest: list[dict]) -> list[dict]:
+    def _filter_recent_days(self, candles_newest: list[Candle]) -> list[Candle]:
         if self.lookback_days is None or not candles_newest:
             return candles_newest
-        newest_time = datetime.datetime.strptime(candles_newest[0]["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
+        newest_time = datetime.datetime.strptime(
+            _as_str(candles_newest[0]["candle_date_time_kst"]), "%Y-%m-%dT%H:%M:%S"
+        )
         threshold = newest_time - datetime.timedelta(days=self.lookback_days)
         filtered = [
             candle
             for candle in candles_newest
-            if datetime.datetime.strptime(candle["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S") >= threshold
+            if datetime.datetime.strptime(
+                _as_str(candle["candle_date_time_kst"]), "%Y-%m-%dT%H:%M:%S"
+            )
+            >= threshold
         ]
         return filtered or candles_newest
 
-    def _load_or_create_data(self) -> tuple[list[dict], int]:
+    def _load_or_create_data(self) -> tuple[list[Candle], int]:
         if not os.path.exists(self.path):
             print("make back data excel file : ", self.path)
             candles = self._backfill_rest_chunks()
@@ -706,28 +1040,42 @@ class BacktestRunner:
 
         candles_df = pd.read_excel(self.path, sheet_name="Sheet1")
         candles_df.drop(candles_df.columns[0], axis=1, inplace=True)
-        records = [self._normalize_candle(rec) for rec in list(candles_df.T.to_dict().values())]
+        records = [
+            self._normalize_candle(rec) for rec in list(candles_df.T.to_dict().values())
+        ]
         processed = preprocess_candles(records, source_order="newest")
         return self._apply_shortage_policy(processed)
 
-    def _mark_to_market(self, cash: float, hold_coin: float, current_price: float) -> float:
-        exit_multiplier = 1 - self.config.fee_rate - (self.spread_rate / 2) - self.slippage_rate
+    def _mark_to_market(
+        self, cash: float, hold_coin: float, current_price: float
+    ) -> float:
+        exit_multiplier = (
+            1 - self.config.fee_rate - (self.spread_rate / 2) - self.slippage_rate
+        )
         return cash + hold_coin * current_price * max(exit_multiplier, 0.0)
 
-    def _resample_candles(self, candles_newest: list[dict], timeframe_minutes: int) -> list[dict]:
+    def _resample_candles(
+        self, candles_newest: list[Candle], timeframe_minutes: int
+    ) -> list[Candle]:
         if timeframe_minutes <= 1:
             return [dict(candle) for candle in candles_newest]
         if not candles_newest:
             return []
 
         candles_oldest = list(reversed(candles_newest))
-        bucketed: list[dict] = []
-        current_bucket: dict | None = None
+        bucketed: list[Candle] = []
+        current_bucket: Candle | None = None
         current_bucket_ts: datetime.datetime | None = None
 
         for candle in candles_oldest:
-            ts = datetime.datetime.strptime(candle["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
-            bucket_ts = ts.replace(minute=(ts.minute // timeframe_minutes) * timeframe_minutes, second=0, microsecond=0)
+            ts = datetime.datetime.strptime(
+                _as_str(candle["candle_date_time_kst"]), "%Y-%m-%dT%H:%M:%S"
+            )
+            bucket_ts = ts.replace(
+                minute=(ts.minute // timeframe_minutes) * timeframe_minutes,
+                second=0,
+                microsecond=0,
+            )
 
             if current_bucket is None or current_bucket_ts != bucket_ts:
                 if current_bucket is not None:
@@ -736,33 +1084,47 @@ class BacktestRunner:
                 current_bucket = {
                     "market": candle.get("market", self.market),
                     "candle_date_time_kst": bucket_ts.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "opening_price": float(candle["opening_price"]),
-                    "high_price": float(candle["high_price"]),
-                    "low_price": float(candle["low_price"]),
-                    "trade_price": float(candle["trade_price"]),
-                    "candle_acc_trade_volume": float(candle.get("candle_acc_trade_volume", 0.0)),
+                    "opening_price": _as_float(candle["opening_price"]),
+                    "high_price": _as_float(candle["high_price"]),
+                    "low_price": _as_float(candle["low_price"]),
+                    "trade_price": _as_float(candle["trade_price"]),
+                    "candle_acc_trade_volume": _as_float(
+                        candle.get("candle_acc_trade_volume", 0.0)
+                    ),
                 }
                 continue
 
             # Explicit OHLCV resampling rules per timeframe bucket.
-            current_bucket["high_price"] = max(float(current_bucket["high_price"]), float(candle["high_price"]))
-            current_bucket["low_price"] = min(float(current_bucket["low_price"]), float(candle["low_price"]))
-            current_bucket["trade_price"] = float(candle["trade_price"])
-            current_bucket["candle_acc_trade_volume"] = float(current_bucket["candle_acc_trade_volume"]) + float(
-                candle.get("candle_acc_trade_volume", 0.0)
+            current_bucket["high_price"] = max(
+                _as_float(current_bucket["high_price"]), _as_float(candle["high_price"])
             )
+            current_bucket["low_price"] = min(
+                _as_float(current_bucket["low_price"]), _as_float(candle["low_price"])
+            )
+            current_bucket["trade_price"] = _as_float(candle["trade_price"])
+            current_bucket["candle_acc_trade_volume"] = _as_float(
+                current_bucket["candle_acc_trade_volume"]
+            ) + _as_float(candle.get("candle_acc_trade_volume", 0.0))
 
         if current_bucket is not None:
             bucketed.append(current_bucket)
 
         return list(reversed(bucketed))
 
-    def _build_mtf_candles(self, candles_newest: list[dict]) -> dict[str, list[dict]]:
+    def _build_mtf_candles(
+        self, candles_newest: list[Candle]
+    ) -> dict[str, list[Candle]]:
         base = [dict(candle) for candle in candles_newest]
         return {
-            "1m": self._resample_candles(base, timeframe_minutes=self.mtf_timeframes["1m"]),
-            "5m": self._resample_candles(base, timeframe_minutes=self.mtf_timeframes["5m"]),
-            "15m": self._resample_candles(base, timeframe_minutes=self.mtf_timeframes["15m"]),
+            "1m": self._resample_candles(
+                base, timeframe_minutes=self.mtf_timeframes["1m"]
+            ),
+            "5m": self._resample_candles(
+                base, timeframe_minutes=self.mtf_timeframes["5m"]
+            ),
+            "15m": self._resample_candles(
+                base, timeframe_minutes=self.mtf_timeframes["15m"]
+            ),
         }
 
     def _calc_metrics(
@@ -782,7 +1144,9 @@ class BacktestRunner:
         return_per_trade = period_return / trades if trades > 0 else 0.0
 
         periods_per_year = (60 * 24 * 365) / self.config.candle_interval
-        observed_days = max(len(equity_curve) - 1, 0) * self.config.candle_interval / (60 * 24)
+        observed_days = (
+            max(len(equity_curve) - 1, 0) * self.config.candle_interval / (60 * 24)
+        )
         years = max(len(equity_curve) / periods_per_year, 1e-9)
         cagr_valid = observed_days >= self.MIN_CAGR_OBSERVATION_DAYS
         cagr = float("nan")
@@ -816,11 +1180,24 @@ class BacktestRunner:
         _ = attempted_entries
         _ = triggered_entries
         fill_rate = trades / candidate_entries if candidate_entries > 0 else 0.0
-        return period_return, return_per_trade, cagr, abs(mdd) * 100, sharpe, fill_rate, cagr_valid, observed_days
+        return (
+            period_return,
+            return_per_trade,
+            cagr,
+            abs(mdd) * 100,
+            sharpe,
+            fill_rate,
+            cagr_valid,
+            observed_days,
+        )
 
     def _build_fail_summary(self, fail_counts: dict[str, int]) -> dict[str, int | str]:
         counters = Counter(fail_counts)
-        regime_fail_total = sum(count for code, count in counters.items() if str(code).startswith("regime_filter_fail"))
+        regime_fail_total = sum(
+            count
+            for code, count in counters.items()
+            if str(code).startswith("regime_filter_fail")
+        )
         return {
             "fail_insufficient_candles": int(counters.get("insufficient_candles", 0)),
             "fail_no_selected_zone": int(counters.get("no_selected_zone", 0)),
@@ -828,10 +1205,14 @@ class BacktestRunner:
             "fail_invalid_timeframe": int(counters.get("invalid_timeframe", 0)),
             "fail_regime_filter_fail": int(regime_fail_total),
             "fail_reentry_cooldown": int(counters.get("fail_reentry_cooldown", 0)),
-            "dominant_fail_code": max(counters, key=counters.get) if counters else "none",
+            "dominant_fail_code": str(counters.most_common(1)[0][0])
+            if counters
+            else "none",
         }
 
-    def _calc_trade_stats(self, ledger: list[TradeLedgerEntry]) -> tuple[float, float, float, float, float]:
+    def _calc_trade_stats(
+        self, ledger: list[TradeLedgerEntry]
+    ) -> tuple[float, float, float, float, float]:
         if not ledger:
             return 0.0, 0.0, 0.0, 0.0, 0.0
         pnls = [entry.pnl for entry in ledger]
@@ -844,7 +1225,9 @@ class BacktestRunner:
         expectancy = sum(pnls) / len(pnls)
         return win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy
 
-    def _run_segment(self, data_newest: list[dict], init_amount: float, segment_id: int) -> SegmentResult:
+    def _run_segment(
+        self, data_newest: list[Candle], init_amount: float, segment_id: int
+    ) -> SegmentResult:
         amount = init_amount
         hold_coin = 0.0
         attempted_entries = 0
@@ -873,23 +1256,22 @@ class BacktestRunner:
         segment_floor = 0
 
         max_current_index = max(len(data_newest) - self.buffer_cnt, segment_floor)
-        for bar_index, current_index in enumerate(range(max_current_index, segment_floor - 1, -1)):
+        for bar_index, current_index in enumerate(
+            range(max_current_index, segment_floor - 1, -1)
+        ):
             end = min(len(data_newest), current_index + required_window_size)
             start = max(current_index, segment_floor)
             test_data = data_newest[start:end]
-            current_price = float(test_data[0]["trade_price"])
+            current_price = _as_float(test_data[0]["trade_price"])
             mtf_data = self._build_mtf_candles(test_data)
             current_atr = self._latest_atr(test_data, self.config.atr_period)
             swing_low = self._latest_swing_low(test_data, self.config.swing_lookback)
 
             if hold_coin == 0:
-                strategy_name = str(getattr(self.strategy_params, "strategy_name", "")).lower().strip()
-                entry_eval = evaluate_long_entry(mtf_data, self.strategy_params) if strategy_name == "rsi_bb_reversal_long" else None
-                if entry_eval is not None:
-                    entry_scores.append(float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0))
-
                 debug = debug_entry(mtf_data, self.strategy_params, side="buy")
-                zones_total, zones_active, has_candidate_entry = zone_debug_metrics(debug)
+                zones_total, zones_active, has_candidate_entry = zone_debug_metrics(
+                    debug
+                )
                 if has_candidate_entry:
                     candidate_entries += 1
                     attempted_entries += 1
@@ -899,12 +1281,30 @@ class BacktestRunner:
                     zones_total_sum += zones_total
                     zones_active_sum += zones_active
 
-                if self.debug_mode:
-                    buy_signal = bool(debug.get("final_pass", False))
-                else:
-                    buy_signal = check_buy(mtf_data, self.strategy_params)
+                realized_pnl_today = amount - init_amount
+                entry_intent = evaluate_market(
+                    self._build_entry_decision_context(
+                        data=mtf_data,
+                        price=current_price,
+                        current_atr=current_atr,
+                        swing_low=swing_low,
+                        available_krw=amount,
+                        baseline_equity=init_amount,
+                        realized_pnl_today=realized_pnl_today,
+                    ),
+                    strategy_params=self.strategy_params,
+                    order_policy=self.order_policy,
+                )
+                entry_diagnostics = _snapshot_state(entry_intent.diagnostics)
+                entry_scores.append(
+                    _as_float(entry_diagnostics.get("entry_score", 0.0))
+                )
 
-                blocked_by_cooldown = buy_signal and self._is_reentry_cooldown_active(position_state, bar_index)
+                buy_signal = entry_intent.action == "enter"
+
+                blocked_by_cooldown = buy_signal and self._is_reentry_cooldown_active(
+                    position_state, bar_index
+                )
                 if blocked_by_cooldown:
                     buy_signal = False
                     entry_fail_counts["fail_reentry_cooldown"] += 1
@@ -912,53 +1312,70 @@ class BacktestRunner:
                 if not buy_signal and debug and not blocked_by_cooldown:
                     fail_code = str(debug.get("fail_code", "unknown"))
                     if fail_code == "regime_filter_fail":
-                        regime_reason = str(debug.get("regime_filter_reason", "unknown"))
+                        regime_reason = str(
+                            debug.get("regime_filter_reason", "unknown")
+                        )
                         fail_code = f"regime_filter_fail:{regime_reason}"
                     entry_fail_counts[fail_code] += 1
 
                 if buy_signal:
                     triggered_entries += 1
                     entries += 1
-                    quality_score = float(entry_eval.diagnostics.get("quality_score", 0.0) or 0.0) if entry_eval else 0.0
-                    if quality_score >= float(self.config.quality_score_high_threshold):
-                        quality_bucket = "high"
-                        quality_multiplier = float(self.config.quality_multiplier_high)
-                    elif quality_score >= float(self.config.quality_score_low_threshold):
-                        quality_bucket = "mid"
-                        quality_multiplier = float(self.config.quality_multiplier_mid)
-                    else:
-                        quality_bucket = "low"
-                        quality_multiplier = float(self.config.quality_multiplier_low)
-                    quality_multiplier = min(float(self.config.quality_multiplier_max_bound), max(float(self.config.quality_multiplier_min_bound), quality_multiplier))
-                    base_entry_amount = amount * 0.8
-                    pre_entry_amount = min(amount, base_entry_amount * quality_multiplier)
-                    entry_price = current_price * (1 + (self.spread_rate / 2) + self.slippage_rate)
-                    hold_coin += (pre_entry_amount * (1 - self.config.fee_rate)) / entry_price
-                    position_state.avg_buy_price = entry_price
-                    initial_stop_price = entry_price * self.config.stop_loss_threshold
-                    risk_per_unit = max(entry_price - initial_stop_price, 0.0)
-                    position_state.exit_state = PositionExitState(
-                        peak_price=current_price,
-                        entry_atr=current_atr,
-                        entry_swing_low=swing_low,
-                        entry_price=entry_price,
-                        initial_stop_price=initial_stop_price,
-                        risk_per_unit=risk_per_unit,
-                        entry_regime=self._resolve_entry_regime(mtf_data, self.strategy_params),
+                    sizing = _snapshot_state(entry_diagnostics.get("sizing", {}))
+                    quality_score = _as_float(
+                        entry_diagnostics.get("quality_score", 0.0)
                     )
+                    quality_bucket = _as_str(
+                        entry_diagnostics.get("quality_bucket", "low"), "low"
+                    )
+                    quality_multiplier = _as_float(
+                        entry_diagnostics.get("quality_multiplier", 0.0)
+                    )
+                    base_entry_amount = _as_float(sizing.get("base_order_krw", 0.0))
+                    pre_entry_amount = min(
+                        amount, _as_float(sizing.get("final_order_krw", 0.0))
+                    )
+                    if pre_entry_amount <= 0:
+                        equity_curve.append(
+                            self._mark_to_market(amount, hold_coin, current_price)
+                        )
+                        continue
+                    entry_price = current_price * (
+                        1 + (self.spread_rate / 2) + self.slippage_rate
+                    )
+                    hold_coin += (
+                        pre_entry_amount * (1 - self.config.fee_rate)
+                    ) / entry_price
+                    position_state.avg_buy_price = entry_price
+                    position_state.exit_state = load_position_exit_state(
+                        _snapshot_state(entry_intent.next_position_state)
+                    )
+                    risk_per_unit = float(position_state.exit_state.risk_per_unit)
                     active_trade = {
                         "entry_price": entry_price,
+                        "entry_quantity": hold_coin,
                         "entry_time": str(test_data[0]["candle_date_time_kst"]),
                         "invested_cash": pre_entry_amount,
                         "entry_fee": pre_entry_amount * self.config.fee_rate,
-                        "entry_score": float(entry_eval.diagnostics.get("entry_score", 0.0) or 0.0) if entry_eval else 0.0,
+                        "entry_score": _as_float(
+                            entry_diagnostics.get("entry_score", 0.0)
+                        ),
                         "quality_score": quality_score,
                         "quality_bucket": quality_bucket,
                         "quality_multiplier": quality_multiplier,
-                        "entry_regime": str(position_state.exit_state.entry_regime or "unknown"),
-                        "stop_mode_long": str(entry_eval.diagnostics.get("stop_mode_long", "unknown") or "unknown") if entry_eval else "unknown",
-                        "entry_stop_price": float(entry_eval.diagnostics.get("stop_price", 0.0) or 0.0) if entry_eval else 0.0,
-                        "entry_swing_low": float(entry_eval.diagnostics.get("entry_swing_low", 0.0) or 0.0) if entry_eval else 0.0,
+                        "entry_regime": str(
+                            position_state.exit_state.entry_regime or "unknown"
+                        ),
+                        "stop_mode_long": _as_str(
+                            entry_diagnostics.get("stop_mode_long", "unknown"),
+                            "unknown",
+                        ),
+                        "entry_stop_price": _as_float(
+                            entry_diagnostics.get("stop_price", 0.0)
+                        ),
+                        "entry_swing_low": _as_float(
+                            entry_diagnostics.get("entry_swing_low", 0.0)
+                        ),
                         "entry_atr": float(current_atr),
                         "sold_qty": 0.0,
                         "gross_exit_notional": 0.0,
@@ -973,7 +1390,9 @@ class BacktestRunner:
                                 "entry_score": float(active_trade["entry_score"]),
                                 "quality_score": float(active_trade["quality_score"]),
                                 "quality_bucket": str(active_trade["quality_bucket"]),
-                                "quality_multiplier": float(active_trade["quality_multiplier"]),
+                                "quality_multiplier": float(
+                                    active_trade["quality_multiplier"]
+                                ),
                                 "entry_regime": str(active_trade["entry_regime"]),
                                 "sizing": {
                                     "base_order_krw": int(base_entry_amount),
@@ -988,106 +1407,299 @@ class BacktestRunner:
                     )
                     amount = max(0.0, amount - pre_entry_amount)
             else:
-                position_state.exit_state.bars_held = max(0, int(position_state.exit_state.bars_held)) + 1
-                signal_exit = check_sell(
-                    mtf_data,
-                    avg_buy_price=position_state.avg_buy_price,
-                    params=self.strategy_params,
-                    entry_price=position_state.exit_state.entry_price,
-                    initial_stop_price=position_state.exit_state.initial_stop_price,
-                    risk_per_unit=position_state.exit_state.risk_per_unit,
+                state_payload = dict(vars(position_state.exit_state))
+                exit_intent = evaluate_market(
+                    self._build_exit_decision_context(
+                        data=mtf_data,
+                        price=current_price,
+                        current_atr=current_atr,
+                        swing_low=swing_low,
+                        quantity=hold_coin,
+                        entry_price=position_state.avg_buy_price,
+                        state_payload=state_payload,
+                        available_krw=amount,
+                    ),
+                    strategy_params=self.strategy_params,
+                    order_policy=self.order_policy,
                 )
-                decision = self._resolve_exit_decision(
-                    state=position_state,
-                    current_price=current_price,
-                    signal_exit=signal_exit,
-                    current_atr=current_atr,
-                    swing_low=swing_low,
-                )
-                if decision.should_exit:
-                    qty_ratio = min(1.0, max(0.0, float(decision.qty_ratio)))
+                exit_diagnostics = _snapshot_state(exit_intent.diagnostics)
+                if exit_intent.action in {"exit_full", "exit_partial"}:
+                    qty_ratio = self._intent_qty_ratio(exit_intent)
                     if qty_ratio <= 0:
                         continue
-                    exit_price = current_price * (1 - (self.spread_rate / 2) - self.slippage_rate)
+                    exit_price = current_price * (
+                        1 - (self.spread_rate / 2) - self.slippage_rate
+                    )
                     sell_qty = hold_coin * qty_ratio
                     gross_notional = sell_qty * exit_price
                     exit_fee = gross_notional * self.config.fee_rate
                     amount += gross_notional - exit_fee
                     hold_coin = max(0.0, hold_coin - sell_qty)
                     if active_trade is not None:
-                        active_trade["sold_qty"] = float(active_trade["sold_qty"]) + sell_qty
-                        active_trade["gross_exit_notional"] = float(active_trade["gross_exit_notional"]) + gross_notional
-                        active_trade["exit_fee"] = float(active_trade["exit_fee"]) + exit_fee
-                        active_trade["net_exit_cash"] = float(active_trade["net_exit_cash"]) + (gross_notional - exit_fee)
-                    normalized_reason = str(decision.reason)
+                        active_trade["sold_qty"] = (
+                            float(active_trade["sold_qty"]) + sell_qty
+                        )
+                        active_trade["gross_exit_notional"] = (
+                            float(active_trade["gross_exit_notional"]) + gross_notional
+                        )
+                        active_trade["exit_fee"] = (
+                            float(active_trade["exit_fee"]) + exit_fee
+                        )
+                        active_trade["net_exit_cash"] = float(
+                            active_trade["net_exit_cash"]
+                        ) + (gross_notional - exit_fee)
+                    normalized_reason = str(exit_intent.reason)
                     exit_reason_counts[normalized_reason] += 1
+                    stop_diag: dict[str, float | int | str] = {}
                     if normalized_reason in self.STOP_EXIT_REASONS:
                         stop_diag = {
                             "segment_id": int(segment_id),
                             "reason": normalized_reason,
-                            "exit_stage": str(decision.diagnostics.get("exit_stage", "unknown")),
-                            "hard_stop_price": float(decision.diagnostics.get("hard_stop_price", 0.0) or 0.0),
-                            "entry_price": float(decision.diagnostics.get("entry_price", 0.0) or 0.0),
-                            "risk_per_unit": float(decision.diagnostics.get("risk_per_unit", 0.0) or 0.0),
-                            "atr_to_risk": float(decision.diagnostics.get("atr_to_risk", 0.0) or 0.0),
-                            "bars_held": int(float(decision.diagnostics.get("bars_held", 0.0) or 0.0)),
-                            "highest_r": float(decision.diagnostics.get("highest_r", 0.0) or 0.0),
+                            "exit_stage": _as_str(
+                                exit_diagnostics.get("exit_stage", "unknown"),
+                                "unknown",
+                            ),
+                            "hard_stop_price": _as_float(
+                                exit_diagnostics.get("hard_stop_price", 0.0)
+                            ),
+                            "entry_price": _as_float(
+                                exit_diagnostics.get("entry_price", 0.0)
+                            ),
+                            "risk_per_unit": _as_float(
+                                exit_diagnostics.get("risk_per_unit", 0.0)
+                            ),
+                            "atr_to_risk": _as_float(
+                                exit_diagnostics.get("atr_to_risk", 0.0)
+                            ),
+                            "bars_held": int(
+                                _as_float(exit_diagnostics.get("bars_held", 0.0))
+                            ),
+                            "highest_r": _as_float(
+                                exit_diagnostics.get("highest_r", 0.0)
+                            ),
                             "price_at_exit": float(current_price),
-                            "stop_mode_long": str(active_trade.get("stop_mode_long", "unknown") if active_trade else "unknown"),
-                            "entry_swing_low": float(active_trade.get("entry_swing_low", 0.0) if active_trade else 0.0),
-                            "entry_atr": float(active_trade.get("entry_atr", 0.0) if active_trade else 0.0),
-                            "entry_stop_price": float(active_trade.get("entry_stop_price", 0.0) if active_trade else 0.0),
-                            "stop_gap_from_entry": float((decision.diagnostics.get("hard_stop_price", 0.0) or 0.0) - float(active_trade.get("entry_stop_price", 0.0) if active_trade else 0.0)),
+                            "stop_mode_long": str(
+                                active_trade.get("stop_mode_long", "unknown")
+                                if active_trade
+                                else "unknown"
+                            ),
+                            "entry_swing_low": _as_float(
+                                active_trade.get("entry_swing_low", 0.0)
+                                if active_trade
+                                else 0.0
+                            ),
+                            "entry_atr": _as_float(
+                                active_trade.get("entry_atr", 0.0)
+                                if active_trade
+                                else 0.0
+                            ),
+                            "entry_stop_price": _as_float(
+                                active_trade.get("entry_stop_price", 0.0)
+                                if active_trade
+                                else 0.0
+                            ),
+                            "stop_gap_from_entry": float(
+                                (
+                                    _as_float(
+                                        exit_diagnostics.get("hard_stop_price", 0.0)
+                                    )
+                                )
+                                - _as_float(
+                                    active_trade.get("entry_stop_price", 0.0)
+                                    if active_trade
+                                    else 0.0
+                                )
+                            ),
                             "stop_gap_from_entry_r": float(
-                                ((decision.diagnostics.get("hard_stop_price", 0.0) or 0.0) - float(active_trade.get("entry_stop_price", 0.0) if active_trade else 0.0))
-                                / max(float(decision.diagnostics.get("risk_per_unit", 0.0) or 0.0), 1e-9)
+                                (
+                                    _as_float(
+                                        exit_diagnostics.get("hard_stop_price", 0.0)
+                                    )
+                                    - _as_float(
+                                        active_trade.get("entry_stop_price", 0.0)
+                                        if active_trade
+                                        else 0.0
+                                    )
+                                )
+                                / max(
+                                    _as_float(
+                                        exit_diagnostics.get("risk_per_unit", 0.0)
+                                    ),
+                                    1e-9,
+                                )
                             ),
                             "structure_ignore_case": self._classify_structure_ignore_case(
-                                stop_mode_long=str(active_trade.get("stop_mode_long", "unknown") if active_trade else "unknown"),
-                                entry_stop_price=float(active_trade.get("entry_stop_price", 0.0) if active_trade else 0.0),
-                                entry_swing_low=float(active_trade.get("entry_swing_low", 0.0) if active_trade else 0.0),
-                                hard_stop_price=float(decision.diagnostics.get("hard_stop_price", 0.0) or 0.0),
-                                entry_price=float(decision.diagnostics.get("entry_price", 0.0) or 0.0),
-                                risk_per_unit=float(decision.diagnostics.get("risk_per_unit", 0.0) or 0.0),
+                                stop_mode_long=str(
+                                    active_trade.get("stop_mode_long", "unknown")
+                                    if active_trade
+                                    else "unknown"
+                                ),
+                                entry_stop_price=_as_float(
+                                    active_trade.get("entry_stop_price", 0.0)
+                                    if active_trade
+                                    else 0.0
+                                ),
+                                entry_swing_low=_as_float(
+                                    active_trade.get("entry_swing_low", 0.0)
+                                    if active_trade
+                                    else 0.0
+                                ),
+                                hard_stop_price=_as_float(
+                                    exit_diagnostics.get("hard_stop_price", 0.0)
+                                ),
+                                entry_price=_as_float(
+                                    exit_diagnostics.get("entry_price", 0.0)
+                                ),
+                                risk_per_unit=_as_float(
+                                    exit_diagnostics.get("risk_per_unit", 0.0)
+                                ),
                             ),
                         }
                         self.stop_event_rows.append(stop_diag)
+                    next_exit_state = load_position_exit_state(
+                        _snapshot_state(exit_intent.next_position_state)
+                        or state_payload
+                    )
+                    if hold_coin > 0:
+                        position_state.exit_state = next_exit_state
                     if hold_coin <= 0:
-                        completed_exit_state = position_state.exit_state
+                        completed_exit_state = PositionExitState(
+                            peak_price=_as_float(state_payload.get("peak_price", 0.0)),
+                            partial_take_profit_done=bool(
+                                state_payload.get("partial_take_profit_done", False)
+                            ),
+                            entry_atr=_as_float(state_payload.get("entry_atr", 0.0)),
+                            entry_swing_low=_as_float(
+                                state_payload.get("entry_swing_low", 0.0)
+                            ),
+                            entry_price=_as_float(
+                                state_payload.get("entry_price", 0.0)
+                            ),
+                            initial_stop_price=_as_float(
+                                state_payload.get("initial_stop_price", 0.0)
+                            ),
+                            risk_per_unit=_as_float(
+                                exit_diagnostics.get(
+                                    "risk_per_unit",
+                                    state_payload.get("risk_per_unit", 0.0),
+                                )
+                            ),
+                            bars_held=int(
+                                _as_float(
+                                    exit_diagnostics.get(
+                                        "bars_held", state_payload.get("bars_held", 0.0)
+                                    )
+                                )
+                            ),
+                            strategy_partial_done=bool(
+                                state_payload.get("strategy_partial_done", False)
+                            ),
+                            breakeven_armed=bool(
+                                state_payload.get("breakeven_armed", False)
+                            ),
+                            entry_regime=_as_str(
+                                state_payload.get("entry_regime", "unknown"),
+                                "unknown",
+                            ),
+                            highest_r=_as_float(
+                                exit_diagnostics.get(
+                                    "highest_r", state_payload.get("highest_r", 0.0)
+                                )
+                            ),
+                            lowest_r=_as_float(
+                                exit_diagnostics.get(
+                                    "lowest_r", state_payload.get("lowest_r", 0.0)
+                                )
+                            ),
+                            drawdown_from_peak_r=_as_float(
+                                exit_diagnostics.get(
+                                    "drawdown_from_peak_r",
+                                    state_payload.get("drawdown_from_peak_r", 0.0),
+                                )
+                            ),
+                        )
                         hold_coin = 0.0
-                        position_state.last_exit_at = test_data[0]["candle_date_time_kst"]
+                        position_state.last_exit_at = _as_str(
+                            test_data[0]["candle_date_time_kst"]
+                        )
                         position_state.last_exit_reason = normalized_reason
                         position_state.last_exit_bar_index = bar_index
                         position_state.avg_buy_price = 0.0
                         position_state.exit_state = PositionExitState()
-                        if active_trade is not None and float(active_trade["sold_qty"]) > 0:
+                        if (
+                            active_trade is not None
+                            and float(active_trade["sold_qty"]) > 0
+                        ):
                             closed_trades += 1
-                            entry_time = datetime.datetime.strptime(str(active_trade["entry_time"]), "%Y-%m-%dT%H:%M:%S")
-                            exit_time = datetime.datetime.strptime(test_data[0]["candle_date_time_kst"], "%Y-%m-%dT%H:%M:%S")
-                            holding_minutes = max(0.0, (exit_time - entry_time).total_seconds() / 60)
-                            avg_exit_price = float(active_trade["gross_exit_notional"]) / float(active_trade["sold_qty"])
-                            pnl = float(active_trade["net_exit_cash"]) - float(active_trade["invested_cash"])
-                            risk_amount = float(active_trade["invested_cash"]) * max(self.config.stop_loss_threshold, 1e-9)
-                            r_multiple = pnl / risk_amount if risk_amount > 0 else 0.0
+                            entry_time = datetime.datetime.strptime(
+                                str(active_trade["entry_time"]), "%Y-%m-%dT%H:%M:%S"
+                            )
+                            exit_time = datetime.datetime.strptime(
+                                _as_str(test_data[0]["candle_date_time_kst"]),
+                                "%Y-%m-%dT%H:%M:%S",
+                            )
+                            holding_minutes = max(
+                                0.0, (exit_time - entry_time).total_seconds() / 60
+                            )
+                            avg_exit_price = float(
+                                active_trade["gross_exit_notional"]
+                            ) / float(active_trade["sold_qty"])
+                            pnl = float(active_trade["net_exit_cash"]) - float(
+                                active_trade["invested_cash"]
+                            )
+                            risk_amount = max(
+                                float(active_trade.get("entry_quantity", 0.0))
+                                * max(float(completed_exit_state.risk_per_unit), 0.0),
+                                1e-9,
+                            )
+                            r_multiple = pnl / risk_amount
                             trade_ledger.append(
                                 TradeLedgerEntry(
                                     entry_price=float(active_trade["entry_price"]),
                                     exit_price=float(avg_exit_price),
-                                    fee=float(active_trade["entry_fee"]) + float(active_trade["exit_fee"]),
+                                    fee=float(active_trade["entry_fee"])
+                                    + float(active_trade["exit_fee"]),
                                     pnl=float(pnl),
                                     r_multiple=float(r_multiple),
                                     reason=normalized_reason,
                                     holding_minutes=float(holding_minutes),
-                                    entry_regime=str(active_trade.get("entry_regime", "unknown") or "unknown"),
-                                    entry_score=float(active_trade.get("entry_score", 0.0) or 0.0),
+                                    entry_regime=str(
+                                        active_trade.get("entry_regime", "unknown")
+                                        or "unknown"
+                                    ),
+                                    entry_score=float(
+                                        active_trade.get("entry_score", 0.0) or 0.0
+                                    ),
                                     mfe_r=float(completed_exit_state.highest_r),
-                                    mae_r=abs(min(0.0, float(completed_exit_state.lowest_r))),
-                                    fee_estimate_krw=float(active_trade["entry_fee"]) + float(active_trade["exit_fee"]),
-                                    slippage_estimate_krw=float(active_trade["invested_cash"]) * self.slippage_rate,
-                                    exit_bars_held=max(0, int(completed_exit_state.bars_held)),
-                                    stop_gap_from_entry=float(stop_diag.get("stop_gap_from_entry", 0.0) if normalized_reason in self.STOP_EXIT_REASONS else 0.0),
-                                    stop_gap_from_entry_r=float(stop_diag.get("stop_gap_from_entry_r", 0.0) if normalized_reason in self.STOP_EXIT_REASONS else 0.0),
-                                    structure_ignore_case=str(stop_diag.get("structure_ignore_case", "not_applicable") if normalized_reason in self.STOP_EXIT_REASONS else "not_applicable"),
+                                    mae_r=abs(
+                                        min(0.0, float(completed_exit_state.lowest_r))
+                                    ),
+                                    fee_estimate_krw=float(active_trade["entry_fee"])
+                                    + float(active_trade["exit_fee"]),
+                                    slippage_estimate_krw=float(
+                                        active_trade["invested_cash"]
+                                    )
+                                    * self.slippage_rate,
+                                    exit_bars_held=max(
+                                        0, int(completed_exit_state.bars_held)
+                                    ),
+                                    stop_gap_from_entry=float(
+                                        stop_diag.get("stop_gap_from_entry", 0.0)
+                                        if normalized_reason in self.STOP_EXIT_REASONS
+                                        else 0.0
+                                    ),
+                                    stop_gap_from_entry_r=float(
+                                        stop_diag.get("stop_gap_from_entry_r", 0.0)
+                                        if normalized_reason in self.STOP_EXIT_REASONS
+                                        else 0.0
+                                    ),
+                                    structure_ignore_case=str(
+                                        stop_diag.get(
+                                            "structure_ignore_case", "not_applicable"
+                                        )
+                                        if normalized_reason in self.STOP_EXIT_REASONS
+                                        else "not_applicable"
+                                    ),
                                 )
                             )
                             if normalized_reason in self.STOP_EXIT_REASONS:
@@ -1096,25 +1708,47 @@ class BacktestRunner:
                                         "segment_id": int(segment_id),
                                         "reason": normalized_reason,
                                         "pnl": float(pnl),
-                                        "stop_gap_from_entry": float(stop_diag.get("stop_gap_from_entry", 0.0)),
-                                        "stop_gap_from_entry_r": float(stop_diag.get("stop_gap_from_entry_r", 0.0)),
-                                        "structure_ignore_case": str(stop_diag.get("structure_ignore_case", "unknown")),
+                                        "stop_gap_from_entry": float(
+                                            stop_diag.get("stop_gap_from_entry", 0.0)
+                                        ),
+                                        "stop_gap_from_entry_r": float(
+                                            stop_diag.get("stop_gap_from_entry_r", 0.0)
+                                        ),
+                                        "structure_ignore_case": str(
+                                            stop_diag.get(
+                                                "structure_ignore_case", "unknown"
+                                            )
+                                        ),
                                     }
                                 )
                                 stop_recovery = self._calc_post_exit_recovery(
                                     data_newest=data_newest,
                                     exit_index=current_index,
                                     exit_price=float(avg_exit_price),
-                                    risk_per_unit=float(completed_exit_state.risk_per_unit),
+                                    risk_per_unit=float(
+                                        completed_exit_state.risk_per_unit
+                                    ),
                                 )
                                 self.stop_recovery_rows.append(
                                     {
                                         "segment_id": int(segment_id),
                                         "reason": normalized_reason,
-                                        "exit_stage": str(decision.diagnostics.get("exit_stage", "unknown") or "unknown"),
-                                        "entry_score": float(active_trade.get("entry_score", 0.0) or 0.0),
-                                        "entry_regime": str(active_trade.get("entry_regime", "unknown") or "unknown"),
-                                        "bars_held": max(0, int(completed_exit_state.bars_held)),
+                                        "exit_stage": str(
+                                            exit_diagnostics.get(
+                                                "exit_stage", "unknown"
+                                            )
+                                            or "unknown"
+                                        ),
+                                        "entry_score": float(
+                                            active_trade.get("entry_score", 0.0) or 0.0
+                                        ),
+                                        "entry_regime": str(
+                                            active_trade.get("entry_regime", "unknown")
+                                            or "unknown"
+                                        ),
+                                        "bars_held": max(
+                                            0, int(completed_exit_state.bars_held)
+                                        ),
                                         "realized_r": float(r_multiple),
                                         **stop_recovery,
                                     }
@@ -1126,55 +1760,121 @@ class BacktestRunner:
                                         "market": self.market,
                                         "exit_reason": normalized_reason,
                                         "reason": normalized_reason,
-                                        "exit_stage": str(decision.diagnostics.get("exit_stage", "unknown") or "unknown"),
-                                        "bars_held_at_exit": max(0, int(completed_exit_state.bars_held)),
+                                        "exit_stage": str(
+                                            exit_diagnostics.get(
+                                                "exit_stage", "unknown"
+                                            )
+                                            or "unknown"
+                                        ),
+                                        "bars_held_at_exit": max(
+                                            0, int(completed_exit_state.bars_held)
+                                        ),
                                         "holding_minutes": float(holding_minutes),
                                         "mfe_r": float(completed_exit_state.highest_r),
-                                        "mae_r": abs(min(0.0, float(completed_exit_state.lowest_r))),
+                                        "mae_r": abs(
+                                            min(
+                                                0.0,
+                                                float(completed_exit_state.lowest_r),
+                                            )
+                                        ),
                                         "realized_r": float(r_multiple),
-                                        "fee_estimate_krw": float(active_trade["entry_fee"]) + float(active_trade["exit_fee"]),
-                                        "slippage_estimate_krw": float(active_trade["invested_cash"]) * self.slippage_rate,
-                                        "entry_score": float(active_trade.get("entry_score", 0.0) or 0.0),
-                                        "entry_regime": str(active_trade.get("entry_regime", "unknown") or "unknown"),
+                                        "fee_estimate_krw": float(
+                                            active_trade["entry_fee"]
+                                        )
+                                        + float(active_trade["exit_fee"]),
+                                        "slippage_estimate_krw": float(
+                                            active_trade["invested_cash"]
+                                        )
+                                        * self.slippage_rate,
+                                        "entry_score": float(
+                                            active_trade.get("entry_score", 0.0) or 0.0
+                                        ),
+                                        "entry_regime": str(
+                                            active_trade.get("entry_regime", "unknown")
+                                            or "unknown"
+                                        ),
                                     },
                                     ensure_ascii=False,
                                     sort_keys=True,
                                 )
                             )
-                            trade_score_rows.append((float(active_trade.get("entry_score", 0.0) or 0.0), float(pnl)))
-                            trade_quality_rows.append((str(active_trade.get("quality_bucket", "low") or "low"), float(pnl)))
+                            trade_score_rows.append(
+                                (
+                                    float(active_trade.get("entry_score", 0.0) or 0.0),
+                                    float(pnl),
+                                )
+                            )
+                            trade_quality_rows.append(
+                                (
+                                    str(
+                                        active_trade.get("quality_bucket", "low")
+                                        or "low"
+                                    ),
+                                    float(pnl),
+                                )
+                            )
                         active_trade = None
+                else:
+                    position_state.exit_state = load_position_exit_state(
+                        _snapshot_state(exit_intent.next_position_state)
+                        or state_payload
+                    )
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
 
-        total_return, return_per_trade, cagr, mdd, sharpe, fill_rate, cagr_valid, observed_days = self._calc_metrics(
+        (
+            total_return,
+            return_per_trade,
+            cagr,
+            mdd,
+            sharpe,
+            fill_rate,
+            cagr_valid,
+            observed_days,
+        ) = self._calc_metrics(
             equity_curve,
             entries,
             attempted_entries,
             candidate_entries,
             triggered_entries,
         )
-        win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy = self._calc_trade_stats(trade_ledger)
+        win_rate, avg_profit, avg_loss, profit_loss_ratio, expectancy = (
+            self._calc_trade_stats(trade_ledger)
+        )
         exit_reason_r_stats = self._build_exit_reason_r_stats(trade_ledger)
         oldest = data_newest[-1]["candle_date_time_kst"]
         newest = data_newest[0]["candle_date_time_kst"]
-        avg_zones_total = zones_total_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
-        avg_zones_active = zones_active_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
-        score_q25 = float(pd.Series(entry_scores).quantile(0.25)) if entry_scores else 0.0
-        score_q50 = float(pd.Series(entry_scores).quantile(0.50)) if entry_scores else 0.0
-        score_q75 = float(pd.Series(entry_scores).quantile(0.75)) if entry_scores else 0.0
+        avg_zones_total = (
+            zones_total_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
+        )
+        avg_zones_active = (
+            zones_active_sum / zone_debug_samples if zone_debug_samples > 0 else 0.0
+        )
+        score_q25 = (
+            float(pd.Series(entry_scores).quantile(0.25)) if entry_scores else 0.0
+        )
+        score_q50 = (
+            float(pd.Series(entry_scores).quantile(0.50)) if entry_scores else 0.0
+        )
+        score_q75 = (
+            float(pd.Series(entry_scores).quantile(0.75)) if entry_scores else 0.0
+        )
         score_win_rates = self._score_win_rates_by_quantile(trade_score_rows)
         regime_trade_stats = self._build_regime_trade_stats(trade_ledger)
         quality_bucket_stats = self._build_quality_bucket_stats(trade_quality_rows)
         stop_recovery_stats = self._build_stop_recovery_stats(
-            [row for row in self.stop_recovery_rows if int(row.get("segment_id", -1)) == int(segment_id)]
+            [
+                row
+                for row in self.stop_recovery_rows
+                if int(row.get("segment_id", -1)) == int(segment_id)
+            ]
         )
         return SegmentResult(
             segment_id=segment_id,
-            insample_start=oldest,
-            insample_end=newest,
-            oos_start=oldest,
-            oos_end=newest,
+            insample_start=_as_str(oldest),
+            insample_end=_as_str(newest),
+            oos_start=_as_str(oldest),
+            oos_end=_as_str(newest),
             trades=entries,
             entries=entries,
             closed_trades=closed_trades,
@@ -1200,7 +1900,9 @@ class BacktestRunner:
             exit_reason_counts=dict(exit_reason_counts),
             exit_reason_r_stats=exit_reason_r_stats,
             entry_fail_counts=dict(entry_fail_counts),
-            avg_entry_score=(sum(entry_scores) / len(entry_scores)) if entry_scores else 0.0,
+            avg_entry_score=(sum(entry_scores) / len(entry_scores))
+            if entry_scores
+            else 0.0,
             score_q25=score_q25,
             score_q50=score_q50,
             score_q75=score_q75,
@@ -1236,10 +1938,10 @@ class BacktestRunner:
             segment = self._run_segment(oos, init_amount, segment_id=segment_id)
             segment = SegmentResult(
                 segment_id=segment.segment_id,
-                insample_start=insample[-1]["candle_date_time_kst"],
-                insample_end=insample[0]["candle_date_time_kst"],
-                oos_start=oos[-1]["candle_date_time_kst"],
-                oos_end=oos[0]["candle_date_time_kst"],
+                insample_start=_as_str(insample[-1]["candle_date_time_kst"]),
+                insample_end=_as_str(insample[0]["candle_date_time_kst"]),
+                oos_start=_as_str(oos[-1]["candle_date_time_kst"]),
+                oos_end=_as_str(oos[0]["candle_date_time_kst"]),
                 trades=segment.trades,
                 entries=segment.entries,
                 closed_trades=segment.closed_trades,
@@ -1287,114 +1989,267 @@ class BacktestRunner:
         reason_df = pd.DataFrame(
             [
                 {
-                    "exit_reason_signal_exit": row.exit_reason_counts.get("signal_exit", 0),
-                    "exit_reason_strategy_signal": row.exit_reason_counts.get("strategy_signal", 0),
+                    "exit_reason_signal_exit": row.exit_reason_counts.get(
+                        "signal_exit", 0
+                    ),
+                    "exit_reason_strategy_signal": row.exit_reason_counts.get(
+                        "strategy_signal", 0
+                    ),
                     "exit_reason_stop_loss": row.exit_reason_counts.get("stop_loss", 0),
-                    "exit_reason_trailing_stop": row.exit_reason_counts.get("trailing_stop", 0),
-                    "exit_reason_partial_take_profit": row.exit_reason_counts.get("partial_take_profit", 0),
-                    "exit_reason_partial_stop_loss": row.exit_reason_counts.get("partial_stop_loss", 0),
-                    "exit_reason_signal_exit_mean_r": row.exit_reason_r_stats.get("signal_exit", {}).get("mean", 0.0),
-                    "exit_reason_strategy_signal_mean_r": row.exit_reason_r_stats.get("strategy_signal", {}).get("mean", 0.0),
-                    "exit_reason_signal_exit_median_r": row.exit_reason_r_stats.get("signal_exit", {}).get("median", 0.0),
-                    "exit_reason_strategy_signal_median_r": row.exit_reason_r_stats.get("strategy_signal", {}).get("median", 0.0),
-                    "exit_reason_signal_exit_p10_r": row.exit_reason_r_stats.get("signal_exit", {}).get("p10", 0.0),
-                    "exit_reason_strategy_signal_p10_r": row.exit_reason_r_stats.get("strategy_signal", {}).get("p10", 0.0),
-                    "exit_reason_stop_loss_mean_r": row.exit_reason_r_stats.get("stop_loss", {}).get("mean", 0.0),
-                    "exit_reason_stop_loss_median_r": row.exit_reason_r_stats.get("stop_loss", {}).get("median", 0.0),
-                    "exit_reason_stop_loss_p10_r": row.exit_reason_r_stats.get("stop_loss", {}).get("p10", 0.0),
-                    "exit_reason_stop_loss_bars_held_mean": row.exit_reason_r_stats.get("stop_loss", {}).get("bars_held_mean", 0.0),
-                    "exit_reason_stop_loss_bars_held_median": row.exit_reason_r_stats.get("stop_loss", {}).get("bars_held_median", 0.0),
-                    "exit_reason_stop_loss_early_bar_share_pct": row.exit_reason_r_stats.get("stop_loss", {}).get("early_bar_share_pct", 0.0),
-                    "exit_reason_trailing_stop_mean_r": row.exit_reason_r_stats.get("trailing_stop", {}).get("mean", 0.0),
-                    "exit_reason_trailing_stop_median_r": row.exit_reason_r_stats.get("trailing_stop", {}).get("median", 0.0),
-                    "exit_reason_trailing_stop_p10_r": row.exit_reason_r_stats.get("trailing_stop", {}).get("p10", 0.0),
-                    "exit_reason_partial_take_profit_mean_r": row.exit_reason_r_stats.get("partial_take_profit", {}).get("mean", 0.0),
-                    "exit_reason_partial_take_profit_median_r": row.exit_reason_r_stats.get("partial_take_profit", {}).get("median", 0.0),
-                    "exit_reason_partial_take_profit_p10_r": row.exit_reason_r_stats.get("partial_take_profit", {}).get("p10", 0.0),
-                    "exit_reason_partial_stop_loss_mean_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("mean", 0.0),
-                    "exit_reason_partial_stop_loss_median_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("median", 0.0),
-                    "exit_reason_partial_stop_loss_p10_r": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("p10", 0.0),
-                    "exit_reason_partial_stop_loss_bars_held_mean": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("bars_held_mean", 0.0),
-                    "exit_reason_partial_stop_loss_bars_held_median": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("bars_held_median", 0.0),
-                    "exit_reason_partial_stop_loss_early_bar_share_pct": row.exit_reason_r_stats.get("partial_stop_loss", {}).get("early_bar_share_pct", 0.0),
+                    "exit_reason_trailing_stop": row.exit_reason_counts.get(
+                        "trailing_stop", 0
+                    ),
+                    "exit_reason_partial_take_profit": row.exit_reason_counts.get(
+                        "partial_take_profit", 0
+                    ),
+                    "exit_reason_partial_stop_loss": row.exit_reason_counts.get(
+                        "partial_stop_loss", 0
+                    ),
+                    "exit_reason_signal_exit_mean_r": row.exit_reason_r_stats.get(
+                        "signal_exit", {}
+                    ).get("mean", 0.0),
+                    "exit_reason_strategy_signal_mean_r": row.exit_reason_r_stats.get(
+                        "strategy_signal", {}
+                    ).get("mean", 0.0),
+                    "exit_reason_signal_exit_median_r": row.exit_reason_r_stats.get(
+                        "signal_exit", {}
+                    ).get("median", 0.0),
+                    "exit_reason_strategy_signal_median_r": row.exit_reason_r_stats.get(
+                        "strategy_signal", {}
+                    ).get("median", 0.0),
+                    "exit_reason_signal_exit_p10_r": row.exit_reason_r_stats.get(
+                        "signal_exit", {}
+                    ).get("p10", 0.0),
+                    "exit_reason_strategy_signal_p10_r": row.exit_reason_r_stats.get(
+                        "strategy_signal", {}
+                    ).get("p10", 0.0),
+                    "exit_reason_stop_loss_mean_r": row.exit_reason_r_stats.get(
+                        "stop_loss", {}
+                    ).get("mean", 0.0),
+                    "exit_reason_stop_loss_median_r": row.exit_reason_r_stats.get(
+                        "stop_loss", {}
+                    ).get("median", 0.0),
+                    "exit_reason_stop_loss_p10_r": row.exit_reason_r_stats.get(
+                        "stop_loss", {}
+                    ).get("p10", 0.0),
+                    "exit_reason_stop_loss_bars_held_mean": row.exit_reason_r_stats.get(
+                        "stop_loss", {}
+                    ).get("bars_held_mean", 0.0),
+                    "exit_reason_stop_loss_bars_held_median": row.exit_reason_r_stats.get(
+                        "stop_loss", {}
+                    ).get("bars_held_median", 0.0),
+                    "exit_reason_stop_loss_early_bar_share_pct": row.exit_reason_r_stats.get(
+                        "stop_loss", {}
+                    ).get("early_bar_share_pct", 0.0),
+                    "exit_reason_trailing_stop_mean_r": row.exit_reason_r_stats.get(
+                        "trailing_stop", {}
+                    ).get("mean", 0.0),
+                    "exit_reason_trailing_stop_median_r": row.exit_reason_r_stats.get(
+                        "trailing_stop", {}
+                    ).get("median", 0.0),
+                    "exit_reason_trailing_stop_p10_r": row.exit_reason_r_stats.get(
+                        "trailing_stop", {}
+                    ).get("p10", 0.0),
+                    "exit_reason_partial_take_profit_mean_r": row.exit_reason_r_stats.get(
+                        "partial_take_profit", {}
+                    ).get("mean", 0.0),
+                    "exit_reason_partial_take_profit_median_r": row.exit_reason_r_stats.get(
+                        "partial_take_profit", {}
+                    ).get("median", 0.0),
+                    "exit_reason_partial_take_profit_p10_r": row.exit_reason_r_stats.get(
+                        "partial_take_profit", {}
+                    ).get("p10", 0.0),
+                    "exit_reason_partial_stop_loss_mean_r": row.exit_reason_r_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("mean", 0.0),
+                    "exit_reason_partial_stop_loss_median_r": row.exit_reason_r_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("median", 0.0),
+                    "exit_reason_partial_stop_loss_p10_r": row.exit_reason_r_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("p10", 0.0),
+                    "exit_reason_partial_stop_loss_bars_held_mean": row.exit_reason_r_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("bars_held_mean", 0.0),
+                    "exit_reason_partial_stop_loss_bars_held_median": row.exit_reason_r_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("bars_held_median", 0.0),
+                    "exit_reason_partial_stop_loss_early_bar_share_pct": row.exit_reason_r_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("early_bar_share_pct", 0.0),
                     **{
-                        f"exit_reason_strategy_signal_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get("strategy_signal", {}).get(
-                            f"early_bar_share_{bars}_pct", 0.0
-                        )
+                        f"exit_reason_strategy_signal_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get(
+                            "strategy_signal", {}
+                        ).get(f"early_bar_share_{bars}_pct", 0.0)
                         for bars in range(1, 9)
                     },
                     **{
-                        f"exit_reason_trailing_stop_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get("trailing_stop", {}).get(
-                            f"early_bar_share_{bars}_pct", 0.0
-                        )
+                        f"exit_reason_trailing_stop_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get(
+                            "trailing_stop", {}
+                        ).get(f"early_bar_share_{bars}_pct", 0.0)
                         for bars in range(1, 9)
                     },
                     **{
-                        f"exit_reason_partial_stop_loss_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get("partial_stop_loss", {}).get(
-                            f"early_bar_share_{bars}_pct", 0.0
-                        )
+                        f"exit_reason_partial_stop_loss_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get(
+                            "partial_stop_loss", {}
+                        ).get(f"early_bar_share_{bars}_pct", 0.0)
                         for bars in range(1, 9)
                     },
                     **{
-                        f"exit_reason_stop_loss_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get("stop_loss", {}).get(
-                            f"early_bar_share_{bars}_pct", 0.0
-                        )
+                        f"exit_reason_stop_loss_early_bar_share_{bars}_pct": row.exit_reason_r_stats.get(
+                            "stop_loss", {}
+                        ).get(f"early_bar_share_{bars}_pct", 0.0)
                         for bars in range(1, 9)
                     },
                     **self._build_exit_reason_r_comparison(row.exit_reason_r_stats),
-                    "regime_strong_trend_trades": row.regime_trade_stats.get("strong_trend", {}).get("trades", 0.0),
-                    "regime_strong_trend_win_rate": row.regime_trade_stats.get("strong_trend", {}).get("win_rate", 0.0),
-                    "regime_strong_trend_expectancy": row.regime_trade_stats.get("strong_trend", {}).get("expectancy", 0.0),
-                    "regime_weak_trend_trades": row.regime_trade_stats.get("weak_trend", {}).get("trades", 0.0),
-                    "regime_weak_trend_win_rate": row.regime_trade_stats.get("weak_trend", {}).get("win_rate", 0.0),
-                    "regime_weak_trend_expectancy": row.regime_trade_stats.get("weak_trend", {}).get("expectancy", 0.0),
-                    "regime_sideways_trades": row.regime_trade_stats.get("sideways", {}).get("trades", 0.0),
-                    "regime_sideways_win_rate": row.regime_trade_stats.get("sideways", {}).get("win_rate", 0.0),
-                    "regime_sideways_expectancy": row.regime_trade_stats.get("sideways", {}).get("expectancy", 0.0),
-                    "quality_bucket_low_trades": row.quality_bucket_stats.get("low", {}).get("trades", 0.0),
-                    "quality_bucket_low_win_rate": row.quality_bucket_stats.get("low", {}).get("win_rate", 0.0),
-                    "quality_bucket_low_expectancy": row.quality_bucket_stats.get("low", {}).get("expectancy", 0.0),
-                    "quality_bucket_mid_trades": row.quality_bucket_stats.get("mid", {}).get("trades", 0.0),
-                    "quality_bucket_mid_win_rate": row.quality_bucket_stats.get("mid", {}).get("win_rate", 0.0),
-                    "quality_bucket_mid_expectancy": row.quality_bucket_stats.get("mid", {}).get("expectancy", 0.0),
-                    "quality_bucket_high_trades": row.quality_bucket_stats.get("high", {}).get("trades", 0.0),
-                    "quality_bucket_high_win_rate": row.quality_bucket_stats.get("high", {}).get("win_rate", 0.0),
-                    "quality_bucket_high_expectancy": row.quality_bucket_stats.get("high", {}).get("expectancy", 0.0),
-                    "stop_recovery_stop_loss_count": row.stop_recovery_stats.get("stop_loss", {}).get("count", 0.0),
-                    "stop_recovery_stop_loss_mfe_r_3_mean": row.stop_recovery_stats.get("stop_loss", {}).get("mfe_r_3_mean", 0.0),
-                    "stop_recovery_stop_loss_mfe_r_5_mean": row.stop_recovery_stats.get("stop_loss", {}).get("mfe_r_5_mean", 0.0),
-                    "stop_recovery_stop_loss_mfe_r_10_mean": row.stop_recovery_stats.get("stop_loss", {}).get("mfe_r_10_mean", 0.0),
-                    "stop_recovery_stop_loss_recovered_1r_3_share_pct": row.stop_recovery_stats.get("stop_loss", {}).get("recovered_1r_3_share_pct", 0.0),
-                    "stop_recovery_stop_loss_recovered_1r_5_share_pct": row.stop_recovery_stats.get("stop_loss", {}).get("recovered_1r_5_share_pct", 0.0),
-                    "stop_recovery_stop_loss_recovered_1r_10_share_pct": row.stop_recovery_stats.get("stop_loss", {}).get("recovered_1r_10_share_pct", 0.0),
-                    "stop_recovery_partial_stop_loss_count": row.stop_recovery_stats.get("partial_stop_loss", {}).get("count", 0.0),
-                    "stop_recovery_partial_stop_loss_mfe_r_3_mean": row.stop_recovery_stats.get("partial_stop_loss", {}).get("mfe_r_3_mean", 0.0),
-                    "stop_recovery_partial_stop_loss_mfe_r_5_mean": row.stop_recovery_stats.get("partial_stop_loss", {}).get("mfe_r_5_mean", 0.0),
-                    "stop_recovery_partial_stop_loss_mfe_r_10_mean": row.stop_recovery_stats.get("partial_stop_loss", {}).get("mfe_r_10_mean", 0.0),
-                    "stop_recovery_partial_stop_loss_recovered_1r_3_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_3_share_pct", 0.0),
-                    "stop_recovery_partial_stop_loss_recovered_1r_5_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_5_share_pct", 0.0),
-                    "stop_recovery_partial_stop_loss_recovered_1r_10_share_pct": row.stop_recovery_stats.get("partial_stop_loss", {}).get("recovered_1r_10_share_pct", 0.0),
-                    "stop_recovery_trailing_stop_count": row.stop_recovery_stats.get("trailing_stop", {}).get("count", 0.0),
-                    "stop_recovery_trailing_stop_mfe_r_3_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_3_mean", 0.0),
-                    "stop_recovery_trailing_stop_mfe_r_5_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_5_mean", 0.0),
-                    "stop_recovery_trailing_stop_mfe_r_10_mean": row.stop_recovery_stats.get("trailing_stop", {}).get("mfe_r_10_mean", 0.0),
-                    "stop_recovery_trailing_stop_recovered_1r_3_share_pct": row.stop_recovery_stats.get("trailing_stop", {}).get("recovered_1r_3_share_pct", 0.0),
-                    "stop_recovery_trailing_stop_recovered_1r_5_share_pct": row.stop_recovery_stats.get("trailing_stop", {}).get("recovered_1r_5_share_pct", 0.0),
-                    "stop_recovery_trailing_stop_recovered_1r_10_share_pct": row.stop_recovery_stats.get("trailing_stop", {}).get("recovered_1r_10_share_pct", 0.0),
+                    "regime_strong_trend_trades": row.regime_trade_stats.get(
+                        "strong_trend", {}
+                    ).get("trades", 0.0),
+                    "regime_strong_trend_win_rate": row.regime_trade_stats.get(
+                        "strong_trend", {}
+                    ).get("win_rate", 0.0),
+                    "regime_strong_trend_expectancy": row.regime_trade_stats.get(
+                        "strong_trend", {}
+                    ).get("expectancy", 0.0),
+                    "regime_weak_trend_trades": row.regime_trade_stats.get(
+                        "weak_trend", {}
+                    ).get("trades", 0.0),
+                    "regime_weak_trend_win_rate": row.regime_trade_stats.get(
+                        "weak_trend", {}
+                    ).get("win_rate", 0.0),
+                    "regime_weak_trend_expectancy": row.regime_trade_stats.get(
+                        "weak_trend", {}
+                    ).get("expectancy", 0.0),
+                    "regime_sideways_trades": row.regime_trade_stats.get(
+                        "sideways", {}
+                    ).get("trades", 0.0),
+                    "regime_sideways_win_rate": row.regime_trade_stats.get(
+                        "sideways", {}
+                    ).get("win_rate", 0.0),
+                    "regime_sideways_expectancy": row.regime_trade_stats.get(
+                        "sideways", {}
+                    ).get("expectancy", 0.0),
+                    "quality_bucket_low_trades": row.quality_bucket_stats.get(
+                        "low", {}
+                    ).get("trades", 0.0),
+                    "quality_bucket_low_win_rate": row.quality_bucket_stats.get(
+                        "low", {}
+                    ).get("win_rate", 0.0),
+                    "quality_bucket_low_expectancy": row.quality_bucket_stats.get(
+                        "low", {}
+                    ).get("expectancy", 0.0),
+                    "quality_bucket_mid_trades": row.quality_bucket_stats.get(
+                        "mid", {}
+                    ).get("trades", 0.0),
+                    "quality_bucket_mid_win_rate": row.quality_bucket_stats.get(
+                        "mid", {}
+                    ).get("win_rate", 0.0),
+                    "quality_bucket_mid_expectancy": row.quality_bucket_stats.get(
+                        "mid", {}
+                    ).get("expectancy", 0.0),
+                    "quality_bucket_high_trades": row.quality_bucket_stats.get(
+                        "high", {}
+                    ).get("trades", 0.0),
+                    "quality_bucket_high_win_rate": row.quality_bucket_stats.get(
+                        "high", {}
+                    ).get("win_rate", 0.0),
+                    "quality_bucket_high_expectancy": row.quality_bucket_stats.get(
+                        "high", {}
+                    ).get("expectancy", 0.0),
+                    "stop_recovery_stop_loss_count": row.stop_recovery_stats.get(
+                        "stop_loss", {}
+                    ).get("count", 0.0),
+                    "stop_recovery_stop_loss_mfe_r_3_mean": row.stop_recovery_stats.get(
+                        "stop_loss", {}
+                    ).get("mfe_r_3_mean", 0.0),
+                    "stop_recovery_stop_loss_mfe_r_5_mean": row.stop_recovery_stats.get(
+                        "stop_loss", {}
+                    ).get("mfe_r_5_mean", 0.0),
+                    "stop_recovery_stop_loss_mfe_r_10_mean": row.stop_recovery_stats.get(
+                        "stop_loss", {}
+                    ).get("mfe_r_10_mean", 0.0),
+                    "stop_recovery_stop_loss_recovered_1r_3_share_pct": row.stop_recovery_stats.get(
+                        "stop_loss", {}
+                    ).get("recovered_1r_3_share_pct", 0.0),
+                    "stop_recovery_stop_loss_recovered_1r_5_share_pct": row.stop_recovery_stats.get(
+                        "stop_loss", {}
+                    ).get("recovered_1r_5_share_pct", 0.0),
+                    "stop_recovery_stop_loss_recovered_1r_10_share_pct": row.stop_recovery_stats.get(
+                        "stop_loss", {}
+                    ).get("recovered_1r_10_share_pct", 0.0),
+                    "stop_recovery_partial_stop_loss_count": row.stop_recovery_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("count", 0.0),
+                    "stop_recovery_partial_stop_loss_mfe_r_3_mean": row.stop_recovery_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("mfe_r_3_mean", 0.0),
+                    "stop_recovery_partial_stop_loss_mfe_r_5_mean": row.stop_recovery_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("mfe_r_5_mean", 0.0),
+                    "stop_recovery_partial_stop_loss_mfe_r_10_mean": row.stop_recovery_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("mfe_r_10_mean", 0.0),
+                    "stop_recovery_partial_stop_loss_recovered_1r_3_share_pct": row.stop_recovery_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("recovered_1r_3_share_pct", 0.0),
+                    "stop_recovery_partial_stop_loss_recovered_1r_5_share_pct": row.stop_recovery_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("recovered_1r_5_share_pct", 0.0),
+                    "stop_recovery_partial_stop_loss_recovered_1r_10_share_pct": row.stop_recovery_stats.get(
+                        "partial_stop_loss", {}
+                    ).get("recovered_1r_10_share_pct", 0.0),
+                    "stop_recovery_trailing_stop_count": row.stop_recovery_stats.get(
+                        "trailing_stop", {}
+                    ).get("count", 0.0),
+                    "stop_recovery_trailing_stop_mfe_r_3_mean": row.stop_recovery_stats.get(
+                        "trailing_stop", {}
+                    ).get("mfe_r_3_mean", 0.0),
+                    "stop_recovery_trailing_stop_mfe_r_5_mean": row.stop_recovery_stats.get(
+                        "trailing_stop", {}
+                    ).get("mfe_r_5_mean", 0.0),
+                    "stop_recovery_trailing_stop_mfe_r_10_mean": row.stop_recovery_stats.get(
+                        "trailing_stop", {}
+                    ).get("mfe_r_10_mean", 0.0),
+                    "stop_recovery_trailing_stop_recovered_1r_3_share_pct": row.stop_recovery_stats.get(
+                        "trailing_stop", {}
+                    ).get("recovered_1r_3_share_pct", 0.0),
+                    "stop_recovery_trailing_stop_recovered_1r_5_share_pct": row.stop_recovery_stats.get(
+                        "trailing_stop", {}
+                    ).get("recovered_1r_5_share_pct", 0.0),
+                    "stop_recovery_trailing_stop_recovered_1r_10_share_pct": row.stop_recovery_stats.get(
+                        "trailing_stop", {}
+                    ).get("recovered_1r_10_share_pct", 0.0),
                 }
                 for row in results
             ]
         )
-        fail_df = pd.DataFrame([self._build_fail_summary(row.entry_fail_counts) for row in results])
+        fail_df = pd.DataFrame(
+            [self._build_fail_summary(row.entry_fail_counts) for row in results]
+        )
         if not reason_df.empty:
             df = pd.concat(
-                [df.drop(columns=["exit_reason_counts", "exit_reason_r_stats", "entry_fail_counts", "regime_trade_stats", "quality_bucket_stats", "stop_recovery_stats"], errors="ignore"), reason_df],
+                [
+                    df.drop(
+                        columns=[
+                            "exit_reason_counts",
+                            "exit_reason_r_stats",
+                            "entry_fail_counts",
+                            "regime_trade_stats",
+                            "quality_bucket_stats",
+                            "stop_recovery_stats",
+                        ],
+                        errors="ignore",
+                    ),
+                    reason_df,
+                ],
                 axis=1,
             )
         if not fail_df.empty:
             df = pd.concat([df, fail_df], axis=1)
         if not df.empty:
-            period_returns = pd.to_numeric(df["period_return"], errors="coerce").fillna(0.0)
+            period_returns = pd.to_numeric(df["period_return"], errors="coerce").fillna(
+                0.0
+            )
             compounded = (period_returns.div(100).add(1.0).prod() - 1.0) * 100
             df["compounded_return_pct"] = compounded
             df["segment_return_std"] = float(period_returns.std(ddof=0))
@@ -1404,7 +2259,9 @@ class BacktestRunner:
         stop_diag_df = pd.DataFrame(self.stop_event_rows)
         if not stop_diag_df.empty:
             stop_diag_df.to_csv(self.stop_diagnostics_path, index=False)
-        stop_gap_stats = self._build_stop_gap_deterioration_stats(self.stop_gap_trade_rows)
+        stop_gap_stats = self._build_stop_gap_deterioration_stats(
+            self.stop_gap_trade_rows
+        )
         stop_recovery_df = pd.DataFrame(self.stop_recovery_rows)
         if not stop_recovery_df.empty:
             stop_recovery_df.to_csv(self.stop_recovery_path, index=False)
@@ -1414,7 +2271,9 @@ class BacktestRunner:
                 continue
             top_reasons = Counter(row.entry_fail_counts).most_common(3)
             reasons_text = ", ".join(f"{code}={count}" for code, count in top_reasons)
-            print(f"[WARN] segment {row.segment_id} has trades=0, top fail reasons: {reasons_text}")
+            print(
+                f"[WARN] segment {row.segment_id} has trades=0, top fail reasons: {reasons_text}"
+            )
 
         if self.debug_mode and results:
             debug_df = pd.DataFrame(
@@ -1434,34 +2293,61 @@ class BacktestRunner:
             debug_df.to_csv(self.debug_report_path, index=False)
 
         summary = (
-            df[["period_return", "return_per_trade", "return_pct", "cagr", "mdd", "sharpe", "fill_rate"]].mean(
-                numeric_only=True
-            ).to_dict()
+            df[
+                [
+                    "period_return",
+                    "return_per_trade",
+                    "return_pct",
+                    "cagr",
+                    "mdd",
+                    "sharpe",
+                    "fill_rate",
+                ]
+            ]
+            .mean(numeric_only=True)
+            .to_dict()
             if not df.empty
             else {}
         )
         summary["initial_amount_krw"] = init_amount
         if not df.empty:
-            period_values = pd.to_numeric(df["period_return"], errors="coerce").fillna(0.0).tolist()
-            summary["compounded_return_pct"] = (math.prod((1 + (value / 100)) for value in period_values) - 1) * 100
-            summary["period_return_std"] = pstdev(period_values) if period_values else 0.0
-            summary["period_return_median"] = median(period_values) if period_values else 0.0
-        summary["final_amount_krw"] = summary["initial_amount_krw"] * (1 + (summary.get("compounded_return_pct", 0.0) / 100))
+            period_values = (
+                pd.to_numeric(df["period_return"], errors="coerce").fillna(0.0).tolist()
+            )
+            summary["compounded_return_pct"] = (
+                math.prod((1 + (value / 100)) for value in period_values) - 1
+            ) * 100
+            summary["period_return_std"] = (
+                pstdev(period_values) if period_values else 0.0
+            )
+            summary["period_return_median"] = (
+                median(period_values) if period_values else 0.0
+            )
+        summary["final_amount_krw"] = summary["initial_amount_krw"] * (
+            1 + (summary.get("compounded_return_pct", 0.0) / 100)
+        )
         abnormal_cagr_rows = (
-            df[df["cagr_valid"] & df["cagr"].abs().gt(self.ABNORMAL_CAGR_THRESHOLD_PCT)] if not df.empty else pd.DataFrame()
+            df[df["cagr_valid"] & df["cagr"].abs().gt(self.ABNORMAL_CAGR_THRESHOLD_PCT)]
+            if not df.empty
+            else pd.DataFrame()
         )
         print(f"synthetic shortage candles applied: {shortage_count}")
         print(f"walk-forward segments saved: {self.segment_report_path}")
         if not stop_diag_df.empty:
             print(f"stop-loss diagnostics saved: {self.stop_diagnostics_path}")
         if stop_gap_stats:
-            print("stop gap deterioration stats:", {k: round(v, 4) for k, v in stop_gap_stats.items()})
+            print(
+                "stop gap deterioration stats:",
+                {k: round(v, 4) for k, v in stop_gap_stats.items()},
+            )
         if not stop_recovery_df.empty:
             print(f"stop recovery diagnostics saved: {self.stop_recovery_path}")
         if self.debug_mode:
             print(f"entry failure debug saved: {self.debug_report_path}")
         if not abnormal_cagr_rows.empty:
-            ids = ", ".join(str(int(v)) for v in abnormal_cagr_rows["segment_id"].tolist())
+            ids = ", ".join(
+                str(int(v)) for v in abnormal_cagr_rows["segment_id"].tolist()
+            )
             print(
                 "[WARN] abnormal CAGR detected in segments "
                 f"({ids}) with threshold ±{self.ABNORMAL_CAGR_THRESHOLD_PCT}%"
@@ -1471,7 +2357,9 @@ class BacktestRunner:
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Run backtest with optional recent lookback window")
+    parser = ArgumentParser(
+        description="Run backtest with optional recent lookback window"
+    )
     parser.add_argument("--market", default="KRW-BTC")
     parser.add_argument("--path", default="backdata_candle_day.xlsx")
     parser.add_argument("--buffer-cnt", type=int, default=200)
@@ -1479,12 +2367,18 @@ if __name__ == "__main__":
     parser.add_argument("--insample-windows", type=int, default=2)
     parser.add_argument("--oos-windows", type=int, default=2)
     parser.add_argument("--lookback-days", type=int, default=None)
-    parser.add_argument("--segment-report-path", default="backtest_walkforward_segments.csv")
+    parser.add_argument(
+        "--segment-report-path", default="backtest_walkforward_segments.csv"
+    )
     parser.add_argument("--sell-decision-rule", choices=["or", "and"], default="or")
     parser.add_argument("--debug-mode", action="store_true")
     parser.add_argument("--debug-report-path", default="backtest_entry_failures.csv")
-    parser.add_argument("--stop-diagnostics-path", default="backtest_stop_loss_diagnostics.csv")
-    parser.add_argument("--stop-recovery-path", default="backtest_stop_recovery_diagnostics.csv")
+    parser.add_argument(
+        "--stop-diagnostics-path", default="backtest_stop_loss_diagnostics.csv"
+    )
+    parser.add_argument(
+        "--stop-recovery-path", default="backtest_stop_recovery_diagnostics.csv"
+    )
     parser.add_argument(
         "--zone-profile",
         choices=["conservative", "balanced", "aggressive", "krw_eth_relaxed"],

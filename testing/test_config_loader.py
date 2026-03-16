@@ -1,12 +1,143 @@
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.config_loader import ConfigValidationError, load_trading_config
 
 
 class ConfigLoaderTest(unittest.TestCase):
+    def _load_candidate_config(self, decision_path: str) -> object:
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "paper",
+                "TRADING_STRATEGY_NAME": "candidate_v1",
+                "TRADING_STRATEGY_DECISION_PATH": decision_path,
+            },
+            clear=False,
+        ):
+            return load_trading_config()
+
+    def test_baseline_can_run_without_strategy_decision_artifact_in_paper_mode(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "paper",
+                "TRADING_STRATEGY_NAME": "baseline",
+            },
+            clear=False,
+        ):
+            config = load_trading_config()
+
+        self.assertEqual(config.strategy_name, "baseline")
+        self.assertEqual(config.strategy_decision_path, "")
+
+    def test_candidate_strategy_requires_decision_artifact_in_paper_mode(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "paper",
+                "TRADING_STRATEGY_NAME": "candidate_v1",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(ConfigValidationError):
+                load_trading_config()
+
+    def test_candidate_strategy_does_not_require_decision_artifact_in_dry_run_mode(
+        self,
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "dry_run",
+                "TRADING_STRATEGY_NAME": "candidate_v1",
+            },
+            clear=False,
+        ):
+            config = load_trading_config()
+
+        self.assertEqual(config.mode, "dry_run")
+        self.assertEqual(config.strategy_name, "candidate_v1")
+        self.assertEqual(config.strategy_decision_path, "")
+
+    def test_unsupported_strategy_is_rejected_in_paper_mode(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "paper",
+                "TRADING_STRATEGY_NAME": "sr_ob_fvg",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(ConfigValidationError) as exc:
+                load_trading_config()
+
+        self.assertIn("strategy_name must be one of", str(exc.exception))
+
+    def test_candidate_strategy_rejects_missing_decision_artifact_path(self):
+        missing_path = str(
+            Path(__file__).resolve().parent / "fixtures" / "missing.json"
+        )
+
+        with self.assertRaises(ConfigValidationError):
+            self._load_candidate_config(missing_path)
+
+    def test_candidate_strategy_rejects_invalid_json_decision_artifact_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            decision_path = Path(td) / "candidate_v1_decision.json"
+            decision_path.write_text("not json", encoding="utf-8")
+
+            with self.assertRaises(ConfigValidationError):
+                self._load_candidate_config(str(decision_path))
+
+    def test_candidate_strategy_requires_literal_true_oos_gate_pass(self):
+        with tempfile.TemporaryDirectory() as td:
+            decision_path = Path(td) / "candidate_v1_decision.json"
+            decision_path.write_text(
+                json.dumps(
+                    {
+                        "candidate_strategy": "candidate_v1",
+                        "decision": "promote",
+                        "oos_gate": {"pass": 1},
+                        "parity_gate": {
+                            "pass": True,
+                            "strategy_name": "candidate_v1",
+                            "expected_strategy_name": "candidate_v1",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ConfigValidationError):
+                self._load_candidate_config(str(decision_path))
+
+    def test_candidate_strategy_requires_literal_true_parity_gate_pass(self):
+        with tempfile.TemporaryDirectory() as td:
+            decision_path = Path(td) / "candidate_v1_decision.json"
+            decision_path.write_text(
+                json.dumps(
+                    {
+                        "candidate_strategy": "candidate_v1",
+                        "decision": "promote",
+                        "oos_gate": {"pass": True},
+                        "parity_gate": {
+                            "pass": "true",
+                            "strategy_name": "candidate_v1",
+                            "expected_strategy_name": "candidate_v1",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ConfigValidationError):
+                self._load_candidate_config(str(decision_path))
+
     def test_load_trading_config_from_module_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "custom_config.py"
@@ -142,7 +273,6 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.mode, "paper")
         self.assertEqual(config.paper_initial_krw, 2_000_000)
 
-
     def test_default_portfolio_limits_are_single_position(self):
         config = load_trading_config()
         self.assertEqual(config.max_holdings, 1)
@@ -160,7 +290,6 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.mode, "dry_run")
         self.assertEqual(config.buy_rsi_threshold, 45)
 
-
     def test_min_buyable_env_override_is_treated_as_dynamic_buffer(self):
         os.environ["TRADING_MIN_ORDER_KRW"] = "5000"
         os.environ["TRADING_MIN_BUYABLE_KRW"] = "7000"
@@ -172,7 +301,6 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertEqual(config.min_buyable_krw, 7000)
         self.assertEqual(config.min_effective_buyable_krw, 7000)
-
 
     def test_entry_score_env_override(self):
         os.environ["TRADING_ENTRY_SCORE_THRESHOLD"] = "3.25"
@@ -194,8 +322,13 @@ class ConfigLoaderTest(unittest.TestCase):
         strong = config.regime_strategy_overrides("strong_trend")
         side = config.regime_strategy_overrides("sideways")
 
-        self.assertGreater(strong.get("entry_score_threshold", 0.0), side.get("entry_score_threshold", 0.0))
-        self.assertGreater(strong.get("take_profit_r", 0.0), side.get("take_profit_r", 0.0))
+        self.assertGreater(
+            strong.get("entry_score_threshold", 0.0),
+            side.get("entry_score_threshold", 0.0),
+        )
+        self.assertGreater(
+            strong.get("take_profit_r", 0.0), side.get("take_profit_r", 0.0)
+        )
 
     def test_invalid_range_raises(self):
         os.environ["TRADING_BUY_RSI_THRESHOLD"] = "120"

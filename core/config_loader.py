@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import os
 from pathlib import Path
 from typing import Any
 
 from core.config import TradingConfig
+from core.strategy_registry import (
+    UnknownStrategyError,
+    get_strategy,
+    supported_strategy_names,
+)
 
 
 _ENV_KEY_MAP = {
@@ -82,6 +88,7 @@ _ENV_KEY_MAP = {
     "reentry_cooldown_bars": "TRADING_REENTRY_COOLDOWN_BARS",
     "cooldown_on_loss_exits_only": "TRADING_COOLDOWN_ON_LOSS_EXITS_ONLY",
     "strategy_name": "TRADING_STRATEGY_NAME",
+    "strategy_decision_path": "TRADING_STRATEGY_DECISION_PATH",
     "rsi_period": "TRADING_RSI_PERIOD",
     "rsi_long_threshold": "TRADING_RSI_LONG_THRESHOLD",
     "rsi_neutral_filter_enabled": "TRADING_RSI_NEUTRAL_FILTER_ENABLED",
@@ -132,6 +139,11 @@ _ENV_KEY_MAP = {
 
 class ConfigValidationError(ValueError):
     pass
+
+
+_PROMOTION_GATE_MODES = {"paper", "live"}
+_BASELINE_STRATEGY_NAME = "baseline"
+_PROMOTION_GATED_CANDIDATES = {"candidate_v1"}
 
 
 def _default_config_path() -> Path:
@@ -207,9 +219,65 @@ def _parse_env_value(key: str, value: str):
         "strategy_cooldown_bars",
     }:
         return int(value)
-    if key in {"fee_rate", "risk_per_trade_pct", "max_daily_loss_pct", "trailing_stop_pct", "partial_take_profit_threshold", "partial_take_profit_ratio", "partial_stop_loss_ratio", "atr_stop_mult", "atr_trailing_mult", "sell_profit_threshold", "stop_loss_threshold", "max_relative_spread", "max_candle_missing_rate", "sr_cluster_band_pct", "fvg_min_width_atr_mult", "displacement_min_body_ratio", "displacement_min_atr_mult", "zone_reentry_buffer_pct", "trigger_rejection_wick_ratio", "regime_adx_min", "rsi_long_threshold", "rsi_neutral_low", "rsi_neutral_high", "bb_std", "double_bottom_tolerance_pct", "entry_score_threshold", "rsi_oversold_weight", "bb_touch_weight", "divergence_weight", "macd_cross_weight", "engulfing_weight", "band_deviation_weight", "quality_score_low_threshold", "quality_score_high_threshold", "quality_multiplier_low", "quality_multiplier_mid", "quality_multiplier_high", "quality_multiplier_min_bound", "quality_multiplier_max_bound", "take_profit_r", "partial_take_profit_r", "partial_take_profit_size"}:
+    if key in {
+        "fee_rate",
+        "risk_per_trade_pct",
+        "max_daily_loss_pct",
+        "trailing_stop_pct",
+        "partial_take_profit_threshold",
+        "partial_take_profit_ratio",
+        "partial_stop_loss_ratio",
+        "atr_stop_mult",
+        "atr_trailing_mult",
+        "sell_profit_threshold",
+        "stop_loss_threshold",
+        "max_relative_spread",
+        "max_candle_missing_rate",
+        "sr_cluster_band_pct",
+        "fvg_min_width_atr_mult",
+        "displacement_min_body_ratio",
+        "displacement_min_atr_mult",
+        "zone_reentry_buffer_pct",
+        "trigger_rejection_wick_ratio",
+        "regime_adx_min",
+        "rsi_long_threshold",
+        "rsi_neutral_low",
+        "rsi_neutral_high",
+        "bb_std",
+        "double_bottom_tolerance_pct",
+        "entry_score_threshold",
+        "rsi_oversold_weight",
+        "bb_touch_weight",
+        "divergence_weight",
+        "macd_cross_weight",
+        "engulfing_weight",
+        "band_deviation_weight",
+        "quality_score_low_threshold",
+        "quality_score_high_threshold",
+        "quality_multiplier_low",
+        "quality_multiplier_mid",
+        "quality_multiplier_high",
+        "quality_multiplier_min_bound",
+        "quality_multiplier_max_bound",
+        "take_profit_r",
+        "partial_take_profit_r",
+        "partial_take_profit_size",
+    }:
         return float(value)
-    if key in {"sell_requires_profit", "regime_filter_enabled", "cooldown_on_loss_exits_only", "rsi_neutral_filter_enabled", "macd_histogram_filter_enabled", "engulfing_strict", "engulfing_include_wick", "require_band_reentry_on_second_bottom", "require_neckline_break", "divergence_signal_enabled", "partial_take_profit_enabled", "move_stop_to_breakeven_after_partial"}:
+    if key in {
+        "sell_requires_profit",
+        "regime_filter_enabled",
+        "cooldown_on_loss_exits_only",
+        "rsi_neutral_filter_enabled",
+        "macd_histogram_filter_enabled",
+        "engulfing_strict",
+        "engulfing_include_wick",
+        "require_band_reentry_on_second_bottom",
+        "require_neckline_break",
+        "divergence_signal_enabled",
+        "partial_take_profit_enabled",
+        "move_stop_to_breakeven_after_partial",
+    }:
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return value
 
@@ -221,6 +289,96 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
             continue
         config[key] = _parse_env_value(key, raw_value)
     return config
+
+
+def _canonical_strategy_name(name: str) -> str:
+    try:
+        return get_strategy(name).canonical_name
+    except UnknownStrategyError:
+        return str(name or "").strip().lower()
+
+
+def _load_strategy_decision_artifact(path_value: str) -> dict[str, Any]:
+    target = Path(path_value)
+    if not target.is_file():
+        raise ConfigValidationError(
+            f"strategy_decision_path does not exist: {path_value}"
+        )
+
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigValidationError(
+            f"strategy_decision_path must contain valid JSON: {path_value}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise ConfigValidationError("strategy decision artifact must be a JSON object")
+    return payload
+
+
+def _require_literal_true_gate_pass(gate: object, gate_name: str) -> dict[str, Any]:
+    if not isinstance(gate, dict):
+        raise ConfigValidationError(
+            f"strategy decision artifact must include a passing {gate_name} for runtime promotion"
+        )
+
+    gate_pass = gate.get("pass")
+    if not isinstance(gate_pass, bool) or gate_pass is not True:
+        raise ConfigValidationError(
+            f"strategy decision artifact must include a passing {gate_name} for runtime promotion"
+        )
+    return gate
+
+
+def _validate_runtime_strategy_selection(config: dict[str, Any]) -> None:
+    strategy_name = _canonical_strategy_name(str(config.get("strategy_name", "")))
+    mode = str(config.get("mode", "")).strip().lower()
+    decision_path = str(config.get("strategy_decision_path", "") or "").strip()
+    config["strategy_decision_path"] = decision_path
+
+    if (
+        mode not in _PROMOTION_GATE_MODES
+        or strategy_name == _BASELINE_STRATEGY_NAME
+        or strategy_name not in _PROMOTION_GATED_CANDIDATES
+    ):
+        return
+
+    if not decision_path:
+        raise ConfigValidationError(
+            "candidate strategies require TRADING_STRATEGY_DECISION_PATH in paper/live"
+        )
+
+    artifact = _load_strategy_decision_artifact(decision_path)
+    candidate_strategy = _canonical_strategy_name(
+        str(artifact.get("candidate_strategy", ""))
+    )
+    decision = str(artifact.get("decision", "")).strip().lower()
+    oos_gate = _require_literal_true_gate_pass(artifact.get("oos_gate"), "oos_gate")
+    parity_gate = _require_literal_true_gate_pass(
+        artifact.get("parity_gate"), "parity_gate"
+    )
+
+    if candidate_strategy != strategy_name:
+        raise ConfigValidationError(
+            "strategy decision artifact candidate_strategy does not match "
+            f"runtime strategy_name: {candidate_strategy} != {strategy_name}"
+        )
+    if decision != "promote":
+        raise ConfigValidationError(
+            f"strategy decision artifact rejected runtime candidate: {decision}"
+        )
+
+    parity_strategy_name = _canonical_strategy_name(
+        str(parity_gate.get("strategy_name", ""))
+    )
+    expected_strategy_name = _canonical_strategy_name(
+        str(parity_gate.get("expected_strategy_name", ""))
+    )
+    if parity_strategy_name != strategy_name or expected_strategy_name != strategy_name:
+        raise ConfigValidationError(
+            "strategy decision artifact parity gate does not match runtime strategy_name"
+        )
 
 
 def _validate_schema(config: dict[str, Any]) -> None:
@@ -298,6 +456,7 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "cooldown_on_loss_exits_only": bool,
         "strategy_cooldown_bars": int,
         "strategy_name": str,
+        "strategy_decision_path": str,
         "rsi_period": int,
         "rsi_long_threshold": (int, float),
         "rsi_neutral_filter_enabled": bool,
@@ -348,7 +507,9 @@ def _validate_schema(config: dict[str, Any]) -> None:
         if key not in config:
             raise ConfigValidationError(f"Missing required config key: {key}")
         if not isinstance(config[key], expected):
-            raise ConfigValidationError(f"Config key '{key}' has invalid type: {type(config[key]).__name__}")
+            raise ConfigValidationError(
+                f"Config key '{key}' has invalid type: {type(config[key]).__name__}"
+            )
 
     if config["mode"] not in {"live", "paper", "dry_run"}:
         raise ConfigValidationError("mode must be one of: live, paper, dry_run")
@@ -405,7 +566,9 @@ def _validate_schema(config: dict[str, Any]) -> None:
     if not 0 <= config["fee_rate"] < 1:
         raise ConfigValidationError("fee_rate must be in [0, 1)")
     if config["position_sizing_mode"] not in {"risk_first", "cash_split_first"}:
-        raise ConfigValidationError("position_sizing_mode must be one of: risk_first, cash_split_first")
+        raise ConfigValidationError(
+            "position_sizing_mode must be one of: risk_first, cash_split_first"
+        )
     if config["max_order_krw_by_cash_management"] < 0:
         raise ConfigValidationError("max_order_krw_by_cash_management must be >= 0")
     if config["min_buyable_krw"] < 0:
@@ -455,7 +618,9 @@ def _validate_schema(config: dict[str, Any]) -> None:
     if config["sr_cluster_band_pct"] < 0:
         raise ConfigValidationError("sr_cluster_band_pct must be >= 0")
     if config["zone_priority_mode"] not in {"intersection", "setup_only"}:
-        raise ConfigValidationError("zone_priority_mode must be one of: intersection, setup_only")
+        raise ConfigValidationError(
+            "zone_priority_mode must be one of: intersection, setup_only"
+        )
     if config["fvg_min_width_atr_mult"] < 0:
         raise ConfigValidationError("fvg_min_width_atr_mult must be >= 0")
     if config["displacement_min_body_ratio"] <= 0:
@@ -467,40 +632,63 @@ def _validate_schema(config: dict[str, Any]) -> None:
     if config["trigger_rejection_wick_ratio"] <= 0:
         raise ConfigValidationError("trigger_rejection_wick_ratio must be > 0")
     if config["trigger_mode"] not in {"strict", "balanced", "adaptive"}:
-        raise ConfigValidationError("trigger_mode must be one of: strict, balanced, adaptive")
+        raise ConfigValidationError(
+            "trigger_mode must be one of: strict, balanced, adaptive"
+        )
     if config["regime_ema_fast"] >= config["regime_ema_slow"]:
-        raise ConfigValidationError("regime_ema_fast must be smaller than regime_ema_slow")
+        raise ConfigValidationError(
+            "regime_ema_fast must be smaller than regime_ema_slow"
+        )
     if config["regime_adx_min"] < 0:
         raise ConfigValidationError("regime_adx_min must be >= 0")
     if config["reentry_cooldown_bars"] < 0:
         raise ConfigValidationError("reentry_cooldown_bars must be >= 0")
 
-    if config["strategy_name"] not in {"sr_ob_fvg", "rsi_bb_reversal_long"}:
-        raise ConfigValidationError("strategy_name must be one of: sr_ob_fvg, rsi_bb_reversal_long")
+    valid_strategy_names = set(supported_strategy_names())
+    if config["strategy_name"] not in valid_strategy_names:
+        allowed = ", ".join(sorted(valid_strategy_names))
+        raise ConfigValidationError(f"strategy_name must be one of: {allowed}")
     if not 0 <= config["rsi_long_threshold"] <= 100:
         raise ConfigValidationError("rsi_long_threshold must be in [0, 100]")
-    if not 0 <= config["rsi_neutral_low"] <= 100 or not 0 <= config["rsi_neutral_high"] <= 100:
+    if (
+        not 0 <= config["rsi_neutral_low"] <= 100
+        or not 0 <= config["rsi_neutral_high"] <= 100
+    ):
         raise ConfigValidationError("rsi_neutral_low/high must be in [0, 100]")
     if config["rsi_neutral_low"] > config["rsi_neutral_high"]:
         raise ConfigValidationError("rsi_neutral_low must be <= rsi_neutral_high")
     if config["bb_std"] <= 0:
         raise ConfigValidationError("bb_std must be > 0")
     if config["bb_touch_mode"] not in {"touch_only", "break_only", "touch_or_break"}:
-        raise ConfigValidationError("bb_touch_mode must be one of: touch_only, break_only, touch_or_break")
+        raise ConfigValidationError(
+            "bb_touch_mode must be one of: touch_only, break_only, touch_or_break"
+        )
     if config["macd_fast"] >= config["macd_slow"]:
         raise ConfigValidationError("macd_fast must be smaller than macd_slow")
     if config["double_bottom_tolerance_pct"] < 0:
         raise ConfigValidationError("double_bottom_tolerance_pct must be >= 0")
     if config["entry_score_threshold"] < 0:
         raise ConfigValidationError("entry_score_threshold must be >= 0")
-    if not 0 <= config["quality_score_low_threshold"] <= 1 or not 0 <= config["quality_score_high_threshold"] <= 1:
-        raise ConfigValidationError("quality_score_low/high_threshold must be in [0, 1]")
+    if (
+        not 0 <= config["quality_score_low_threshold"] <= 1
+        or not 0 <= config["quality_score_high_threshold"] <= 1
+    ):
+        raise ConfigValidationError(
+            "quality_score_low/high_threshold must be in [0, 1]"
+        )
     if config["quality_score_low_threshold"] > config["quality_score_high_threshold"]:
-        raise ConfigValidationError("quality_score_low_threshold must be <= quality_score_high_threshold")
-    if config["quality_multiplier_min_bound"] <= 0 or config["quality_multiplier_max_bound"] <= 0:
+        raise ConfigValidationError(
+            "quality_score_low_threshold must be <= quality_score_high_threshold"
+        )
+    if (
+        config["quality_multiplier_min_bound"] <= 0
+        or config["quality_multiplier_max_bound"] <= 0
+    ):
         raise ConfigValidationError("quality_multiplier_min/max_bound must be > 0")
     if config["quality_multiplier_min_bound"] > config["quality_multiplier_max_bound"]:
-        raise ConfigValidationError("quality_multiplier_min_bound must be <= quality_multiplier_max_bound")
+        raise ConfigValidationError(
+            "quality_multiplier_min_bound must be <= quality_multiplier_max_bound"
+        )
     for weight_key in (
         "rsi_oversold_weight",
         "bb_touch_weight",
@@ -514,7 +702,9 @@ def _validate_schema(config: dict[str, Any]) -> None:
     if config["entry_mode"] not in {"close", "next_open"}:
         raise ConfigValidationError("entry_mode must be one of: close, next_open")
     if config["stop_mode_long"] not in {"swing_low", "lower_band", "conservative"}:
-        raise ConfigValidationError("stop_mode_long must be one of: swing_low, lower_band, conservative")
+        raise ConfigValidationError(
+            "stop_mode_long must be one of: swing_low, lower_band, conservative"
+        )
     if config["take_profit_r"] <= 0:
         raise ConfigValidationError("take_profit_r must be > 0")
     if config["partial_take_profit_r"] <= 0:
@@ -522,12 +712,16 @@ def _validate_schema(config: dict[str, Any]) -> None:
     if not 0 <= config["partial_take_profit_size"] <= 1:
         raise ConfigValidationError("partial_take_profit_size must be in [0, 1]")
     if config["max_hold_bars"] < 0 or config["strategy_cooldown_bars"] < 0:
-        raise ConfigValidationError("max_hold_bars and strategy_cooldown_bars must be >= 0")
+        raise ConfigValidationError(
+            "max_hold_bars and strategy_cooldown_bars must be >= 0"
+        )
 
 
 def load_trading_config() -> TradingConfig:
     path = Path(os.getenv("TRADING_CONFIG_FILE", _default_config_path()))
     raw_config = _load_module_config(path)
     raw_config = _apply_env_overrides(raw_config)
+    raw_config.setdefault("strategy_decision_path", "")
     _validate_schema(raw_config)
+    _validate_runtime_strategy_selection(raw_config)
     return TradingConfig(**raw_config)
