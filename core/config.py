@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from core.strategy_registry import UnknownStrategyError, get_strategy
-
 
 ZONE_PROFILE_OVERRIDES: dict[str, dict[str, int | float]] = {
     "conservative": {
@@ -22,6 +20,17 @@ ZONE_PROFILE_OVERRIDES: dict[str, dict[str, int | float]] = {
         "displacement_min_atr_mult": 0.95,
         "zone_expiry_bars_5m": 60,
     },
+}
+
+DEFAULT_ENTRY_SCORE_THRESHOLD = 2.5
+CANDIDATE_ENTRY_SCORE_THRESHOLD_DEFAULT = 3.6
+
+
+STRATEGY_PARAM_DEFAULT_OVERRIDES: dict[str, dict[str, int | float]] = {
+    "candidate_v1": {
+        "regime_ema_fast": 12,
+        "regime_ema_slow": 48,
+    }
 }
 
 
@@ -48,6 +57,33 @@ REGIME_STRATEGY_PARAM_OVERRIDES: dict[str, dict[str, int | float]] = {
         "take_profit_r": 1.6,
     },
 }
+
+
+STRATEGY_REGIME_PARAM_OVERRIDES: dict[str, dict[str, dict[str, int | float]]] = {
+    "baseline": REGIME_STRATEGY_PARAM_OVERRIDES,
+    "candidate_v1": {
+        "strong_trend": {},
+        "weak_trend": {},
+        "sideways": {},
+    },
+}
+
+
+def candidate_v1_proof_window_defaults(symbol: str) -> dict[str, int | float | str]:
+    from importlib import import_module
+
+    defaults_module = import_module("core.candidate_strategy_defaults")
+    resolve_defaults = getattr(defaults_module, "candidate_v1_proof_window_defaults")
+    return dict(resolve_defaults(symbol))
+
+
+def _canonical_strategy_name(name: str) -> str:
+    from core.strategy_registry import UnknownStrategyError, get_strategy
+
+    try:
+        return get_strategy(name).canonical_name
+    except UnknownStrategyError:
+        return str(name or "").strip().lower()
 
 
 WALKFORWARD_DEFAULT_UPDATE_CRITERIA: dict[str, float | int] = {
@@ -171,7 +207,7 @@ class TradingConfig:
     require_band_reentry_on_second_bottom: bool = True
     require_neckline_break: bool = False
     divergence_signal_enabled: bool = True
-    entry_score_threshold: float = 2.5
+    entry_score_threshold: float = DEFAULT_ENTRY_SCORE_THRESHOLD
     rsi_oversold_weight: float = 1.0
     bb_touch_weight: float = 1.0
     divergence_weight: float = 0.8
@@ -197,7 +233,24 @@ class TradingConfig:
 
     def regime_strategy_overrides(self, regime: str) -> dict[str, int | float]:
         key = str(regime or "").strip().lower()
-        return dict(REGIME_STRATEGY_PARAM_OVERRIDES.get(key, {}))
+        strategy_name = _canonical_strategy_name(self.strategy_name)
+        strategy_overrides = STRATEGY_REGIME_PARAM_OVERRIDES.get(
+            strategy_name,
+            REGIME_STRATEGY_PARAM_OVERRIDES,
+        )
+        return dict(strategy_overrides.get(key, {}))
+
+    def all_regime_strategy_overrides(self) -> dict[str, dict[str, int | float]]:
+        strategy_name = _canonical_strategy_name(self.strategy_name)
+        strategy_overrides = STRATEGY_REGIME_PARAM_OVERRIDES.get(
+            strategy_name,
+            REGIME_STRATEGY_PARAM_OVERRIDES,
+        )
+        return {
+            regime_name: dict(overrides)
+            for regime_name, overrides in strategy_overrides.items()
+            if overrides
+        }
 
     @property
     def min_effective_buyable_krw(self) -> int:
@@ -221,11 +274,16 @@ class TradingConfig:
 
         runtime_overrides = dict(zone_overrides or {})
 
-        canonical_strategy_name = self.strategy_name
-        try:
-            canonical_strategy_name = get_strategy(self.strategy_name).canonical_name
-        except UnknownStrategyError:
-            pass
+        canonical_strategy_name = _canonical_strategy_name(self.strategy_name)
+        strategy_default_overrides = dict(
+            STRATEGY_PARAM_DEFAULT_OVERRIDES.get(canonical_strategy_name, {})
+        )
+        effective_entry_score_threshold = self.entry_score_threshold
+        if (
+            canonical_strategy_name == "candidate_v1"
+            and effective_entry_score_threshold == DEFAULT_ENTRY_SCORE_THRESHOLD
+        ):
+            effective_entry_score_threshold = CANDIDATE_ENTRY_SCORE_THRESHOLD_DEFAULT
 
         params = StrategyParams(
             buy_rsi_threshold=self.buy_rsi_threshold,
@@ -252,7 +310,7 @@ class TradingConfig:
             require_band_reentry_on_second_bottom=self.require_band_reentry_on_second_bottom,
             require_neckline_break=self.require_neckline_break,
             divergence_signal_enabled=self.divergence_signal_enabled,
-            entry_score_threshold=self.entry_score_threshold,
+            entry_score_threshold=effective_entry_score_threshold,
             rsi_oversold_weight=self.rsi_oversold_weight,
             bb_touch_weight=self.bb_touch_weight,
             divergence_weight=self.divergence_weight,
@@ -314,6 +372,7 @@ class TradingConfig:
             regime_slope_lookback=self.regime_slope_lookback,
         )
         for override_key, override_value in {
+            **strategy_default_overrides,
             **profile_overrides,
             **runtime_overrides,
         }.items():

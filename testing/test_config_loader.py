@@ -317,6 +317,35 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.macd_cross_weight, 1.7)
         self.assertEqual(config.quality_multiplier_high, 1.3)
 
+    def test_candidate_strategy_uses_stricter_entry_threshold_default(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "dry_run",
+                "TRADING_STRATEGY_NAME": "candidate_v1",
+            },
+            clear=False,
+        ):
+            config = load_trading_config()
+
+        self.assertEqual(config.to_strategy_params().entry_score_threshold, 3.6)
+
+    def test_candidate_strategy_skips_baseline_regime_entry_threshold_overrides(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "dry_run",
+                "TRADING_STRATEGY_NAME": "candidate_v1",
+            },
+            clear=False,
+        ):
+            config = load_trading_config()
+
+        self.assertNotIn(
+            "entry_score_threshold",
+            config.regime_strategy_overrides("strong_trend"),
+        )
+
     def test_regime_strategy_override_profile_is_available(self):
         config = load_trading_config()
         strong = config.regime_strategy_overrides("strong_trend")
