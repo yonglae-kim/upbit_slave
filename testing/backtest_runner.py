@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from statistics import median, pstdev
+from typing import Dict, Union
 
 import openpyxl  # noqa: F401
 
@@ -48,10 +49,10 @@ from core.strategy import (
     zone_debug_metrics,
 )
 
-NumericLike = int | float
-ReportValue = float | int | str
-TradeStateValue = float | str
-TradeState = dict[str, TradeStateValue]
+NumericLike = Union[int, float]
+ReportValue = Union[float, int, str]
+TradeStateValue = Union[float, str]
+TradeState = Dict[str, TradeStateValue]
 
 
 def _snapshot_state(value: object) -> SnapshotState:

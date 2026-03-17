@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, Dict
 
 
-Candle = dict[str, object]
-SnapshotState = dict[str, object]
+Candle = Dict[str, Any]
+SnapshotState = Dict[str, Any]
 
 
 @dataclass(frozen=True)
