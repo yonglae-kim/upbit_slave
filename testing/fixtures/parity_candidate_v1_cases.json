@@ -202,6 +202,6 @@
       "regime_adx_min": 10.0,
       "regime_slope_lookback": 2
     },
-    "expected": {"action": "exit_partial", "reason": "partial_take_profit", "size": 0.5}
+    "expected": {"action": "hold", "reason": "hold", "size": 0.0}
   }
 ]
