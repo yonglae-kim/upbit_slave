@@ -2,6 +2,7 @@ import unittest
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
+import core.strategies.candidate_v1 as candidate_v1
 from core.config import TradingConfig
 from core.decision_core import evaluate_market
 from core.decision_models import (
@@ -30,6 +31,35 @@ def candle(
         "low_price": low_price,
         "trade_price": close_price,
     }
+
+
+def candles_from_closes(
+    closes_oldest: list[float],
+    *,
+    spread: float,
+) -> list[dict[str, object]]:
+    candles_oldest: list[dict[str, object]] = []
+    prev_close = closes_oldest[0] - 0.2
+    for close_price in closes_oldest:
+        open_price = prev_close
+        high_price = max(open_price, close_price) + spread
+        low_price = min(open_price, close_price) - spread
+        candles_oldest.append(candle(open_price, high_price, low_price, close_price))
+        prev_close = close_price
+    return list(reversed(candles_oldest))
+
+
+def trade_price(candle_data: dict[str, object]) -> float:
+    value = candle_data.get("trade_price", 0.0)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return 0.0
+
+
+def numeric_value(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return 0.0
 
 
 class DecisionModelsTest(unittest.TestCase):
@@ -111,8 +141,31 @@ class DecisionCoreTest(unittest.TestCase):
             regime_slope_lookback=2,
         )
 
+    def _make_candidate_params(self) -> StrategyParams:
+        config = TradingConfig(do_not_trading=[], strategy_name="candidate_v1")
+        return replace(
+            config.to_strategy_params(),
+            strategy_name="candidate_v1",
+            regime_adx_min=10.0,
+        )
+
     def _make_order_policy(self) -> PositionOrderPolicy:
         config = TradingConfig(do_not_trading=[], strategy_name="baseline")
+        return PositionOrderPolicy(
+            stop_loss_threshold=config.stop_loss_threshold,
+            trailing_stop_pct=config.trailing_stop_pct,
+            partial_take_profit_threshold=config.partial_take_profit_threshold,
+            partial_take_profit_ratio=config.partial_take_profit_ratio,
+            partial_stop_loss_ratio=config.partial_stop_loss_ratio,
+            exit_mode=config.exit_mode,
+            atr_period=config.atr_period,
+            atr_stop_mult=config.atr_stop_mult,
+            atr_trailing_mult=config.atr_trailing_mult,
+            swing_lookback=config.swing_lookback,
+        )
+
+    def _make_candidate_order_policy(self) -> PositionOrderPolicy:
+        config = TradingConfig(do_not_trading=[], strategy_name="candidate_v1")
         return PositionOrderPolicy(
             stop_loss_threshold=config.stop_loss_threshold,
             trailing_stop_pct=config.trailing_stop_pct,
@@ -427,6 +480,849 @@ class DecisionCoreTest(unittest.TestCase):
         self.assertEqual(legacy_intent.diagnostics, canonical_intent.diagnostics)
         self.assertEqual(legacy_intent.diagnostics["strategy_name"], "baseline")
 
+    def test_candidate_v1_short_horizon_regime_label_stays_stable_through_seam(self):
+        candles_1m = self._candidate_pullback_reclaim_1m(final_close=101.95)
+        market_data = {
+            "1m": candles_1m,
+            "5m": self._candidate_trend_5m(),
+            "15m": self._candidate_strong_trend_15m(candle_count=60),
+        }
+        entry_signal = candidate_v1.evaluate_long_entry(
+            market_data,
+            self._make_candidate_params(),
+        )
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe=market_data,
+                price=trade_price(candles_1m[0]),
+                diagnostics={"current_atr": 0.8, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertTrue(entry_signal.accepted)
+        self.assertEqual(intent.action, "enter")
+        self.assertEqual(intent.reason, entry_signal.reason)
+        self.assertEqual(
+            intent.diagnostics["entry_regime"], entry_signal.diagnostics["regime"]
+        )
+        self.assertEqual(
+            intent.diagnostics["regime"], entry_signal.diagnostics["regime"]
+        )
+        self.assertEqual(intent.diagnostics["stop_basis"], "pullback_low")
+        self.assertEqual(
+            intent.diagnostics["entry_price"],
+            entry_signal.diagnostics["entry_price"],
+        )
+        self.assertEqual(
+            intent.diagnostics["stop_price"],
+            entry_signal.diagnostics["stop_price"],
+        )
+        self.assertEqual(
+            intent.diagnostics["r_value"],
+            entry_signal.diagnostics["r_value"],
+        )
+        self.assertEqual(
+            intent.next_position_state["entry_regime"],
+            intent.diagnostics["entry_regime"],
+        )
+        self.assertEqual(
+            intent.next_position_state["entry_price"], intent.diagnostics["entry_price"]
+        )
+        self.assertEqual(
+            intent.next_position_state["initial_stop_price"],
+            intent.diagnostics["stop_price"],
+        )
+
+    def test_candidate_v1_seam_exposes_exact_normalized_regime_window(self):
+        candles_1m = self._candidate_pullback_reclaim_1m()
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": candles_1m,
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=trade_price(candles_1m[0]),
+                diagnostics={"current_atr": 0.8, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=replace(
+                self._make_candidate_params(),
+                regime_ema_fast=50,
+                regime_ema_slow=200,
+            ),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "enter")
+        effective_params = intent.diagnostics["effective_strategy_params"]
+        self.assertIsInstance(effective_params, dict)
+        if not isinstance(effective_params, dict):
+            self.fail("effective_strategy_params should be a dict")
+        self.assertEqual(effective_params.get("regime_ema_fast"), 8)
+        self.assertEqual(effective_params.get("regime_ema_slow"), 34)
+
+    def test_candidate_v1_seam_uses_reset_low_stop_basis_when_lower(self):
+        candles_1m = self._candidate_pullback_reclaim_1m()
+        candles_5m = candles_from_closes(
+            [
+                99.0,
+                99.3,
+                99.6,
+                99.9,
+                100.2,
+                100.6,
+                101.0,
+                101.3,
+                101.0,
+                100.8,
+                101.4,
+                101.9,
+            ],
+            spread=0.22,
+        )
+        candles_5m[1]["low_price"] = 100.55
+        candles_5m[2]["low_price"] = 100.7
+        market_data = {
+            "1m": candles_1m,
+            "5m": candles_5m,
+            "15m": self._candidate_strong_trend_15m(candle_count=60),
+        }
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe=market_data,
+                price=trade_price(candles_1m[0]),
+                diagnostics={"current_atr": 0.8, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "enter")
+        self.assertEqual(intent.diagnostics["stop_basis"], "reset_low_5m")
+        self.assertEqual(
+            intent.next_position_state["stop_basis"],
+            intent.diagnostics["stop_basis"],
+        )
+        self.assertEqual(
+            intent.next_position_state["initial_stop_price"],
+            intent.diagnostics["stop_price"],
+        )
+
+    def test_candidate_v1_entry_persists_proof_window_state_through_shared_seam(self):
+        candles_1m = self._candidate_pullback_reclaim_1m()
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-ADA",
+                candles_by_timeframe={
+                    "1m": candles_1m,
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=trade_price(candles_1m[0]),
+                diagnostics={"current_atr": 0.8, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "enter")
+        self.assertTrue(intent.next_position_state["proof_window_active"])
+        self.assertFalse(intent.next_position_state["proof_window_promoted"])
+        self.assertEqual(intent.next_position_state["proof_window_status"], "pending")
+        self.assertEqual(intent.next_position_state["proof_window_elapsed_bars"], 0)
+        self.assertEqual(
+            intent.next_position_state["proof_window_max_favorable_excursion_r"], 0.0
+        )
+        self.assertEqual(
+            intent.next_position_state["proof_window_promotion_threshold_r"],
+            intent.diagnostics["proof_window_promotion_threshold_r"],
+        )
+        self.assertEqual(
+            intent.next_position_state["proof_window_cooldown_hint_bars"],
+            intent.diagnostics["proof_window_cooldown_hint_bars"],
+        )
+        self.assertEqual(
+            intent.next_position_state["proof_window_symbol_profile"], "weak"
+        )
+
+    def test_candidate_v1_proof_window_does_not_promote_from_elapsed_bars_alone(self):
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": self._candidate_pullback_reclaim_1m(),
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=101.0,
+                diagnostics={"current_atr": 0.8, "swing_low": 95.0},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 100.0,
+                    "entry_atr": 0.8,
+                    "entry_swing_low": 95.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 2,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 0.0,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 0.0,
+                    "stop_basis": "pullback_low",
+                    "proof_window_active": True,
+                    "proof_window_promoted": False,
+                    "proof_window_status": "pending",
+                    "proof_window_start_bar": 0,
+                    "proof_window_elapsed_bars": 2,
+                    "proof_window_max_bars": 3,
+                    "proof_window_max_favorable_excursion_r": 0.0,
+                    "proof_window_promotion_threshold_r": 0.6,
+                    "proof_window_cooldown_hint_bars": 0,
+                    "proof_window_symbol_profile": "default",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "hold")
+        self.assertEqual(intent.reason, "hold")
+        self.assertEqual(intent.next_position_state["proof_window_elapsed_bars"], 3)
+        self.assertEqual(intent.next_position_state["proof_window_status"], "expired")
+        self.assertFalse(intent.next_position_state["proof_window_active"])
+        self.assertFalse(intent.next_position_state["proof_window_promoted"])
+        self.assertLess(
+            abs(
+                numeric_value(
+                    intent.next_position_state["proof_window_max_favorable_excursion_r"]
+                )
+                - 0.2
+            ),
+            1e-9,
+        )
+
+    def test_candidate_v1_initial_defense_keeps_entry_defined_pullback_stop(self):
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": self._candidate_pullback_reclaim_1m(),
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=101.15,
+                diagnostics={"current_atr": 0.8, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=102.35,
+                state={
+                    "peak_price": 102.35,
+                    "entry_atr": 0.8,
+                    "entry_swing_low": 101.1,
+                    "entry_price": 102.35,
+                    "initial_stop_price": 100.98,
+                    "risk_per_unit": 1.37,
+                    "bars_held": 0,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 0.0,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 0.0,
+                    "stop_basis": "pullback_low",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "hold")
+        self.assertEqual(intent.reason, "hold")
+        self.assertEqual(intent.diagnostics["strategy_name"], "candidate_v1")
+        self.assertEqual(intent.diagnostics["stop_basis"], "pullback_low")
+        self.assertEqual(intent.diagnostics["exit_stage"], "initial_defense")
+        self.assertLess(numeric_value(intent.diagnostics["hard_stop_price"]), 101.15)
+        self.assertEqual(
+            numeric_value(intent.diagnostics["hard_stop_price"]),
+            numeric_value(intent.diagnostics["initial_stop_price"]),
+        )
+        self.assertEqual(
+            numeric_value(intent.diagnostics["initial_stop_price"]),
+            100.98,
+        )
+        self.assertEqual(
+            numeric_value(intent.next_position_state["initial_stop_price"]),
+            100.98,
+        )
+
+    def test_candidate_v1_trailing_stop_preserves_exit_diagnostics(self):
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": self._candidate_pullback_reclaim_1m(),
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=102.5,
+                diagnostics={"current_atr": 0.8, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=102.35,
+                state={
+                    "peak_price": 105.0,
+                    "entry_atr": 0.8,
+                    "entry_swing_low": 101.1,
+                    "entry_price": 102.35,
+                    "initial_stop_price": 100.98,
+                    "risk_per_unit": 1.37,
+                    "bars_held": 24,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 2.5,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 1.82,
+                    "stop_basis": "pullback_low",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "exit_full")
+        self.assertEqual(intent.reason, "trailing_stop")
+        self.assertEqual(intent.diagnostics["strategy_name"], "candidate_v1")
+        self.assertEqual(intent.diagnostics["stop_basis"], "pullback_low")
+        self.assertEqual(intent.diagnostics["exit_stage"], "late_trailing")
+        self.assertIn("hard_stop_price", intent.diagnostics)
+        self.assertIn("risk_per_unit", intent.diagnostics)
+
+    def test_candidate_v1_does_not_trail_out_before_profit_room_even_if_old(self):
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": self._candidate_pullback_reclaim_1m(),
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=103.0,
+                diagnostics={"current_atr": 1.0, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 104.0,
+                    "entry_atr": 1.0,
+                    "entry_swing_low": 95.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 30,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 0.8,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 0.4,
+                    "stop_basis": "pullback_low",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "hold")
+        self.assertEqual(intent.reason, "hold")
+        self.assertEqual(intent.diagnostics["exit_stage"], "initial_defense")
+
+    def test_candidate_v1_does_not_scale_out_on_generic_partial_take_profit(self):
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": self._candidate_pullback_reclaim_1m(),
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=102.2,
+                diagnostics={"current_atr": 1.0, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 106.0,
+                    "entry_atr": 1.0,
+                    "entry_swing_low": 95.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 12,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 1.2,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 0.3,
+                    "stop_basis": "pullback_low",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "hold")
+        self.assertEqual(intent.reason, "hold")
+        self.assertEqual(intent.diagnostics["exit_stage"], "mid_management")
+
+    def test_candidate_v1_active_proof_window_promotes_on_threshold_hit(self):
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": self._candidate_pullback_reclaim_1m(),
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=102.4,
+                diagnostics={"current_atr": 1.0, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 102.4,
+                    "entry_atr": 1.0,
+                    "entry_swing_low": 95.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 1,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 0.48,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 0.0,
+                    "stop_basis": "pullback_low",
+                    "proof_window_active": True,
+                    "proof_window_promoted": False,
+                    "proof_window_status": "pending",
+                    "proof_window_start_bar": 0,
+                    "proof_window_elapsed_bars": 1,
+                    "proof_window_max_bars": 3,
+                    "proof_window_max_favorable_excursion_r": 0.48,
+                    "proof_window_promotion_threshold_r": 0.35,
+                    "proof_window_cooldown_hint_bars": 0,
+                    "proof_window_symbol_profile": "default",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "hold")
+        self.assertFalse(intent.diagnostics["proof_window_active"])
+        self.assertTrue(intent.diagnostics["proof_window_promoted"])
+        self.assertEqual(intent.diagnostics["proof_window_status"], "promoted")
+
+    def test_candidate_v1_expired_proof_window_cannot_promote_late(self):
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": self._candidate_pullback_reclaim_1m(),
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=103.2,
+                diagnostics={"current_atr": 1.0, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 103.2,
+                    "entry_atr": 1.0,
+                    "entry_swing_low": 95.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 4,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 0.2,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 0.0,
+                    "stop_basis": "pullback_low",
+                    "proof_window_active": False,
+                    "proof_window_promoted": False,
+                    "proof_window_status": "expired",
+                    "proof_window_start_bar": 0,
+                    "proof_window_elapsed_bars": 3,
+                    "proof_window_max_bars": 3,
+                    "proof_window_max_favorable_excursion_r": 0.2,
+                    "proof_window_promotion_threshold_r": 0.35,
+                    "proof_window_cooldown_hint_bars": 0,
+                    "proof_window_symbol_profile": "default",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "hold")
+        self.assertFalse(intent.diagnostics["proof_window_active"])
+        self.assertFalse(intent.diagnostics["proof_window_promoted"])
+        self.assertEqual(intent.diagnostics["proof_window_status"], "expired")
+
+    def test_candidate_v1_proof_window_state_gates_trailing_progression(self):
+        market = MarketSnapshot(
+            symbol="KRW-BTC",
+            candles_by_timeframe={
+                "1m": self._candidate_pullback_reclaim_1m(),
+                "5m": self._candidate_trend_5m(),
+                "15m": self._candidate_strong_trend_15m(candle_count=60),
+            },
+            price=112.0,
+            diagnostics={"current_atr": 1.0, "swing_low": 101.1},
+        )
+        expired_context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=market,
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 115.0,
+                    "entry_atr": 1.0,
+                    "entry_swing_low": 95.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 30,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 3.0,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 0.6,
+                    "stop_basis": "pullback_low",
+                    "proof_window_active": False,
+                    "proof_window_promoted": False,
+                    "proof_window_status": "expired",
+                    "proof_window_start_bar": 0,
+                    "proof_window_elapsed_bars": 3,
+                    "proof_window_max_bars": 3,
+                    "proof_window_max_favorable_excursion_r": 0.2,
+                    "proof_window_promotion_threshold_r": 0.35,
+                    "proof_window_cooldown_hint_bars": 0,
+                    "proof_window_symbol_profile": "default",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+        promoted_context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=market,
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 115.0,
+                    "entry_atr": 1.0,
+                    "entry_swing_low": 95.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 30,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 3.0,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 0.6,
+                    "stop_basis": "pullback_low",
+                    "proof_window_active": False,
+                    "proof_window_promoted": True,
+                    "proof_window_status": "promoted",
+                    "proof_window_start_bar": 0,
+                    "proof_window_elapsed_bars": 2,
+                    "proof_window_max_bars": 3,
+                    "proof_window_max_favorable_excursion_r": 0.6,
+                    "proof_window_promotion_threshold_r": 0.35,
+                    "proof_window_cooldown_hint_bars": 0,
+                    "proof_window_symbol_profile": "default",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+
+        expired_intent = evaluate_market(
+            expired_context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+        promoted_intent = evaluate_market(
+            promoted_context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(expired_intent.action, "hold")
+        self.assertEqual(expired_intent.reason, "hold")
+        self.assertEqual(expired_intent.diagnostics["exit_stage"], "initial_defense")
+        self.assertFalse(expired_intent.diagnostics["proof_window_promoted"])
+        self.assertEqual(promoted_intent.action, "exit_full")
+        self.assertEqual(promoted_intent.reason, "trailing_stop")
+        self.assertEqual(promoted_intent.diagnostics["exit_stage"], "late_trailing")
+        self.assertTrue(promoted_intent.diagnostics["proof_window_promoted"])
+
+    def test_candidate_v1_weak_profile_exits_on_expired_failed_proof(self):
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-ADA",
+                candles_by_timeframe={
+                    "1m": self._candidate_pullback_reclaim_1m(),
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=399.0,
+                diagnostics={"current_atr": 1.0, "swing_low": 395.0},
+            ),
+            position=PositionSnapshot(
+                market="KRW-ADA",
+                quantity=0.1,
+                entry_price=400.0,
+                state={
+                    "peak_price": 401.0,
+                    "entry_atr": 1.0,
+                    "entry_swing_low": 395.0,
+                    "entry_price": 400.0,
+                    "initial_stop_price": 395.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 2,
+                    "entry_regime": "strong_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 0.2,
+                    "lowest_r": -0.2,
+                    "drawdown_from_peak_r": 0.4,
+                    "stop_basis": "pullback_low",
+                    "proof_window_active": False,
+                    "proof_window_promoted": False,
+                    "proof_window_status": "expired",
+                    "proof_window_start_bar": 0,
+                    "proof_window_elapsed_bars": 2,
+                    "proof_window_max_bars": 2,
+                    "proof_window_max_favorable_excursion_r": 0.2,
+                    "proof_window_promotion_threshold_r": 0.65,
+                    "proof_window_cooldown_hint_bars": 3,
+                    "proof_window_symbol_profile": "weak",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "exit_full")
+        self.assertEqual(intent.reason, "proof_window_fail")
+        self.assertEqual(intent.diagnostics["proof_window_status"], "expired")
+
+    def test_candidate_v1_override_keeps_regime_labels_coherent_through_seam(self):
+        candles_1m = self._candidate_pullback_reclaim_1m()
+        market_data = {
+            "1m": candles_1m,
+            "5m": self._candidate_trend_5m(),
+            "15m": self._candidate_strong_trend_15m(candle_count=60),
+        }
+        params = replace(self._make_candidate_params(), regime_ema_slow=200)
+        entry_signal = candidate_v1.evaluate_long_entry(market_data, params)
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe=market_data,
+                price=trade_price(candles_1m[0]),
+                diagnostics={"current_atr": 0.8, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
+        )
+
+        self.assertTrue(entry_signal.accepted)
+
+        intent = evaluate_market(
+            context,
+            strategy_params=params,
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "enter")
+        self.assertEqual(intent.reason, "ok")
+        self.assertEqual(
+            intent.diagnostics["entry_regime"], entry_signal.diagnostics["regime"]
+        )
+        self.assertEqual(
+            intent.diagnostics["regime"], entry_signal.diagnostics["regime"]
+        )
+        self.assertEqual(
+            intent.next_position_state["entry_regime"],
+            entry_signal.diagnostics["regime"],
+        )
+
+    def test_candidate_v1_shared_regime_override_path_does_not_lower_threshold(self):
+        config = TradingConfig(do_not_trading=[], strategy_name="candidate_v1")
+        candles_1m = self._candidate_pullback_reclaim_1m(final_close=101.95)
+        context = DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": candles_1m,
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=trade_price(candles_1m[0]),
+                diagnostics={"current_atr": 0.8, "swing_low": 101.1},
+            ),
+            position=PositionSnapshot(),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
+            diagnostics={
+                "regime_strategy_overrides": {
+                    "strong_trend": config.regime_strategy_overrides("strong_trend")
+                }
+            },
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=replace(
+                self._make_candidate_params(), entry_score_threshold=3.8
+            ),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "hold")
+        self.assertEqual(intent.reason, "score_below_threshold")
+        effective_params = intent.diagnostics["effective_strategy_params"]
+        self.assertIsInstance(effective_params, dict)
+        if not isinstance(effective_params, dict):
+            self.fail("effective_strategy_params should be a dict")
+        self.assertEqual(effective_params.get("entry_score_threshold"), 3.8)
+
     def _entry_candles(self) -> list[dict[str, object]]:
         candles_oldest = [
             candle(100 - i * 0.2, 101 - i * 0.2, 99 - i * 0.25, 100 - i * 0.25)
@@ -448,6 +1344,36 @@ class DecisionCoreTest(unittest.TestCase):
                 )
             )
         return list(reversed(candles_oldest))
+
+    def _candidate_pullback_reclaim_1m(
+        self, *, final_close: float = 102.35
+    ) -> list[dict[str, object]]:
+        closes_oldest = [
+            100.0,
+            100.25,
+            100.5,
+            100.8,
+            101.1,
+            101.35,
+            101.6,
+            101.9,
+            102.1,
+            101.8,
+            101.45,
+            101.2,
+            final_close,
+        ]
+        return candles_from_closes(closes_oldest, spread=0.22)
+
+    def _candidate_trend_5m(self) -> list[dict[str, object]]:
+        closes_oldest = [100.0 + (idx * 0.45) for idx in range(18)]
+        return candles_from_closes(closes_oldest, spread=0.4)
+
+    def _candidate_strong_trend_15m(
+        self, *, candle_count: int = 40
+    ) -> list[dict[str, object]]:
+        closes_oldest = [100.0 + (idx * 0.9) for idx in range(candle_count)]
+        return candles_from_closes(closes_oldest, spread=0.6)
 
 
 if __name__ == "__main__":

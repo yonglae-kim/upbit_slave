@@ -12,7 +12,22 @@ from core.position_policy import (
 )
 from core.strategy import classify_market_regime, regime_filter_diagnostics
 from core.strategy import StrategyParams
+from core.strategies import candidate_v1
 from core.strategy_registry import RegisteredStrategy, get_strategy
+
+
+_PROOF_WINDOW_STATE_KEYS = (
+    "proof_window_active",
+    "proof_window_promoted",
+    "proof_window_status",
+    "proof_window_start_bar",
+    "proof_window_elapsed_bars",
+    "proof_window_max_bars",
+    "proof_window_max_favorable_excursion_r",
+    "proof_window_promotion_threshold_r",
+    "proof_window_cooldown_hint_bars",
+    "proof_window_symbol_profile",
+)
 
 
 def evaluate_market(
@@ -46,6 +61,7 @@ def _evaluate_entry(
         _resolve_entry_strategy_params(
             context,
             strategy_params=strategy_params,
+            strategy=strategy,
         )
     )
     entry_signal = _evaluate_entry_signal(
@@ -100,6 +116,11 @@ def _evaluate_exit(
         strategy_entry_price = avg_buy_price
     sell_decision_rule = _sell_decision_rule(context)
     policy_signal_exit = signal_exit = False
+    proof_state_input = dict(state_payload)
+    proof_state_input["peak_price"] = max(
+        _state_float(state_payload, "peak_price"),
+        price,
+    )
 
     signal_exit = bool(
         strategy.exit_evaluator(
@@ -111,9 +132,13 @@ def _evaluate_exit(
         )
     )
     policy_signal_exit = signal_exit if sell_decision_rule != "and" else False
+    advanced_state_payload = _advance_proof_window_state(
+        state_payload=proof_state_input,
+        next_position_state=proof_state_input,
+    )
     decision, next_position_state = evaluate_position_state(
         order_policy,
-        state_payload=state_payload,
+        state_payload=advanced_state_payload,
         avg_buy_price=avg_buy_price,
         current_price=price,
         signal_exit=policy_signal_exit,
@@ -128,13 +153,28 @@ def _evaluate_exit(
         ),
         max_hold_bars=int(strategy_params.max_hold_bars),
     )
+    next_position_state = _merge_proof_window_state(
+        advanced_state_payload,
+        next_position_state,
+    )
     diagnostics = _with_strategy_name(
         strategy.name,
         {
+            "stop_basis": _state_label(
+                advanced_state_payload, "stop_basis", default="unknown"
+            ),
+            "initial_stop_price": _state_float(
+                advanced_state_payload, "initial_stop_price"
+            ),
+            "risk_per_unit": _state_float(advanced_state_payload, "risk_per_unit"),
+            "entry_regime": _state_label(
+                advanced_state_payload, "entry_regime", default="unknown"
+            ),
             **decision.diagnostics,
             "signal_exit": signal_exit,
             "sell_decision_rule": sell_decision_rule,
             "qty_ratio": float(decision.qty_ratio),
+            **_proof_window_diagnostics(next_position_state),
         },
     )
     if sell_decision_rule == "and" and (not signal_exit or not decision.should_exit):
@@ -201,6 +241,7 @@ def _build_entry_position_state(
         "entry_swing_low": _market_metric(context, "swing_low"),
         "entry_price": entry_price,
         "initial_stop_price": stop_price,
+        "stop_basis": str(diagnostics.get("stop_basis") or "unknown"),
         "risk_per_unit": risk_per_unit,
         "bars_held": 0,
         "entry_regime": regime,
@@ -210,16 +251,19 @@ def _build_entry_position_state(
         "highest_r": 0.0,
         "lowest_r": 0.0,
         "drawdown_from_peak_r": 0.0,
+        **_entry_proof_window_state(diagnostics),
     }
 
 
 def _strategy_market_data(
     context: DecisionContext,
 ) -> dict[str, list[dict[str, object]]]:
-    return {
+    market_data = {
         timeframe: list(candles)
         for timeframe, candles in context.market.candles_by_timeframe.items()
     }
+    market_data["meta"] = [{"symbol": context.market.symbol}]
+    return market_data
 
 
 def _entry_diagnostics(
@@ -258,23 +302,38 @@ def _resolve_entry_strategy_params(
     context: DecisionContext,
     *,
     strategy_params: StrategyParams,
+    strategy: RegisteredStrategy,
 ) -> tuple[StrategyParams, str, dict[str, object]]:
     c15 = list(context.market.candles_by_timeframe.get("15m", []))
-    selection_regime = classify_market_regime(c15, strategy_params)
+    normalized_strategy_params = _normalize_entry_strategy_params(
+        strategy, strategy_params
+    )
+    selection_regime = classify_market_regime(c15, normalized_strategy_params)
     override_map = _diagnostic_map(context, "regime_strategy_overrides")
     override_value = override_map.get(selection_regime)
     overrides = _dict_str_object(override_value)
-    effective_strategy_params = strategy_params
+    effective_strategy_params = normalized_strategy_params
     for key, value in overrides.items():
         if hasattr(effective_strategy_params, key):
             effective_strategy_params = replace(
                 effective_strategy_params, **{key: value}
             )
+    effective_strategy_params = _normalize_entry_strategy_params(
+        strategy, effective_strategy_params
+    )
     regime = classify_market_regime(c15, effective_strategy_params)
     regime_diagnostics = dict(
         regime_filter_diagnostics(c15, effective_strategy_params) or {}
     )
     return effective_strategy_params, str(regime or "unknown"), regime_diagnostics
+
+
+def _normalize_entry_strategy_params(
+    strategy: RegisteredStrategy, strategy_params: StrategyParams
+) -> StrategyParams:
+    if strategy.name == candidate_v1.STRATEGY_NAME:
+        return candidate_v1.normalize_strategy_params(strategy_params)
+    return strategy_params
 
 
 def _build_entry_sizing(
@@ -605,9 +664,135 @@ def _state_int(state_payload: dict[str, object], key: str) -> int:
     return 0
 
 
+def _state_label(state_payload: dict[str, object], key: str, *, default: str) -> str:
+    value = state_payload.get(key)
+    if value is None:
+        return default
+    label = str(value).strip()
+    return label or default
+
+
+def _state_bool(state_payload: dict[str, object], key: str) -> bool:
+    value = state_payload.get(key)
+    if isinstance(value, bool):
+        return value
+    return False
+
+
 def _value_as_float(value: object, default: float) -> float:
     if isinstance(value, bool):
         return float(value)
     if isinstance(value, (int, float)):
         return float(value)
     return default
+
+
+def _value_as_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return default
+
+
+def _entry_proof_window_state(diagnostics: dict[str, object]) -> dict[str, object]:
+    state: dict[str, object] = {}
+    for key in _PROOF_WINDOW_STATE_KEYS:
+        if key in diagnostics:
+            state[key] = diagnostics[key]
+    return state
+
+
+def _proof_window_diagnostics(state_payload: dict[str, object]) -> dict[str, object]:
+    diagnostics: dict[str, object] = {}
+    for key in _PROOF_WINDOW_STATE_KEYS:
+        if key in state_payload:
+            diagnostics[key] = state_payload[key]
+    return diagnostics
+
+
+def _merge_proof_window_state(
+    source_state: dict[str, object],
+    target_state: dict[str, object],
+) -> dict[str, object]:
+    merged = dict(target_state)
+    for key in _PROOF_WINDOW_STATE_KEYS:
+        if key not in merged and key in source_state:
+            merged[key] = source_state[key]
+    return merged
+
+
+def _advance_proof_window_state(
+    *,
+    state_payload: dict[str, object],
+    next_position_state: dict[str, object],
+) -> dict[str, object]:
+    proof_window_state = _entry_proof_window_state(state_payload)
+    if not proof_window_state:
+        return next_position_state
+
+    merged_state = dict(next_position_state)
+    previous_active = _state_bool(state_payload, "proof_window_active")
+    previous_promoted = _state_bool(state_payload, "proof_window_promoted")
+    previous_elapsed_bars = _state_int(state_payload, "proof_window_elapsed_bars")
+    proof_window_max_bars = max(
+        1,
+        _value_as_int(state_payload.get("proof_window_max_bars"), default=1),
+    )
+    entry_price = _state_float(merged_state, "entry_price")
+    risk_per_unit = _state_float(merged_state, "risk_per_unit")
+    peak_price = _state_float(merged_state, "peak_price")
+    current_favorable_excursion_r = 0.0
+    if peak_price > entry_price and entry_price > 0 and risk_per_unit > 0:
+        current_favorable_excursion_r = (peak_price - entry_price) / risk_per_unit
+
+    max_favorable_excursion_r = max(
+        _value_as_float(
+            state_payload.get("proof_window_max_favorable_excursion_r"), 0.0
+        ),
+        current_favorable_excursion_r,
+    )
+    promotion_threshold_r = _value_as_float(
+        state_payload.get("proof_window_promotion_threshold_r"),
+        0.0,
+    )
+    promoted = previous_promoted or (
+        previous_active
+        and promotion_threshold_r > 0
+        and max_favorable_excursion_r >= promotion_threshold_r
+    )
+
+    elapsed_bars = previous_elapsed_bars
+    if previous_active and not previous_promoted:
+        elapsed_bars += 1
+
+    if promoted:
+        proof_window_active = False
+        proof_window_status = "promoted"
+    elif previous_active and elapsed_bars >= proof_window_max_bars:
+        proof_window_active = False
+        proof_window_status = "expired"
+    elif previous_active:
+        proof_window_active = True
+        proof_window_status = "pending"
+    else:
+        proof_window_active = False
+        proof_window_status = _state_label(
+            state_payload,
+            "proof_window_status",
+            default="inactive",
+        )
+
+    merged_state.update(proof_window_state)
+    merged_state.update(
+        {
+            "proof_window_active": proof_window_active,
+            "proof_window_promoted": promoted,
+            "proof_window_status": proof_window_status,
+            "proof_window_elapsed_bars": elapsed_bars,
+            "proof_window_max_bars": proof_window_max_bars,
+            "proof_window_max_favorable_excursion_r": max_favorable_excursion_r,
+            "proof_window_promotion_threshold_r": promotion_threshold_r,
+        }
+    )
+    return merged_state
