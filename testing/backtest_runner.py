@@ -24,7 +24,7 @@ if "slave_constants" not in sys.modules:
     sys.modules["slave_constants"] = slave_constants
 
 import apis
-from core.config import REGIME_STRATEGY_PARAM_OVERRIDES, TradingConfig
+from core.config import TradingConfig
 from core.config_loader import load_trading_config
 from core.decision_core import evaluate_market
 from core.decision_models import (
@@ -511,10 +511,7 @@ class BacktestRunner:
                 available_krw=float(available_krw), open_positions=0
             ),
             diagnostics={
-                "regime_strategy_overrides": {
-                    regime_name: dict(overrides)
-                    for regime_name, overrides in REGIME_STRATEGY_PARAM_OVERRIDES.items()
-                },
+                "regime_strategy_overrides": self.config.all_regime_strategy_overrides(),
                 "entry_sizing_policy": self._entry_sizing_policy_payload(
                     baseline_equity=baseline_equity,
                     realized_pnl_today=realized_pnl_today,
@@ -624,13 +621,13 @@ class BacktestRunner:
             win_rate = float((df["pnl"] > 0).mean() * 100.0)
             return {"q1": win_rate, "q2": win_rate, "q3": win_rate, "q4": win_rate}
 
-        df["bucket"] = pd.qcut(
-            df["score"], q=4, labels=["q1", "q2", "q3", "q4"], duplicates="drop"
-        )
+        df["bucket_code"] = pd.qcut(df["score"], q=4, labels=False, duplicates="drop")
         result = {"q1": 0.0, "q2": 0.0, "q3": 0.0, "q4": 0.0}
-        grouped = df.dropna(subset=["bucket"]).groupby("bucket", observed=False)["pnl"]
-        for bucket, pnl_series in grouped:
-            result[str(bucket)] = float((pnl_series > 0).mean() * 100.0)
+        grouped = df.dropna(subset=["bucket_code"]).groupby(
+            "bucket_code", observed=False
+        )["pnl"]
+        for bucket_code, pnl_series in grouped:
+            result[f"q{int(bucket_code) + 1}"] = float((pnl_series > 0).mean() * 100.0)
         return result
 
     @staticmethod

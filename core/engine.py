@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from core.candle_buffer import CandleBuffer
-from core.config import REGIME_STRATEGY_PARAM_OVERRIDES, TradingConfig
+from core.config import TradingConfig
 from core.decision_core import evaluate_market
 from core.decision_models import (
     DecisionContext,
@@ -761,10 +761,7 @@ class TradingEngine:
                 open_positions=len(held_markets),
             ),
             diagnostics={
-                "regime_strategy_overrides": {
-                    regime_name: dict(overrides)
-                    for regime_name, overrides in REGIME_STRATEGY_PARAM_OVERRIDES.items()
-                },
+                "regime_strategy_overrides": self.config.all_regime_strategy_overrides(),
                 "entry_sizing_policy": self._entry_sizing_policy_payload(),
                 "market_damping_policy": self._market_damping_policy_payload(),
             },

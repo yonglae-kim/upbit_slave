@@ -706,15 +706,15 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
                 "_refresh_watch_markets_if_needed",
                 return_value=["KRW-BTC"],
             ),
-            patch.dict(
-                engine_module.REGIME_STRATEGY_PARAM_OVERRIDES,
-                {
+            patch.object(
+                config,
+                "all_regime_strategy_overrides",
+                return_value={
                     "strong_trend": {
                         "entry_score_threshold": 0.0,
                         "take_profit_r": 3.3,
                     }
                 },
-                clear=False,
             ),
         ):
             engine.run_once()

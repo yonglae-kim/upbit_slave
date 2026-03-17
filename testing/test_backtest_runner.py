@@ -68,6 +68,7 @@ class BacktestRunnerTest(unittest.TestCase):
                 "entry_swing_low": 94.0,
                 "entry_price": entry_price,
                 "initial_stop_price": stop_price,
+                "stop_basis": "unknown",
                 "risk_per_unit": risk_per_unit,
                 "bars_held": 0,
                 "entry_regime": entry_regime,
@@ -381,6 +382,7 @@ class BacktestRunnerTest(unittest.TestCase):
             first_context.diagnostics["market_damping_policy"]["max_spread"],
             runner.config.market_damping_max_spread,
         )
+        self.assertEqual(second_context.position.state["stop_basis"], "unknown")
         self.assertEqual(
             second_context.position.state, enter_intent.next_position_state
         )
@@ -534,6 +536,7 @@ class BacktestRunnerTest(unittest.TestCase):
 
         self.assertEqual(evaluate_market_mock.call_count, 3)
         exit_context = evaluate_market_mock.call_args_list[2].args[0]
+        self.assertEqual(exit_context.position.state["stop_basis"], "unknown")
         self.assertEqual(exit_context.position.state, hold_state)
         self.assertEqual(result.closed_trades, 1)
 
@@ -1177,6 +1180,25 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertIn("large_gap_win_rate", stats)
         self.assertIn("large_gap_expectancy", stats)
         self.assertIn("large_gap_avg_loss", stats)
+
+    def test_score_win_rates_by_quantile_handles_sparse_distinct_scores(self):
+        score_pnl_rows = [
+            (1.0, -10.0),
+            (1.0, -5.0),
+            (1.0, 10.0),
+            (1.0, 5.0),
+            (2.0, -10.0),
+            (2.0, 10.0),
+            (2.0, 15.0),
+            (2.0, 20.0),
+        ]
+
+        quantile_win_rates = BacktestRunner._score_win_rates_by_quantile(score_pnl_rows)
+
+        self.assertEqual(
+            quantile_win_rates,
+            {"q1": 50.0, "q2": 75.0, "q3": 0.0, "q4": 0.0},
+        )
 
 
 if __name__ == "__main__":
