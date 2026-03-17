@@ -22,6 +22,7 @@ class PositionExitState:
     entry_swing_low: float = 0.0
     entry_price: float = 0.0
     initial_stop_price: float = 0.0
+    stop_basis: str = "unknown"
     risk_per_unit: float = 0.0
     bars_held: int = 0
     strategy_partial_done: bool = False
@@ -30,6 +31,16 @@ class PositionExitState:
     highest_r: float = 0.0
     lowest_r: float = 0.0
     drawdown_from_peak_r: float = 0.0
+    proof_window_active: bool = False
+    proof_window_promoted: bool = False
+    proof_window_status: str = "inactive"
+    proof_window_start_bar: int = 0
+    proof_window_elapsed_bars: int = 0
+    proof_window_max_bars: int = 0
+    proof_window_max_favorable_excursion_r: float = 0.0
+    proof_window_promotion_threshold_r: float = 0.0
+    proof_window_cooldown_hint_bars: int = 0
+    proof_window_symbol_profile: str = "default"
 
     def reset_after_full_exit(self) -> None:
         self.bars_held = 0
@@ -39,6 +50,16 @@ class PositionExitState:
         self.highest_r = 0.0
         self.lowest_r = 0.0
         self.drawdown_from_peak_r = 0.0
+        self.proof_window_active = False
+        self.proof_window_promoted = False
+        self.proof_window_status = "inactive"
+        self.proof_window_start_bar = 0
+        self.proof_window_elapsed_bars = 0
+        self.proof_window_max_bars = 0
+        self.proof_window_max_favorable_excursion_r = 0.0
+        self.proof_window_promotion_threshold_r = 0.0
+        self.proof_window_cooldown_hint_bars = 0
+        self.proof_window_symbol_profile = "default"
 
 
 _POSITION_EXIT_STATE_FIELD_NAMES = {
@@ -57,6 +78,7 @@ def load_position_exit_state(
         entry_swing_low=_payload_float(payload, "entry_swing_low"),
         entry_price=_payload_float(payload, "entry_price"),
         initial_stop_price=_payload_float(payload, "initial_stop_price"),
+        stop_basis=_payload_str(payload, "stop_basis", default="unknown"),
         risk_per_unit=_payload_float(payload, "risk_per_unit"),
         bars_held=_payload_int(payload, "bars_held"),
         strategy_partial_done=_payload_bool(payload, "strategy_partial_done"),
@@ -65,6 +87,26 @@ def load_position_exit_state(
         highest_r=_payload_float(payload, "highest_r"),
         lowest_r=_payload_float(payload, "lowest_r"),
         drawdown_from_peak_r=_payload_float(payload, "drawdown_from_peak_r"),
+        proof_window_active=_payload_bool(payload, "proof_window_active"),
+        proof_window_promoted=_payload_bool(payload, "proof_window_promoted"),
+        proof_window_status=_payload_str(
+            payload, "proof_window_status", default="inactive"
+        ),
+        proof_window_start_bar=_payload_int(payload, "proof_window_start_bar"),
+        proof_window_elapsed_bars=_payload_int(payload, "proof_window_elapsed_bars"),
+        proof_window_max_bars=_payload_int(payload, "proof_window_max_bars"),
+        proof_window_max_favorable_excursion_r=_payload_float(
+            payload, "proof_window_max_favorable_excursion_r"
+        ),
+        proof_window_promotion_threshold_r=_payload_float(
+            payload, "proof_window_promotion_threshold_r"
+        ),
+        proof_window_cooldown_hint_bars=_payload_int(
+            payload, "proof_window_cooldown_hint_bars"
+        ),
+        proof_window_symbol_profile=_payload_str(
+            payload, "proof_window_symbol_profile", default="default"
+        ),
     )
 
 
@@ -222,14 +264,20 @@ class PositionOrderPolicy:
             state.lowest_r = min(float(state.lowest_r), float(current_r))
             state.drawdown_from_peak_r = max(state.highest_r - current_r, 0.0)
 
-        # Exit stage transition conditions
-        # 1) initial_defense -> mid_management: highest_r >= 1.0 or bars_held >= 8
-        # 2) mid_management -> late_trailing: highest_r >= 2.0 or bars_held >= 24
+        candidate_mode = str(strategy_name).lower().strip() == "candidate_v1"
+        candidate_requires_proof_promotion = (
+            candidate_mode
+            and self._has_proof_window_state(state)
+            and not bool(state.proof_window_promoted)
+        )
+
         exit_stage = "initial_defense"
-        if state.highest_r >= 1.0 or state.bars_held >= 8:
+        if state.highest_r >= 1.0 or (not candidate_mode and state.bars_held >= 8):
             exit_stage = "mid_management"
-        if state.highest_r >= 2.0 or state.bars_held >= 24:
+        if state.highest_r >= 2.0 or (not candidate_mode and state.bars_held >= 24):
             exit_stage = "late_trailing"
+        if candidate_requires_proof_promotion:
+            exit_stage = "initial_defense"
 
         if self.exit_mode == "atr":
             hard_stop_price = self._atr_stop_price(
@@ -238,11 +286,24 @@ class PositionOrderPolicy:
         else:
             hard_stop_price = avg_buy_price * self.stop_loss_threshold
 
-        if state.risk_per_unit > 0 and state.entry_price > 0:
+        entry_defined_stop = 0.0
+        if state.initial_stop_price > 0 and str(
+            state.stop_basis
+        ).strip().lower() not in {"", "unknown"}:
+            entry_defined_stop = float(state.initial_stop_price)
+
+        if exit_stage == "initial_defense" and entry_defined_stop > 0:
+            hard_stop_price = entry_defined_stop
+        elif state.risk_per_unit > 0 and state.entry_price > 0:
             if exit_stage == "initial_defense":
                 hard_stop_price = max(
                     hard_stop_price, state.entry_price - (state.risk_per_unit * 0.85)
                 )
+            elif candidate_mode and exit_stage == "mid_management":
+                if entry_defined_stop > 0:
+                    hard_stop_price = max(hard_stop_price, entry_defined_stop)
+                if state.breakeven_armed or state.highest_r >= 1.5:
+                    hard_stop_price = max(hard_stop_price, state.entry_price)
             elif exit_stage in {"mid_management", "late_trailing"} and (
                 state.breakeven_armed or state.highest_r >= 1.0
             ):
@@ -263,11 +324,29 @@ class PositionOrderPolicy:
             "exit_stage": exit_stage,
             "hard_stop_price": float(hard_stop_price),
             "entry_price": float(state.entry_price),
+            "initial_stop_price": float(state.initial_stop_price),
+            "stop_basis": str(state.stop_basis or "unknown"),
             "risk_per_unit": float(state.risk_per_unit),
             "atr_to_risk": float(atr_to_risk),
             "bars_held": float(max(0, int(state.bars_held))),
             "highest_r": float(state.highest_r),
         }
+
+        if (
+            candidate_mode
+            and not state.proof_window_active
+            and not state.proof_window_promoted
+            and str(state.proof_window_status).strip().lower() == "expired"
+            and str(state.proof_window_symbol_profile).strip().lower()
+            in {"weak", "guarded"}
+            and current_r <= 0.0
+        ):
+            return ExitDecision(
+                True,
+                1.0,
+                "proof_window_fail",
+                diagnostics=stop_diagnostics,
+            )
 
         if current_price <= hard_stop_price:
             if (
@@ -303,7 +382,8 @@ class PositionOrderPolicy:
                 )
 
         if (
-            not strategy_partial_enabled
+            not candidate_mode
+            and not strategy_partial_enabled
             and exit_stage != "initial_defense"
             and not state.partial_take_profit_done
             and self.partial_take_profit_ratio > 0
@@ -332,8 +412,16 @@ class PositionOrderPolicy:
                 trailing_floor, state.peak_price - (state.risk_per_unit * 0.7)
             )
 
+        if candidate_mode and exit_stage != "late_trailing":
+            trailing_floor = 0.0
+
         if trailing_floor > 0 and current_price <= trailing_floor:
-            return ExitDecision(True, 1.0, "trailing_stop")
+            return ExitDecision(
+                True,
+                1.0,
+                "trailing_stop",
+                diagnostics=stop_diagnostics,
+            )
 
         if signal_exit:
             if strategy_mode and state.risk_per_unit > 0:
@@ -344,10 +432,10 @@ class PositionOrderPolicy:
                     risk_per_unit=state.risk_per_unit,
                 )
                 if current_r < required_r:
-                    return ExitDecision(False)
+                    return ExitDecision(False, diagnostics=stop_diagnostics)
             return ExitDecision(True, 1.0, "strategy_signal")
 
-        return ExitDecision(False)
+        return ExitDecision(False, diagnostics=stop_diagnostics)
 
     def _atr_stop_price(
         self,
@@ -424,3 +512,14 @@ class PositionOrderPolicy:
                 vol_adjust = -0.2
 
         return min(3.0, max(1.0, regime_base + hold_adjust + vol_adjust))
+
+    @staticmethod
+    def _has_proof_window_state(state: PositionExitState) -> bool:
+        status = str(state.proof_window_status or "").strip().lower()
+        return (
+            bool(state.proof_window_active)
+            or bool(state.proof_window_promoted)
+            or status not in {"", "inactive", "unknown"}
+            or int(state.proof_window_max_bars) > 0
+            or float(state.proof_window_promotion_threshold_r) > 0
+        )

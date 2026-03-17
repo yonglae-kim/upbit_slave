@@ -7,10 +7,14 @@ from core.risk import RiskManager
 
 
 class RiskAndPolicyTest(unittest.TestCase):
-
     def test_normalize_accounts_includes_total_equity_krw(self):
         accounts = [
-            {"unit_currency": "KRW", "currency": "KRW", "balance": "100000", "locked": "0"},
+            {
+                "unit_currency": "KRW",
+                "currency": "KRW",
+                "balance": "100000",
+                "locked": "0",
+            },
             {
                 "unit_currency": "KRW",
                 "currency": "BTC",
@@ -64,7 +68,6 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "max_correlated_positions")
 
-
     def test_daily_loss_limit_uses_cash_only_total_equity(self):
         risk = RiskManager(
             risk_per_trade_pct=0.01,
@@ -78,11 +81,15 @@ class RiskAndPolicyTest(unittest.TestCase):
 
         risk.set_baseline_equity(1_000_000)
         risk.record_trade_result(-40_000)
-        decision = risk.allow_entry(available_krw=100_000, held_markets=[], candidate_market="KRW-XRP")
+        decision = risk.allow_entry(
+            available_krw=100_000, held_markets=[], candidate_market="KRW-XRP"
+        )
         self.assertTrue(decision.allowed)
 
         risk.record_trade_result(-10_000)
-        decision = risk.allow_entry(available_krw=100_000, held_markets=[], candidate_market="KRW-XRP")
+        decision = risk.allow_entry(
+            available_krw=100_000, held_markets=[], candidate_market="KRW-XRP"
+        )
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "max_daily_loss")
 
@@ -104,7 +111,9 @@ class RiskAndPolicyTest(unittest.TestCase):
         risk.record_trade_result(-45_000)
         self.assertEqual(risk.clamp_quality_multiplier(1.2), 0.8)
 
-    def test_daily_loss_limit_uses_coin_heavy_total_equity_and_resets_on_utc_rollover(self):
+    def test_daily_loss_limit_uses_coin_heavy_total_equity_and_resets_on_utc_rollover(
+        self,
+    ):
         risk = RiskManager(
             risk_per_trade_pct=0.01,
             max_daily_loss_pct=0.05,
@@ -118,18 +127,26 @@ class RiskAndPolicyTest(unittest.TestCase):
         # total_equity=3,000,000 -> daily limit=150,000
         risk.set_baseline_equity(3_000_000)
         risk.record_trade_result(-100_000)
-        decision = risk.allow_entry(available_krw=100_000, held_markets=[], candidate_market="KRW-ETH")
+        decision = risk.allow_entry(
+            available_krw=100_000, held_markets=[], candidate_market="KRW-ETH"
+        )
         self.assertTrue(decision.allowed)
 
         risk.record_trade_result(-50_000)
-        decision = risk.allow_entry(available_krw=100_000, held_markets=[], candidate_market="KRW-ETH")
+        decision = risk.allow_entry(
+            available_krw=100_000, held_markets=[], candidate_market="KRW-ETH"
+        )
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "max_daily_loss")
 
         # UTC day rollover resets daily trackers and baseline is refreshed by new equity
         risk.reset_daily_if_needed(now=datetime(2099, 1, 1, 0, 1, tzinfo=timezone.utc))
-        risk.set_baseline_equity(2_000_000, now=datetime(2099, 1, 1, 0, 1, tzinfo=timezone.utc))
-        decision = risk.allow_entry(available_krw=100_000, held_markets=[], candidate_market="KRW-ETH")
+        risk.set_baseline_equity(
+            2_000_000, now=datetime(2099, 1, 1, 0, 1, tzinfo=timezone.utc)
+        )
+        decision = risk.allow_entry(
+            available_krw=100_000, held_markets=[], candidate_market="KRW-ETH"
+        )
         self.assertTrue(decision.allowed)
 
     def test_position_policy_partial_take_profit_then_trailing(self):
@@ -142,16 +159,19 @@ class RiskAndPolicyTest(unittest.TestCase):
         )
         state = PositionExitState(peak_price=100.0, bars_held=8)
 
-        partial = policy.evaluate(state=state, avg_buy_price=100.0, current_price=103.0, signal_exit=False)
+        partial = policy.evaluate(
+            state=state, avg_buy_price=100.0, current_price=103.0, signal_exit=False
+        )
         self.assertTrue(partial.should_exit)
         self.assertEqual(partial.reason, "partial_take_profit")
         self.assertEqual(partial.qty_ratio, 0.5)
 
-        trailing = policy.evaluate(state=state, avg_buy_price=100.0, current_price=100.8, signal_exit=False)
+        trailing = policy.evaluate(
+            state=state, avg_buy_price=100.0, current_price=100.8, signal_exit=False
+        )
         self.assertTrue(trailing.should_exit)
         self.assertEqual(trailing.reason, "trailing_stop")
         self.assertEqual(trailing.qty_ratio, 1.0)
-
 
     def test_position_policy_fixed_pct_vs_atr_mode(self):
         fixed_policy = PositionOrderPolicy(
@@ -174,7 +194,9 @@ class RiskAndPolicyTest(unittest.TestCase):
         )
 
         fixed_state = PositionExitState(peak_price=100.0)
-        atr_state = PositionExitState(peak_price=100.0, entry_atr=5.0, entry_swing_low=90.0)
+        atr_state = PositionExitState(
+            peak_price=100.0, entry_atr=5.0, entry_swing_low=90.0
+        )
 
         fixed_decision = fixed_policy.evaluate(
             state=fixed_state,
@@ -287,6 +309,178 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertTrue(state.breakeven_armed)
         self.assertTrue(breakeven_stop.should_exit)
         self.assertEqual(breakeven_stop.reason, "stop_loss")
+
+    def test_candidate_mode_does_not_activate_trailing_on_bars_held_alone(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+        )
+        state = PositionExitState(
+            peak_price=104.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=30,
+            highest_r=0.8,
+            lowest_r=0.0,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=103.0,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="candidate_v1",
+        )
+
+        self.assertFalse(decision.should_exit)
+        self.assertEqual(decision.diagnostics["exit_stage"], "initial_defense")
+
+    def test_candidate_mode_requires_proof_promotion_before_late_trailing(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+        )
+        expired_state = PositionExitState(
+            peak_price=115.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=30,
+            highest_r=3.0,
+            lowest_r=0.0,
+        )
+        expired_state.__dict__.update(
+            {
+                "proof_window_active": False,
+                "proof_window_promoted": False,
+                "proof_window_status": "expired",
+            }
+        )
+
+        promoted_state = PositionExitState(
+            peak_price=115.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=30,
+            highest_r=3.0,
+            lowest_r=0.0,
+        )
+        promoted_state.__dict__.update(
+            {
+                "proof_window_active": False,
+                "proof_window_promoted": True,
+                "proof_window_status": "promoted",
+            }
+        )
+
+        expired_decision = policy.evaluate(
+            state=expired_state,
+            avg_buy_price=100.0,
+            current_price=112.0,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="candidate_v1",
+        )
+        promoted_decision = policy.evaluate(
+            state=promoted_state,
+            avg_buy_price=100.0,
+            current_price=112.0,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="candidate_v1",
+        )
+
+        self.assertFalse(expired_decision.should_exit)
+        self.assertEqual(expired_decision.diagnostics["exit_stage"], "initial_defense")
+        self.assertTrue(promoted_decision.should_exit)
+        self.assertEqual(promoted_decision.reason, "trailing_stop")
+        self.assertEqual(promoted_decision.diagnostics["exit_stage"], "late_trailing")
+
+    def test_weak_profile_candidate_exits_on_expired_failed_proof(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+        )
+        weak_state = PositionExitState(
+            peak_price=401.0,
+            entry_price=400.0,
+            initial_stop_price=395.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=2,
+            highest_r=0.2,
+            lowest_r=-0.2,
+        )
+        weak_state.__dict__.update(
+            {
+                "proof_window_active": False,
+                "proof_window_promoted": False,
+                "proof_window_status": "expired",
+                "proof_window_max_bars": 2,
+                "proof_window_promotion_threshold_r": 0.65,
+                "proof_window_symbol_profile": "weak",
+            }
+        )
+
+        decision = policy.evaluate(
+            state=weak_state,
+            avg_buy_price=400.0,
+            current_price=399.0,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="candidate_v1",
+        )
+
+        self.assertTrue(decision.should_exit)
+        self.assertEqual(decision.reason, "proof_window_fail")
+        self.assertEqual(decision.qty_ratio, 1.0)
+
+    def test_candidate_mode_ignores_generic_partial_take_profit_branch(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.02,
+            partial_take_profit_ratio=0.5,
+            partial_stop_loss_ratio=1.0,
+        )
+        state = PositionExitState(
+            peak_price=106.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=12,
+            highest_r=1.2,
+            lowest_r=0.0,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=102.2,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="candidate_v1",
+            partial_take_profit_enabled=False,
+        )
+
+        self.assertFalse(decision.should_exit)
+        self.assertEqual(decision.diagnostics["exit_stage"], "mid_management")
 
 
 if __name__ == "__main__":
