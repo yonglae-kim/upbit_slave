@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from typing import cast
+from typing import Dict, cast
 
 from core.decision_models import DecisionContext, DecisionIntent, StrategySignal
 from core.position_policy import (
@@ -606,7 +606,7 @@ def _dict_str_object(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
     normalized: dict[str, object] = {}
-    raw_mapping = cast(dict[object, object], value)
+    raw_mapping = cast(Dict[object, object], value)
     for key, item in raw_mapping.items():
         normalized[str(key)] = item
     return normalized

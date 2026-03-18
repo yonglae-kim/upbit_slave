@@ -340,3 +340,8 @@ TRADING_MODE=dry_run TRADING_STRATEGY_NAME=candidate_v1 python main.py
 - 변경 요약: `candidate_v1`의 shared exit controller semantics를 조정해 bars_held만으로 trailing 단계가 활성화되지 않도록 바꿨다. candidate는 이제 `highest_r`가 실제로 room을 벌기 전까지 `initial_defense`에 머물며, trailing floor도 `late_trailing` 단계 전에는 비활성화된다. 또한 baseline 공용 generic `partial_take_profit` 분기에는 더 이상 candidate가 걸리지 않도록 막아서, exit progression을 시간보다 profit progression에 더 가깝게 맞췄다.
 - 영향 파일: `core/position_policy.py`, `testing/test_risk_and_policy.py`, `testing/test_decision_core.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: 기본 실행 커맨드는 동일. full redesign chunk 2 검증용으로 `python3 -m unittest testing.test_candidate_strategy_v1 testing.test_decision_core testing.test_risk_and_policy testing.test_strategy_registry`를 사용.
+
+### 변경 요약 (2026-03-18, Python 3.8 decision_core cast 호환성 수정)
+- 변경 요약: `core/decision_core.py`의 `_dict_str_object()`가 `cast(dict[object, object], value)`를 사용하면서 Python 3.8에서 런타임 평가 시 `TypeError: 'type' object is not subscriptable`를 내던 문제를 `typing.Dict` 기반 cast로 교체해 수정했다.
+- 영향 파일: `core/decision_core.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 실행 커맨드는 동일. 검증은 `TRADING_MODE=dry_run`에서 `main.create_engine(...).run_once()`를 실제 실행해 현재 TypeError 경로가 사라졌는지 확인했다.
