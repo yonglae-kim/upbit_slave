@@ -11,6 +11,15 @@ from core.strategy_registry import (
 
 
 class StrategyRegistryTest(unittest.TestCase):
+    def test_lookup_ict_v1_strategy(self):
+        strategy = get_strategy("ict_v1")
+
+        self.assertEqual(strategy.name, "ict_v1")
+        self.assertEqual(strategy.canonical_name, "ict_v1")
+        self.assertTrue(callable(strategy.entry_evaluator))
+        self.assertTrue(callable(strategy.exit_evaluator))
+        self.assertEqual(strategy.metadata["surface_module"], "core.strategies.ict_v1")
+
     def test_lookup_baseline_strategy(self):
         strategy = get_strategy("baseline")
 
@@ -49,9 +58,29 @@ class StrategyRegistryTest(unittest.TestCase):
         self.assertIsInstance(params, StrategyParams)
         self.assertEqual(params.strategy_name, "baseline")
 
+    def test_default_config_uses_ict_v1_strategy_name(self):
+        config = TradingConfig(do_not_trading=[])
+
+        params = config.to_strategy_params()
+
+        self.assertIsInstance(params, StrategyParams)
+        self.assertEqual(params.strategy_name, "ict_v1")
+
+    def test_ict_v1_default_params_use_short_horizon_regime_and_trigger_profile(self):
+        config = TradingConfig(do_not_trading=[], strategy_name="ict_v1")
+
+        params = config.to_strategy_params()
+
+        self.assertEqual(params.regime_ema_fast, 8)
+        self.assertEqual(params.regime_ema_slow, 24)
+        self.assertEqual(params.trigger_mode, "balanced")
+        self.assertEqual(params.required_trigger_count, 2)
+        self.assertEqual(params.take_profit_r, 1.6)
+
     def test_registered_strategies_return_shared_strategy_signal_contract(self):
         baseline = get_strategy("baseline")
         candidate = get_strategy("candidate_v1")
+        ict_v1 = get_strategy("ict_v1")
         config = TradingConfig(do_not_trading=[], strategy_name="baseline")
         params = config.to_strategy_params()
 
@@ -59,9 +88,11 @@ class StrategyRegistryTest(unittest.TestCase):
         candidate_result = candidate.entry_evaluator(
             {"1m": [], "5m": [], "15m": []}, params
         )
+        ict_result = ict_v1.entry_evaluator({"1m": [], "5m": [], "15m": []}, params)
 
         self.assertIsInstance(baseline_result, StrategySignal)
         self.assertIsInstance(candidate_result, StrategySignal)
+        self.assertIsInstance(ict_result, StrategySignal)
 
 
 if __name__ == "__main__":

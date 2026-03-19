@@ -1,3 +1,3 @@
-from core.strategies import baseline, candidate_v1
+from core.strategies import baseline, candidate_v1, ict_v1
 
-__all__ = ["baseline", "candidate_v1"]
+__all__ = ["baseline", "candidate_v1", "ict_v1"]
