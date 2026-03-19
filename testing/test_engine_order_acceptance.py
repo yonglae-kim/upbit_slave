@@ -693,6 +693,7 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
         notifier = DummyNotifier()
         config = TradingConfig(
             do_not_trading=[],
+            strategy_name="rsi_bb_reversal_long",
             krw_markets=["KRW-BTC"],
             min_order_krw=5_000,
             min_buyable_krw=0,
