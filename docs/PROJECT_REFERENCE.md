@@ -5,7 +5,7 @@
 
 ## 1) 실행 진입점
 - `main.py`: 실행 엔트리포인트
-- `core/config_loader.py`: 환경변수 기반 설정 로딩/검증. Task 8 runtime promotion gate는 승인 대상 후보 전략(`candidate_v1`)에만 적용되며, `paper/live`에서만 `TRADING_STRATEGY_DECISION_PATH`의 decision artifact를 fail-closed로 검증한다. 현재 shared runtime seam에서 지원하는 selectable strategy는 `baseline`/`rsi_bb_reversal_long`/`candidate_v1`만이며, `sr_ob_fvg`는 시작 전 config validation에서 reject한다. `dry_run`은 현재 정책상 candidate artifact gate 없이 전략 선택을 허용한다.
+- `core/config_loader.py`: 환경변수 기반 설정 로딩/검증. runtime promotion gate는 승인 대상 후보 전략(`candidate_v1`)에만 적용되며, `paper/live`에서만 `TRADING_STRATEGY_DECISION_PATH`의 decision artifact를 fail-closed로 검증한다. 현재 shared runtime seam에서 지원하는 selectable strategy는 `baseline`/`rsi_bb_reversal_long`/`candidate_v1`/`ict_v1`이며, 기본 active strategy는 `ict_v1`다. `baseline` 계열과 `ict_v1`는 ungated runtime strategy이고, `sr_ob_fvg`는 시작 전 config validation에서 reject된다. `dry_run`은 현재 정책상 candidate artifact gate 없이 전략 선택을 허용한다.
 - `core/engine.py`: 실거래 adapter 엔진. raw market/portfolio/runtime snapshot만 조립해 `core.decision_core.evaluate_market`에 전달하고, seam이 돌려준 intent/sizing proposal을 기준으로 broker preflight/주문 실행/알림/정합성만 처리. 다만 live 메모리에 이전 청산 상태가 아직 없을 때의 bootstrap payload(`_default_position_state_payload`) 생성만 엔진 소유로 유지한다.
 - `testing/backtest_runner.py`: 백테스트 adapter. 진입/청산 판단은 `core.decision_core.evaluate_market`에 위임하고, backtest 쪽은 fill/slippage/fee accounting, ledger/segment CSV, stop diagnostics, `sell_decision_rule` 전달과 재진입 cooldown bookkeeping만 유지한다. 진입 context에는 live와 같은 market-damping seam을 위해 synthetic ticker diagnostics(`trade_price`, `ask_price`, `bid_price`, `acc_trade_price_24h`)도 함께 실어 backtest/live sizing divergence를 줄인다.
 - `testing/experiment_runner.py`: walk-forward 세그먼트 CSV와 parity artifact를 재사용해 후보 전략의 `promote/reject` decision artifact를 생성한다. OOS acceptance는 `testing/optimize_walkforward.py`의 scoring/threshold contract를 그대로 사용하고, parity gate는 후보 전략명과 parity artifact의 `strategy_name`이 일치할 때만 통과한다. 기본 parity fixture는 `testing/fixtures/parity_<strategy>_cases.json`가 있으면 그것을 자동 선택한다.
@@ -13,19 +13,20 @@
 
 ## 2) 핵심 모듈 맵
 ### Core
-- `core/config.py`: 트레이딩 설정 데이터 구조/기본값. `candidate_v1`는 shared baseline 기본값 `entry_score_threshold=2.5`를 그대로 상속하지 않고, 전략 파라미터로 변환될 때만 stricter default `3.6`을 사용한다. 다만 사용자가 `TRADING_ENTRY_SCORE_THRESHOLD`로 명시한 값은 그대로 보존하며, regime override payload도 전략별로 분기되어 candidate가 baseline용 global override map을 더 이상 상속하지 않는다. 또한 candidate 전용 proof-window 기본값과 bounded symbol-conditioned override(`KRW-XRP` guarded profile, `KRW-ADA` weaker-symbol profile with shorter proof window / stricter promotion threshold / larger cooldown hint)를 `core/config.py` 내부 helper로 표현해 baseline 경로를 건드리지 않고 candidate 진단값만 더 엄격하게 만들 수 있다.
-- `core/strategy.py`, `core/rsi_bb_reversal_long.py`: 기존 전략 인터페이스/구현
-- `core/strategy_registry.py`: 전략 이름을 공유 전략 엔트리로 정규화/조회하는 레지스트리
+- `core/config.py`: 트레이딩 설정 데이터 구조/기본값. 기본 전략 이름은 이제 `ict_v1`이며, `candidate_v1`는 전략 파라미터로 변환될 때만 stricter default `3.6`을 사용한다. `ict_v1`는 short-horizon 기본값(`regime_ema_fast=8`, `regime_ema_slow=24`, `trigger_mode=balanced`, `required_trigger_count=2`, `take_profit_r=1.6`) 위에서 deterministic ICT rule set을 사용한다.
+- `core/strategy.py`, `core/rsi_bb_reversal_long.py`: 기존 전략 인터페이스/구현과 SR/FVG/OB/trigger primitive library
+- `core/strategy_registry.py`: 전략 이름을 공유 전략 엔트리로 정규화/조회하는 레지스트리. `ict_v1`가 새 canonical runtime strategy로 등록됨
 - `core/candidate_strategy_defaults.py`: `candidate_v1` proof-window 기본값과 bounded symbol-conditioned override를 별도 helper로 분리한 모듈. `core/config.py`와 `core/strategies/candidate_v1.py`가 같은 default source를 공유하면서 import cycle 없이 candidate-only state 기본값을 읽는다.
 - `core/decision_models.py`: 공유 의사결정용 순수 데이터 모델(`MarketSnapshot`, `DecisionIntent` 등)
-- `core/decision_core.py`: 전략 진입/청산 판단을 pure function 경계에서 평가하고 `DecisionIntent` + `next_position_state`를 반환하는 공유 decision core. live adapter는 raw snapshot과 정책 payload만 전달하고, seam이 regime 선택, effective strategy params, entry sizing/quality/damping proposal, exit-policy evaluation을 결정한다. 청산 시에는 포지션 cost basis(`PositionSnapshot.entry_price`)와 전략 진입 스냅샷(`position.state.entry_price`)을 분리해 전달하고, `DecisionContext.diagnostics.sell_decision_rule`로 `or/and` 청산 결합 모드를 제어할 수 있음
-- `core/decision_core.py`: 전략 진입/청산 판단을 pure function 경계에서 평가하고 `DecisionIntent` + `next_position_state`를 반환하는 공유 decision core. live adapter는 raw snapshot과 정책 payload만 전달하고, seam이 regime 선택, effective strategy params, entry sizing/quality/damping proposal, exit-policy evaluation을 결정한다. `candidate_v1`에 대해서는 seam regime resolution도 전략 내부와 같은 short-horizon param normalization을 먼저 적용해 `evaluate_market`의 `regime`/`entry_regime`/persisted `entry_regime`가 실제 candidate entry signal의 regime label과 어긋나지 않게 유지한다. 이번 proof-window chunk에서는 seam이 candidate entry payload에 symbol metadata를 함께 실어 accepted entry의 `proof_window_*` 상태를 `next_position_state`에 보존하고, hold cycle에서도 elapsed bars / max favorable excursion / promoted-or-expired 상태를 갱신하되 bars 경과만으로는 promotion을 주지 않는다. 이제 청산 seam merge도 policy boundary가 들고 온 `proof_window_*` 상태를 덮어쓰지 않고 유지해, non-promoted candidate와 promoted candidate가 같은 `PositionOrderPolicy` 경계 안에서 서로 다른 progression semantics를 안정적으로 사용한다. 청산 시에는 포지션 cost basis(`PositionSnapshot.entry_price`)와 전략 진입 스냅샷(`position.state.entry_price`)을 분리해 전달하고, `DecisionContext.diagnostics.sell_decision_rule`로 `or/and` 청산 결합 모드를 제어할 수 있음
+- `core/decision_core.py`: 전략 진입/청산 판단을 pure function 경계에서 평가하고 `DecisionIntent` + `next_position_state`를 반환하는 공유 decision core. `ict_v1` 청산 경로에서는 exit seam이 전략 파라미터를 정규화해 TP1 partial / breakeven / TP2 runner semantics가 shared `PositionOrderPolicy` 경계에 정확히 전달되도록 맞춘다. `candidate_v1` proof-window state propagation과 baseline/candidate alias semantics는 계속 유지한다.
 - `core/strategies/baseline.py`: 기존 `rsi_bb_reversal_long` 진입/청산 로직을 재사용하는 `baseline` 래퍼
-- `core/strategies/candidate_v1.py`: shared strategy seam 뒤에 붙는 단순한 regime-aware pullback continuation 전략. `strong_trend`/`weak_trend`에서만 1m pullback-and-reclaim 진입을 평가하고, reclaim은 이전 impulse 고점을 반드시 종가 돌파해야 하는 대신 마지막 pullback 종가에서 impulse 고점까지 거리의 절반 이상을 bullish candle로 되돌리면 short-horizon continuation으로 받아들인다. 다만 pullback wick이 reclaim gap 대비 과도하게 깊어지면 `pullback_too_deep`로 fail-closed 하여 불안정한 deep retracement를 진입에서 제외한다. 후보 전략 전용 short-horizon 15m regime window(기본 12/48 EMA cap)로 7일 3분봉 백테스트에서도 과도한 warmup insufficiency 없이 평가되도록 맞춘다. 그래도 15m 데이터가 정말 부족하면 `insufficient_15m_candles`와 `required_15m`/`actual_15m`를 명시적으로 반환한다. 진입 sizing은 공용 risk-based sizing seam을 그대로 사용하되 baseline의 quality score bucket multiplier는 명시적으로 우회하며, 전략 파라미터 기본 threshold는 `3.6`으로 더 엄격하게 시작한다. 또한 shared seam이 전달하는 regime override payload는 candidate 전용 map만 사용하므로 baseline용 global `entry_score_threshold` override가 candidate filtering을 다시 느슨하게 만들지 않는다. 이번 proof-window chunk에서는 accepted entry diagnostics에 `proof_window_active`, `proof_window_elapsed_bars`, `proof_window_max_favorable_excursion_r`, `proof_window_promotion_threshold_r`, `proof_window_cooldown_hint_bars`, `proof_window_symbol_profile`를 추가해 filled trade가 이후 seam/policy 단계에서 proof state를 잃지 않도록 했다. `reclaim_floor`, `reclaim_recovery_ratio`, `pullback_depth_ratio`, `continuation_quality`, `stop_basis`를 포함한 설명 가능한 진단값을 유지하고, 청산은 여전히 공용 `PositionOrderPolicy` 경로에 맡기되 shared seam이 entry-defined `pullback_low` stop context를 position state로 전달해 `initial_defense` 구간에서는 해당 초기 구조 손절을 그대로 존중하도록 맞춘다.
-- `candidate_v1`는 runtime/backtest entry context에 `market_damping_policy`가 전달될 때만 generic market-profile gate를 사용한다. 이 gate는 코인 이름이 아니라 24h 거래대금/상대 스프레드/ATR 기반 market quality만 보고 poor market을 `market_profile_blocked`로 hold시키며, synthetic seam/parity fixture가 같은 gate에 묶이지 않도록 candidate-only context 활성화 경계는 `core/engine.py`와 `testing/backtest_runner.py` 쪽에 둔다.
-- `core/risk.py`, `core/position_policy.py`: 리스크/포지션 정책. `PositionExitState`가 이제 `proof_window_*` 필드를 shared boundary 안에서 직접 보존하며, `candidate_v1`는 proof-window state가 존재하지만 아직 promotion되지 않은 동안 `highest_r`/`bars_held`만으로 `late_trailing`에 진입하지 않는다. 즉 non-promoted candidate는 tighter `initial_defense` 관리에 남고, proof promotion이 확인된 뒤에만 기존 delayed-trailing semantics를 탄다. 추가 bounded iteration으로 `weak`/`guarded` symbol profile은 proof window가 만료됐는데도 손익이 아직 비우호적이면 `proof_window_fail`로 조기 정리된다.
+- `core/strategies/candidate_v1.py`: shared strategy seam 뒤에 붙는 regime-aware pullback continuation 후보 전략. promotion gate / proof-window semantics는 그대로 유지된다.
+- `core/strategies/ict_models.py`: `ict_v1` 전용 pure helper layer. Turtle Soup sweep/reclaim, Unicorn overlap, OTE pocket, Silver Bullet session-gated setup detection을 deterministic closed-candle rule로 계산한다.
+- `core/strategies/ict_sessions.py`: UTC candle timestamp를 New York local time으로 변환해 Silver Bullet windows(`03:00-04:00`, `10:00-11:00`, `14:00-15:00` NY local)를 판정한다.
+- `core/strategies/ict_v1.py`: 기본 active ICT 전략. `15m` dealing range/OTE context, `5m` sweep/FVG/OB context, `1m` trigger를 조합해 Turtle Soup / Unicorn / Silver Bullet / OTE long setup을 동시에 평가하고 가장 높은 deterministic score의 setup 하나만 채택한다. 현재는 short-horizon 15m regime pass와 bullish micro-breakout trigger를 모두 통과한 setup만 진입 대상으로 허용한다. 진입 diagnostics에는 `setup_model`, `entry_price`, `stop_price`, `r_value`, `tp1_r`, `tp2_r`, `entry_regime`, `regime_diagnostics`, `trigger_result`가 포함된다.
+- `core/risk.py`, `core/position_policy.py`: 리스크/포지션 정책. `candidate_v1` proof-window semantics는 그대로 유지하고, strategy-side partial take profit branch가 더 이상 `rsi_bb_reversal_long`에만 묶이지 않도록 일반화되어 `ict_v1`도 TP1 partial + breakeven arm + TP2 runner를 shared boundary 안에서 사용할 수 있다.
 - `core/order_state.py`, `core/reconciliation.py`: 주문 상태/체결 정합성
-- `core/universe.py`: 거래 대상(유니버스) 구성
+- `core/universe.py`: 거래 대상(유니버스) 구성. 기존 recent 10m trade value / spread / missing-rate filter pipeline은 유지하되, `ict_v1`가 active strategy이고 `1m` candle cohort가 있을 때는 final cap 직전에 liquidity + recent candle movement quality 기반 ranking overlay를 적용한다.
 - `core/candle_buffer.py`: 캔들 버퍼 관리
 
 ### Infra
@@ -49,6 +50,9 @@ TRADING_MODE=dry_run python main.py
 
 # 테스트
 python -m unittest discover -s testing
+
+# ict_v1 pure model / registry / config / exit / universe 검증
+python3 -m unittest testing.test_ict_models testing.test_ict_strategy_v1 testing.test_risk_and_policy testing.test_decision_core testing.test_universe testing.test_engine_universe_refresh testing.test_strategy_registry testing.test_config_loader
 
 # chunk 1 전략 레지스트리/공유 decision model 검증
 python -m unittest testing.test_strategy_registry testing.test_decision_core testing.test_config_loader
@@ -85,6 +89,14 @@ TRADING_MODE=paper TRADING_STRATEGY_NAME=candidate_v1 TRADING_STRATEGY_DECISION_
 
 # dry_run은 현재 정책상 candidate artifact gate를 적용하지 않음
 TRADING_MODE=dry_run TRADING_STRATEGY_NAME=candidate_v1 python main.py
+
+# 기본 active strategy(ict_v1) safe-mode 부팅 확인
+TRADING_MODE=paper python3 main.py
+TRADING_MODE=dry_run python3 main.py
+
+# 진짜 multi-symbol KRW 비교는 심볼별 workbook path를 명시해 실행
+python3 -m testing.backtest_runner --market KRW-BTC --path testing/artifacts/backdata_krw_btc_7d.xlsx --lookback-days 7
+python3 -m testing.backtest_runner --market KRW-ETH --path testing/artifacts/backdata_krw_eth_7d.xlsx --lookback-days 7
 ```
 
 
@@ -96,65 +108,57 @@ TRADING_MODE=dry_run TRADING_STRATEGY_NAME=candidate_v1 python main.py
 
 ## 4) 환경변수 핵심 포인트
 - `TRADING_MODE`: `live | paper | dry_run`
-- `TRADING_STRATEGY_NAME`: 현재 shared runtime seam이 허용하는 값은 `baseline`, `candidate_v1`, `rsi_bb_reversal_long`뿐이다. 레지스트리는 `rsi_bb_reversal_long` 별칭을 `baseline` canonical identity로 정규화하고, `candidate_v1`는 별도 canonical 엔트리로 조회된다. `sr_ob_fvg`는 레거시 research surface로만 남아 있으며 runtime/backtest config selection에서는 reject된다. `StrategyParams.strategy_name` 자체는 canonical 이름을 유지함
-- `TRADING_STRATEGY_DECISION_PATH`: 승인 대상 후보 전략(`candidate_v1`)을 `paper/live`에서 실행할 때 필요한 promotion decision artifact 경로. baseline 계열(`baseline`, `rsi_bb_reversal_long`)은 gate 대상이 아니며, `dry_run`도 현재 정책상 artifact 없이 실행 가능하다. Gate 대상 후보는 artifact의 `candidate_strategy`, `decision`, `oos_gate.pass`, `parity_gate.pass`, `parity_gate.strategy_name`, `parity_gate.expected_strategy_name`가 런타임 선택과 일치해야 하며, `oos_gate.pass`와 `parity_gate.pass`는 literal boolean `true`여야 한다
+- `TRADING_STRATEGY_NAME`: 현재 shared runtime seam이 허용하는 값은 `baseline`, `candidate_v1`, `rsi_bb_reversal_long`, `ict_v1`다. 레지스트리는 `rsi_bb_reversal_long` 별칭을 `baseline` canonical identity로 정규화하고, `candidate_v1`/`ict_v1`는 별도 canonical 엔트리로 조회된다. 기본 runtime selection은 `ict_v1`이며, `sr_ob_fvg`는 레거시 research surface로만 남아 있고 runtime/backtest config selection에서는 reject된다. `StrategyParams.strategy_name` 자체는 canonical 이름을 유지함
+- `TRADING_STRATEGY_DECISION_PATH`: 승인 대상 후보 전략(`candidate_v1`)을 `paper/live`에서 실행할 때 필요한 promotion decision artifact 경로. baseline 계열(`baseline`, `rsi_bb_reversal_long`)과 `ict_v1`는 gate 대상이 아니며, `dry_run`도 현재 정책상 artifact 없이 실행 가능하다. Gate 대상 후보는 artifact의 `candidate_strategy`, `decision`, `oos_gate.pass`, `parity_gate.pass`, `parity_gate.strategy_name`, `parity_gate.expected_strategy_name`가 런타임 선택과 일치해야 하며, `oos_gate.pass`와 `parity_gate.pass`는 literal boolean `true`여야 한다
 - `TRADING_MIN_ORDER_KRW`: 최소 주문금액 하한
 - `TRADING_MIN_BUYABLE_KRW`: 추가 버퍼(엔진 하한 계산 시 `max` 적용)
 - `TRADING_DO_NOT_TRADING`: 제외 심볼/마켓 목록(쉼표 구분)
 - `UPBIT_API_DEBUG`: API 요청/응답 디버그 로그 on/off
 - `TRADING_ENTRY_SCORE_THRESHOLD`, `TRADING_*_WEIGHT`: 진입 점수 임계값/가중치 튜닝. baseline 계열은 기존 shared regime override profile을 그대로 사용하고, `candidate_v1`는 기본 전략 threshold를 `3.6`으로 시작하되 이 환경변수로 명시한 값은 그대로 유지한다.
 
-## 5) 현재 진입/청산 로직 요약 (rsi_bb_reversal_long 기준)
+## 5) 현재 진입/청산 로직 요약 (`ict_v1` 기본 전략 기준)
 
 ### 진입(BUY)
 1. **전략 실행 대상 검증 (Engine 레벨)**
    - 최소 캔들 수/쿨다운/보유 종목 수/가용 KRW 등 사전 조건을 확인한 뒤 전략 평가를 진행합니다.
-2. **점수 기반 진입 평가 (`evaluate_long_entry`)**
-   - 기존 필터/셋업/트리거 불리언 게이트를 시그널별 강도 점수 합산으로 분리했습니다.
-   - `entry_score = Σ(signal_strength × weight)` 구조를 사용하며, 신호는 RSI 과매도, BB 터치 강도, RSI 다이버전스, MACD 크로스, 엔걸핑, 최근 변동성 대비 밴드 이탈폭을 포함합니다.
-   - 최종 진입은 `entry_score >= entry_score_threshold` 조건으로 판단하고, 최소 안전장치(최소 캔들 수, 유효 손절 거리)는 유지합니다.
-3. **주문 리스크/사이징 계산**
-   - `stop_mode_long`으로 초기 손절가를 만들고, `entry_price - stop_price`를 1R로 사용.
-   - 리스크 기반 주문금액 + 현금관리 캡 + (옵션) 시장 댐핑 계수를 적용해 최종 매수 금액을 계산합니다.
-4. **주문 전 검증 후 매수 실행**
-   - 최소 주문금액/잔여 슬롯/잔여 현금/호가 단위 preflight 통과 시 `buy_market` 실행.
-   - 체결 후 포지션 종료 상태(`PositionExitState`)에 진입가, 초기손절가, risk_per_unit 등을 저장합니다.
+2. **다중 ICT setup 평가 (`core/strategies/ict_v1.py`)**
+   - `15m`는 dealing range / premium-discount / 상위 liquidity context를 제공합니다.
+   - `5m`는 Turtle Soup sweep, Unicorn overlap, Silver Bullet FVG retrace, OTE supportive context를 평가합니다.
+   - `1m`는 현재 진입 가격과 Silver Bullet session clock을 제공합니다.
+   - 현재 tuning cycle에서는 short-horizon 15m regime filter와 bullish micro-breakout trigger가 추가되어, loose raw setup만으로는 더 이상 진입하지 않습니다.
+   - 전략은 아래 long setup을 동시에 평가하고 score가 가장 높은 setup 하나만 채택합니다.
+     - `turtle_soup`: 이전 저점 sweep 후 range reclaim
+     - `unicorn`: bullish FVG + bullish OB overlap
+     - `silver_bullet`: NY local window 안의 bullish FVG retrace setup
+     - `ote`: dealing range 62%~79% pocket 진입
+3. **진입 진단값/손절 정의**
+   - accepted setup은 `setup_model`, `entry_price`, `stop_price`, `r_value`, `tp1_r`, `tp2_r`를 diagnostics에 고정 기록합니다.
+   - `entry_price - stop_price`를 1R로 사용합니다.
+4. **주문 리스크/사이징 계산**
+   - 공용 risk-first sizing seam이 `entry_price`/`stop_price`를 받아 주문금액을 계산합니다.
+   - quality multiplier는 계속 shared sizing 경계를 통해 적용되지만, `ict_v1` diagnostics는 현재 pure ICT setup 우선으로 남습니다.
+5. **주문 전 검증 후 매수 실행**
+   - 최소 주문금액/잔여 슬롯/잔여 현금/호가 단위 preflight 통과 시 `buy_market` 실행합니다.
+   - 체결 후 포지션 종료 상태(`PositionExitState`)에 진입가, 초기손절가, risk_per_unit, partial/breakeven 상태가 저장됩니다.
 
 ### 청산(SELL)
+1. **TP1 partial + 브레이크이븐 전환**
+   - `ict_v1`는 strategy-side partial exit를 기본 활성화하며, TP1은 `partial_take_profit_r`(기본 1R)입니다.
+   - TP1 체결 후 `PositionExitState.strategy_partial_done = true`, `breakeven_armed = true`가 되어 손익분기 stop guard가 활성화됩니다.
+2. **TP2 runner**
+   - `ict_v1.should_exit_long(...)`는 현재가가 `entry_price + risk_per_unit * take_profit_r`(현재 기본 1.6R)를 넘으면 full `strategy_signal`을 반환합니다.
+   - 그 전까지는 shared stop/trailing guardrail이 포지션을 관리합니다.
+3. **공용 정책 경계 유지**
+   - `core/position_policy.py`의 `initial_defense` / `mid_management` / `late_trailing` 3단계 구조는 유지됩니다.
+   - strategy-side partial branch가 일반화되어 `ict_v1`도 공용 `PositionOrderPolicy` 안에서 TP1 -> breakeven -> TP2 runner semantics를 사용합니다.
+4. **청산 사유 기록/재진입 쿨다운**
+   - 전량 청산 시 마지막 청산 시점/사유를 마켓별로 저장합니다.
+   - 설정에 따라 손실성 청산(`trailing_stop`, `stop_loss`)에만 쿨다운을 적용할 수 있습니다.
 
-#### 구조 기반 손절 vs R 기반(정책 기반) 손절 구분
-- **구조 기반 손절(진입 시점)**: `core/rsi_bb_reversal_long.py`의 `_compute_stop_price`에서 `stop_mode_long`(`swing_low`/`conservative`/`lower_band`)으로 초기 손절을 산출합니다. 이 값은 진입 직후 `entry_stop_price`의 기준이 됩니다.
-- **R 기반(정책 기반) 손절(보유 중 관리)**: `core/position_policy.py`의 `PositionOrderPolicy.evaluate`가 `hard_stop_price`를 재평가하며, `initial_defense(0.85R)`, `mid/late 구간 손익분기 상향`, `ATR+스윙 결합` 규칙으로 stop을 단계적으로 끌어올립니다.
-- **구조 정보 무시(또는 약화) 케이스 정의**: 백테스트에서는 아래 케이스를 `structure_ignore_case`로 분류해 stop 진단 CSV에 기록합니다.
-  - `entry_lower_band_mode`: 진입 자체가 구조 저점(`swing_low`)이 아닌 하단밴드 기준
-  - `atr_or_policy_overrides_swing`: 보유 중 정책 stop이 진입 구조 저점보다 위로 올라감
-  - `initial_defense_tightening`: `entry - 0.85R` 방어 규칙이 stop을 상향
-  - `breakeven_or_higher`: 손익분기 이상으로 stop 상향되어 구조 저점 기준이 사실상 비활성화
-  - `structure_respected`: 관리 stop이 진입 구조 기준을 실질적으로 유지
-
-1. **포지션 상태 갱신**
-   - 매 사이클마다 `peak_price`, `bars_held`, ATR/스윙로우 참조값을 갱신합니다.
-   - `PositionExitState`에 `entry_regime`, `highest_r`, `drawdown_from_peak_r`를 유지해 레짐/성과/되돌림 기반 청산 판단을 수행합니다.
-2. **3단계 정책 기반 청산 (`PositionOrderPolicy.evaluate`)**
-   - **초기 방어 (`initial_defense`)**: `highest_r < 1.0` && `bars_held < 8` 구간. 손절을 더 엄격하게 적용하고(엔트리 대비 약 `0.85R`), 분할익절은 대기.
-   - **중기 관리 (`mid_management`)**: `highest_r >= 1.0` 또는 `bars_held >= 8` 이후. 분할익절 허용 + 본절 이동(브레이크이븐) 활성화.
-   - **후기 추적 (`late_trailing`)**: `highest_r >= 2.0` 또는 `bars_held >= 24` 이후. 트레일링 스탑을 강화해 이익 잠금 비중을 높임.
-#### 하드 스탑 기준선 (초기 0.85R 타이트닝 + ATR/swing max 규칙)
-| 구간 | 기준식 | 최종 hard stop 산식 |
-| --- | --- | --- |
-| ATR 모드 기본 | `atr_stop = entry - ATR×atr_stop_mult`, `swing_base = entry_swing_low` | `max(atr_stop, swing_base)` (둘 다 0 이하이면 `entry×stop_loss_threshold`) |
-| 초기 방어 (`initial_defense`) | 기본 스탑 + `entry - 0.85R` | `max(기본 스탑, entry - 0.85R)` |
-| 중기/후기 (`mid/late`) | 기본 스탑 + 본절 가드 | `max(기본 스탑, entry)` (`breakeven_armed` 또는 `highest_r>=1.0`) |
-
-- 따라서 **hard_stop_price가 가장 높아지는 조건은** `mid_management/late_trailing`에서 본절 가드가 활성화되고, ATR/swing 기반 스탑이 엔트리보다 낮을 때입니다(최종값이 `entry_price`로 상향 고정).
-
-3. **전략 신호 청산(`strategy_signal`) 가드**
-   - 기존 고정 2R 대신 `entry_regime + bars_held + ATR/risk_per_unit` 조합으로 최소 R 임계값을 동적으로 계산합니다.
-   - 고변동/방어적 레짐일수록 요구 R을 높이고, 장기 보유 포지션은 임계값을 완화해 청산 유연성을 높입니다.
-
-### 청산 사유 기록/재진입 쿨다운
-- 전량 청산 시 마지막 청산 시점/사유를 마켓별로 저장합니다.
-- 설정에 따라 손실성 청산(`trailing_stop`, `stop_loss`)에만 쿨다운을 적용할 수 있습니다.
+### 유니버스 선정
+- 기본 pipeline은 여전히 recent 10m trade value -> relative spread -> missing-rate filter -> final cap 순서를 유지합니다.
+- 다만 `ict_v1`가 active strategy이고 second-pass `1m` candle cohort가 있을 때는 final cap 직전에 liquidity + recent candle movement quality score로 eligible ticker를 다시 정렬합니다.
+- baseline/candidate 전략은 기존 liquidity-first order를 그대로 유지합니다.
 
 ## 5-1) 실거래/백테스트 공통 로그 스키마
 
@@ -210,6 +214,8 @@ TRADING_MODE=dry_run TRADING_STRATEGY_NAME=candidate_v1 python main.py
 ---
 
 ## 최근 업데이트 로그
+- 2026-03-19: `ict_v1` multi-symbol tuning cycle. 실제 KRW 다중 심볼 비교는 `testing.backtest_runner` 기본 workbook(`backdata_candle_day.xlsx`)이 아니라 심볼별 workbook path를 명시해야 한다는 점을 확인했고, tuning은 그 경로로 재검증했다. 이번 cycle에서 `core/config.py`는 `ict_v1` short-horizon 기본값(`8/24` regime, `balanced` trigger, `required_trigger_count=2`, `take_profit_r=1.6`)을 갖도록 조정됐고, `core/strategies/ict_v1.py`는 short-horizon 15m regime pass + bullish micro-breakout trigger를 통과한 setup만 진입 허용하도록 tightening 되었다. 영향 파일은 `core/config.py`, `core/strategies/ict_v1.py`, `testing/test_ict_strategy_v1.py`, `testing/test_strategy_registry.py`, `docs/PROJECT_REFERENCE.md`, `docs/superpowers/plans/2026-03-19-ict-multi-symbol-performance-tuning.md`다. 검증은 `python3 -m unittest testing.test_ict_strategy_v1 testing.test_strategy_registry testing.test_decision_core testing.test_risk_and_policy`, workbook-backed six-symbol basket backtests, changed-file `lsp_diagnostics`, `TRADING_MODE=paper timeout 20s python3 main.py`, `TRADING_MODE=dry_run timeout 20s python3 main.py`로 수행했다. 동일 six-symbol baseline은 `combined_compounded_pct=-31.1829`, `median_compounded_pct=-5.7729`, `combined_return_pct=-4.7791`, `median_return_pct=-0.8431`였고, tuning 후에는 `-2.8818`, `-0.5037`, `-0.5526`, `-0.0718`로 개선되었다.
+- 2026-03-19: `ict_v1` 기본 전략 도입. `core/strategies/ict_models.py`, `core/strategies/ict_sessions.py`, `core/strategies/ict_v1.py`를 추가해 Turtle Soup / Unicorn / Silver Bullet / OTE long setup을 deterministic하게 평가하도록 확장했고, `core/position_policy.py`/`core/decision_core.py`는 `ict_v1`가 shared seam 안에서 TP1 partial -> breakeven -> TP2 runner semantics를 사용할 수 있게 정리했다. 또한 `core/universe.py`/`core/engine.py`는 `ict_v1` active 시 liquidity + 1m movement quality overlay ranking을 적용한다. 영향 파일은 `config.py`, `core/config.py`, `core/config_loader.py`, `core/decision_core.py`, `core/engine.py`, `core/position_policy.py`, `core/strategy_registry.py`, `core/strategies/__init__.py`, `core/strategies/ict_models.py`, `core/strategies/ict_sessions.py`, `core/strategies/ict_v1.py`, `core/universe.py`, `testing/test_config_loader.py`, `testing/test_decision_core.py`, `testing/test_engine_order_acceptance.py`, `testing/test_engine_universe_refresh.py`, `testing/test_ict_models.py`, `testing/test_ict_strategy_v1.py`, `testing/test_risk_and_policy.py`, `testing/test_strategy_registry.py`, `testing/test_universe.py`, `docs/PROJECT_REFERENCE.md`다. 실행/검증은 `python3 -m unittest testing.test_ict_models testing.test_ict_strategy_v1 testing.test_risk_and_policy testing.test_decision_core testing.test_universe testing.test_engine_universe_refresh testing.test_strategy_registry testing.test_config_loader`, `python3 -m unittest testing.test_engine_order_acceptance.TradingEngineOrderAcceptanceTest.test_real_entry_seam_supports_legacy_default_strategy_surface`, `python3 -m unittest testing.test_universe testing.test_engine_universe_refresh`, `python3 -m testing.backtest_runner --market KRW-BTC --lookback-days 7`, `TRADING_MODE=paper timeout 20s python3 main.py`, `TRADING_MODE=dry_run timeout 20s python3 main.py`로 수행했다. 전체 `python3 -m unittest discover -s testing`는 현재 `testing/test_apis.py`가 `sys.modules["pandas"]`를 `SimpleNamespace`로 치환한 뒤 복구하지 않아 `testing.test_optimize_walkforward.OptimizeWalkForwardTest.test_optimize_saves_csv_and_pattern_doc`가 order-dependent ImportError로 실패하는 기존 harness 오염 이슈가 남아 있다.
 - 2026-03-17: proof-window redesign chunk 2 task 3. `core/position_policy.py`의 shared `PositionExitState` boundary가 `proof_window_*` 상태를 직접 읽도록 확장되어, proof state가 있는 `candidate_v1` 포지션은 promotion 전까지 `highest_r`나 오래된 `bars_held`만으로 `late_trailing`에 진입하지 않는다. 대신 non-promoted trade는 tighter `initial_defense` 관리에 남고, `proof_window_promoted = true`일 때만 기존 delayed-trailing semantics를 사용한다. `core/decision_core.py`는 policy boundary가 반환한 proof-window state를 merge 시 덮어쓰지 않도록 정리했다. 영향 파일은 `core/position_policy.py`, `core/decision_core.py`, `testing/test_risk_and_policy.py`, `testing/test_decision_core.py`, `docs/PROJECT_REFERENCE.md`이며 실행 방법 변경은 없고 검증은 `python3 -m unittest testing.test_risk_and_policy testing.test_decision_core`와 modified Python files 대상 `lsp_diagnostics`로 수행.
 - 2026-03-17: proof-window redesign chunk 1 state/seam implementation. `candidate_v1` accepted entries now initialize `proof_window_*` diagnostics with candidate-only config defaults, including bounded symbol-conditioned stricter proof defaults for `KRW-ADA`. `core/decision_core.py` persists that proof state into `next_position_state` and advances elapsed-bar / favorable-excursion tracking so proof windows can expire without auto-promoting from time alone, while the shared exit policy semantics stay unchanged in this chunk. 영향 파일은 `core/candidate_strategy_defaults.py`, `core/config.py`, `core/strategies/candidate_v1.py`, `core/decision_core.py`, `testing/test_candidate_strategy_v1.py`, `testing/test_decision_core.py`, `docs/PROJECT_REFERENCE.md`이며 실행 방법 변경은 없고 검증은 `python3 -m unittest testing.test_candidate_strategy_v1 testing.test_decision_core`와 modified Python files 대상 `lsp_diagnostics`로 수행.
 - 2026-03-17: task 4 bounded follow-up iteration. `candidate_v1`가 backtest/runtime shared seam에서 baseline용 global regime override map(`entry_score_threshold=2.9/2.5/2.2`)을 상속해 stricter calibration threshold가 조용히 낮아지던 경로를 끊었다. 이제 `core/config.py`가 전략별 regime override payload를 생성하고, `candidate_v1`는 explicit `TRADING_ENTRY_SCORE_THRESHOLD`가 없을 때만 stricter default `3.6`을 사용한다. `core/engine.py`와 `testing/backtest_runner.py`는 이 전략별 payload만 decision core로 전달한다. 영향 파일은 `core/config.py`, `core/engine.py`, `testing/backtest_runner.py`, `testing/test_candidate_strategy_v1.py`, `testing/test_config_loader.py`, `testing/test_decision_core.py`, `docs/PROJECT_REFERENCE.md`이며 실행 방법 변경은 없고 검증은 `python3 -m unittest testing.test_candidate_strategy_v1 testing.test_decision_core testing.test_config_loader`로 수행.
