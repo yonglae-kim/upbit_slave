@@ -632,6 +632,70 @@ class BacktestRunnerTest(unittest.TestCase):
         self.assertLessEqual(result.fill_rate, 1)
         self.assertIsInstance(result.sharpe, float)
 
+    def test_run_segment_force_closes_open_position_at_segment_end(self):
+        runner = BacktestRunner(
+            buffer_cnt=3, multiple_cnt=2, spread_rate=0.0, slippage_rate=0.0
+        )
+        runner.config.fee_rate = 0.0
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        candles = [
+            self._candle(base - datetime.timedelta(minutes=3 * i), price)
+            for i, price in enumerate([106.0, 104.0, 102.0, 100.0, 98.0])
+        ]
+
+        decision_state = {"entered": False}
+
+        def decision_side_effect(context, **_kwargs):
+            if context.position.quantity > 0:
+                return self._hold_intent(next_position_state=context.position.state)
+            if decision_state["entered"]:
+                return self._hold_intent()
+            decision_state["entered"] = True
+            return self._enter_intent(final_order_krw=100.0, entry_price=100.0)
+
+        with patch(
+            "testing.backtest_runner.evaluate_market",
+            create=True,
+            side_effect=decision_side_effect,
+        ):
+            result = runner._run_segment(candles, init_amount=1_000_000, segment_id=1)
+
+        self.assertEqual(result.entries, 1)
+        self.assertEqual(result.closed_trades, 1)
+        self.assertEqual(result.exit_reason_counts.get("segment_end"), 1)
+
+    def test_run_segment_segment_end_close_contributes_to_win_rate(self):
+        runner = BacktestRunner(
+            buffer_cnt=3, multiple_cnt=2, spread_rate=0.0, slippage_rate=0.0
+        )
+        runner.config.fee_rate = 0.0
+        base = datetime.datetime(2024, 1, 1, 0, 0, 0)
+        candles = [
+            self._candle(base - datetime.timedelta(minutes=3 * i), price)
+            for i, price in enumerate([106.0, 104.0, 102.0, 100.0, 98.0])
+        ]
+
+        decision_state = {"entered": False}
+
+        def decision_side_effect(context, **_kwargs):
+            if context.position.quantity > 0:
+                return self._hold_intent(next_position_state=context.position.state)
+            if decision_state["entered"]:
+                return self._hold_intent()
+            decision_state["entered"] = True
+            return self._enter_intent(final_order_krw=100.0, entry_price=100.0)
+
+        with patch(
+            "testing.backtest_runner.evaluate_market",
+            create=True,
+            side_effect=decision_side_effect,
+        ):
+            result = runner._run_segment(candles, init_amount=1_000_000, segment_id=1)
+
+        self.assertGreater(result.return_pct, 0.0)
+        self.assertEqual(result.win_rate, 100.0)
+        self.assertGreater(result.avg_profit, 0.0)
+
     def test_run_segment_tracks_partial_take_profit_reason(self):
         runner = BacktestRunner(buffer_cnt=3, multiple_cnt=2)
         base = datetime.datetime(2024, 1, 1, 0, 0, 0)
@@ -939,12 +1003,17 @@ class BacktestRunnerTest(unittest.TestCase):
                     cagr=1.0,
                     mdd=1.0,
                     sharpe=1.0,
-                    exit_reason_counts={"signal_exit": 2, "trailing_stop": 1},
+                    exit_reason_counts={
+                        "signal_exit": 2,
+                        "trailing_stop": 1,
+                        "segment_end": 1,
+                    },
                 )
                 runner.run()
 
         df = pd.read_csv("/tmp/segments.csv")
         self.assertIn("exit_reason_signal_exit", df.columns)
+        self.assertIn("exit_reason_segment_end", df.columns)
         self.assertIn("exit_reason_trailing_stop", df.columns)
         self.assertIn("exit_reason_stop_loss_early_bar_share_pct", df.columns)
         self.assertIn("stop_recovery_stop_loss_mfe_r_3_mean", df.columns)

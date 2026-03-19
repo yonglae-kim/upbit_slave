@@ -1247,6 +1247,7 @@ class BacktestRunner:
         trade_score_rows: list[tuple[float, float]] = []
         trade_quality_rows: list[tuple[str, float]] = []
         active_trade: dict[str, float | str] | None = None
+        current_price = 0.0
         required_window_size = max(
             int(self.buffer_cnt),
             int(self.required_base_bars_for_regime),
@@ -1822,6 +1823,87 @@ class BacktestRunner:
 
             equity_curve.append(self._mark_to_market(amount, hold_coin, current_price))
 
+        if active_trade is not None and hold_coin > 0:
+            normalized_reason = "segment_end"
+            exit_price = current_price * (
+                1 - (self.spread_rate / 2) - self.slippage_rate
+            )
+            gross_notional = hold_coin * exit_price
+            exit_fee = gross_notional * self.config.fee_rate
+            amount += gross_notional - exit_fee
+            hold_coin = 0.0
+            active_trade["sold_qty"] = float(active_trade["sold_qty"]) + float(
+                active_trade.get("entry_quantity", 0.0)
+            )
+            active_trade["gross_exit_notional"] = (
+                float(active_trade["gross_exit_notional"]) + gross_notional
+            )
+            active_trade["exit_fee"] = float(active_trade["exit_fee"]) + exit_fee
+            active_trade["net_exit_cash"] = float(active_trade["net_exit_cash"]) + (
+                gross_notional - exit_fee
+            )
+            exit_reason_counts[normalized_reason] += 1
+            closed_trades += 1
+            entry_time = datetime.datetime.strptime(
+                str(active_trade["entry_time"]), "%Y-%m-%dT%H:%M:%S"
+            )
+            exit_time = datetime.datetime.strptime(
+                _as_str(data_newest[0]["candle_date_time_kst"]), "%Y-%m-%dT%H:%M:%S"
+            )
+            holding_minutes = max(0.0, (exit_time - entry_time).total_seconds() / 60)
+            avg_exit_price = float(active_trade["gross_exit_notional"]) / float(
+                active_trade["sold_qty"]
+            )
+            pnl = float(active_trade["net_exit_cash"]) - float(
+                active_trade["invested_cash"]
+            )
+            completed_exit_state = position_state.exit_state
+            risk_amount = max(
+                float(active_trade.get("entry_quantity", 0.0))
+                * max(float(completed_exit_state.risk_per_unit), 0.0),
+                1e-9,
+            )
+            r_multiple = pnl / risk_amount
+            trade_ledger.append(
+                TradeLedgerEntry(
+                    entry_price=float(active_trade["entry_price"]),
+                    exit_price=float(avg_exit_price),
+                    fee=float(active_trade["entry_fee"])
+                    + float(active_trade["exit_fee"]),
+                    pnl=float(pnl),
+                    r_multiple=float(r_multiple),
+                    reason=normalized_reason,
+                    holding_minutes=float(holding_minutes),
+                    entry_regime=str(
+                        active_trade.get("entry_regime", "unknown") or "unknown"
+                    ),
+                    entry_score=float(active_trade.get("entry_score", 0.0) or 0.0),
+                    mfe_r=float(completed_exit_state.highest_r),
+                    mae_r=abs(min(0.0, float(completed_exit_state.lowest_r))),
+                    fee_estimate_krw=float(active_trade["entry_fee"])
+                    + float(active_trade["exit_fee"]),
+                    slippage_estimate_krw=float(active_trade["invested_cash"])
+                    * self.slippage_rate,
+                    exit_bars_held=max(0, int(completed_exit_state.bars_held)),
+                    stop_gap_from_entry=0.0,
+                    stop_gap_from_entry_r=0.0,
+                    structure_ignore_case="not_applicable",
+                )
+            )
+            trade_score_rows.append(
+                (
+                    float(active_trade.get("entry_score", 0.0) or 0.0),
+                    float(pnl),
+                )
+            )
+            trade_quality_rows.append(
+                (
+                    str(active_trade.get("quality_bucket", "low") or "low"),
+                    float(pnl),
+                )
+            )
+            active_trade = None
+
         (
             total_return,
             return_per_trade,
@@ -1994,6 +2076,9 @@ class BacktestRunner:
                     ),
                     "exit_reason_strategy_signal": row.exit_reason_counts.get(
                         "strategy_signal", 0
+                    ),
+                    "exit_reason_segment_end": row.exit_reason_counts.get(
+                        "segment_end", 0
                     ),
                     "exit_reason_stop_loss": row.exit_reason_counts.get("stop_loss", 0),
                     "exit_reason_trailing_stop": row.exit_reason_counts.get(
