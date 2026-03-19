@@ -408,7 +408,7 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertEqual(promoted_decision.reason, "trailing_stop")
         self.assertEqual(promoted_decision.diagnostics["exit_stage"], "late_trailing")
 
-    def test_weak_profile_candidate_exits_on_expired_failed_proof(self):
+    def test_candidate_exits_on_expired_failed_proof_without_symbol_lane(self):
         policy = PositionOrderPolicy(
             stop_loss_threshold=0.95,
             trailing_stop_pct=0.02,
@@ -431,9 +431,9 @@ class RiskAndPolicyTest(unittest.TestCase):
                 "proof_window_active": False,
                 "proof_window_promoted": False,
                 "proof_window_status": "expired",
-                "proof_window_max_bars": 2,
-                "proof_window_promotion_threshold_r": 0.65,
-                "proof_window_symbol_profile": "weak",
+                "proof_window_max_bars": 3,
+                "proof_window_promotion_threshold_r": 0.35,
+                "proof_window_symbol_profile": "default",
             }
         )
 

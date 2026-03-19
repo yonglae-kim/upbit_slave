@@ -337,8 +337,6 @@ class PositionOrderPolicy:
             and not state.proof_window_active
             and not state.proof_window_promoted
             and str(state.proof_window_status).strip().lower() == "expired"
-            and str(state.proof_window_symbol_profile).strip().lower()
-            in {"weak", "guarded"}
             and current_r <= 0.0
         ):
             return ExitDecision(

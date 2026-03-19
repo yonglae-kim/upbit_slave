@@ -179,6 +179,61 @@ class DecisionCoreTest(unittest.TestCase):
             swing_lookback=config.swing_lookback,
         )
 
+    def _ready_candidate_debug(self, **overrides: object) -> dict[str, object]:
+        result: dict[str, object] = {
+            "final_pass": True,
+            "fail_code": "pass",
+            "regime_filter_metrics": {"pass": True, "regime": "strong_trend"},
+            "zones_total": 3,
+            "zones_active": 1,
+            "selected_zone": {
+                "type": "ob",
+                "bias": "bullish",
+                "lower": 100.9,
+                "upper": 101.5,
+            },
+            "sr_flip_pass": True,
+            "sr_flip_level": {
+                "bias": "resistance",
+                "lower": 100.8,
+                "upper": 101.2,
+                "score": 0.9,
+            },
+            "trigger_pass": True,
+        }
+        result.update(overrides)
+        return result
+
+    def _evaluate_candidate_entry_with_ready_zone(
+        self,
+        market_data: dict[str, list[dict[str, object]]],
+        params: StrategyParams,
+    ) -> StrategySignal:
+        with patch.object(
+            candidate_v1,
+            "debug_entry",
+            return_value=self._ready_candidate_debug(),
+        ):
+            return candidate_v1.evaluate_long_entry(market_data, params)
+
+    def _evaluate_market_with_ready_zone(
+        self,
+        context: DecisionContext,
+        *,
+        strategy_params: StrategyParams,
+        order_policy: PositionOrderPolicy,
+    ) -> DecisionIntent:
+        with patch.object(
+            candidate_v1,
+            "debug_entry",
+            return_value=self._ready_candidate_debug(),
+        ):
+            return evaluate_market(
+                context,
+                strategy_params=strategy_params,
+                order_policy=order_policy,
+            )
+
     def test_hold_returns_copied_next_position_state_when_entry_does_not_pass(self):
         context = DecisionContext(
             strategy_name="baseline",
@@ -487,7 +542,7 @@ class DecisionCoreTest(unittest.TestCase):
             "5m": self._candidate_trend_5m(),
             "15m": self._candidate_strong_trend_15m(candle_count=60),
         }
-        entry_signal = candidate_v1.evaluate_long_entry(
+        entry_signal = self._evaluate_candidate_entry_with_ready_zone(
             market_data,
             self._make_candidate_params(),
         )
@@ -503,7 +558,7 @@ class DecisionCoreTest(unittest.TestCase):
             portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
         )
 
-        intent = evaluate_market(
+        intent = self._evaluate_market_with_ready_zone(
             context,
             strategy_params=self._make_candidate_params(),
             order_policy=self._make_candidate_order_policy(),
@@ -518,7 +573,7 @@ class DecisionCoreTest(unittest.TestCase):
         self.assertEqual(
             intent.diagnostics["regime"], entry_signal.diagnostics["regime"]
         )
-        self.assertEqual(intent.diagnostics["stop_basis"], "pullback_low")
+        self.assertEqual(intent.diagnostics["stop_basis"], "sr_flip_zone_low")
         self.assertEqual(
             intent.diagnostics["entry_price"],
             entry_signal.diagnostics["entry_price"],
@@ -561,7 +616,7 @@ class DecisionCoreTest(unittest.TestCase):
             portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
         )
 
-        intent = evaluate_market(
+        intent = self._evaluate_market_with_ready_zone(
             context,
             strategy_params=replace(
                 self._make_candidate_params(),
@@ -576,8 +631,8 @@ class DecisionCoreTest(unittest.TestCase):
         self.assertIsInstance(effective_params, dict)
         if not isinstance(effective_params, dict):
             self.fail("effective_strategy_params should be a dict")
-        self.assertEqual(effective_params.get("regime_ema_fast"), 8)
-        self.assertEqual(effective_params.get("regime_ema_slow"), 34)
+        self.assertEqual(effective_params.get("regime_ema_fast"), 12)
+        self.assertEqual(effective_params.get("regime_ema_slow"), 48)
 
     def test_candidate_v1_seam_uses_reset_low_stop_basis_when_lower(self):
         candles_1m = self._candidate_pullback_reclaim_1m()
@@ -617,14 +672,14 @@ class DecisionCoreTest(unittest.TestCase):
             portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
         )
 
-        intent = evaluate_market(
+        intent = self._evaluate_market_with_ready_zone(
             context,
             strategy_params=self._make_candidate_params(),
             order_policy=self._make_candidate_order_policy(),
         )
 
         self.assertEqual(intent.action, "enter")
-        self.assertEqual(intent.diagnostics["stop_basis"], "reset_low_5m")
+        self.assertEqual(intent.diagnostics["stop_basis"], "sr_flip_zone_low")
         self.assertEqual(
             intent.next_position_state["stop_basis"],
             intent.diagnostics["stop_basis"],
@@ -652,7 +707,7 @@ class DecisionCoreTest(unittest.TestCase):
             portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
         )
 
-        intent = evaluate_market(
+        intent = self._evaluate_market_with_ready_zone(
             context,
             strategy_params=self._make_candidate_params(),
             order_policy=self._make_candidate_order_policy(),
@@ -675,7 +730,7 @@ class DecisionCoreTest(unittest.TestCase):
             intent.diagnostics["proof_window_cooldown_hint_bars"],
         )
         self.assertEqual(
-            intent.next_position_state["proof_window_symbol_profile"], "weak"
+            intent.next_position_state["proof_window_symbol_profile"], "default"
         )
 
     def test_candidate_v1_proof_window_does_not_promote_from_elapsed_bars_alone(self):
@@ -1183,11 +1238,11 @@ class DecisionCoreTest(unittest.TestCase):
         self.assertEqual(promoted_intent.diagnostics["exit_stage"], "late_trailing")
         self.assertTrue(promoted_intent.diagnostics["proof_window_promoted"])
 
-    def test_candidate_v1_weak_profile_exits_on_expired_failed_proof(self):
+    def test_candidate_v1_exits_on_expired_failed_proof_without_symbol_lane(self):
         context = DecisionContext(
             strategy_name="candidate_v1",
             market=MarketSnapshot(
-                symbol="KRW-ADA",
+                symbol="KRW-BTC",
                 candles_by_timeframe={
                     "1m": self._candidate_pullback_reclaim_1m(),
                     "5m": self._candidate_trend_5m(),
@@ -1197,7 +1252,7 @@ class DecisionCoreTest(unittest.TestCase):
                 diagnostics={"current_atr": 1.0, "swing_low": 395.0},
             ),
             position=PositionSnapshot(
-                market="KRW-ADA",
+                market="KRW-BTC",
                 quantity=0.1,
                 entry_price=400.0,
                 state={
@@ -1221,11 +1276,11 @@ class DecisionCoreTest(unittest.TestCase):
                     "proof_window_status": "expired",
                     "proof_window_start_bar": 0,
                     "proof_window_elapsed_bars": 2,
-                    "proof_window_max_bars": 2,
+                    "proof_window_max_bars": 3,
                     "proof_window_max_favorable_excursion_r": 0.2,
-                    "proof_window_promotion_threshold_r": 0.65,
-                    "proof_window_cooldown_hint_bars": 3,
-                    "proof_window_symbol_profile": "weak",
+                    "proof_window_promotion_threshold_r": 0.35,
+                    "proof_window_cooldown_hint_bars": 0,
+                    "proof_window_symbol_profile": "default",
                 },
             ),
             portfolio=PortfolioSnapshot(available_krw=1_000_000.0, open_positions=1),
@@ -1249,7 +1304,9 @@ class DecisionCoreTest(unittest.TestCase):
             "15m": self._candidate_strong_trend_15m(candle_count=60),
         }
         params = replace(self._make_candidate_params(), regime_ema_slow=200)
-        entry_signal = candidate_v1.evaluate_long_entry(market_data, params)
+        entry_signal = self._evaluate_candidate_entry_with_ready_zone(
+            market_data, params
+        )
         context = DecisionContext(
             strategy_name="candidate_v1",
             market=MarketSnapshot(
@@ -1264,7 +1321,7 @@ class DecisionCoreTest(unittest.TestCase):
 
         self.assertTrue(entry_signal.accepted)
 
-        intent = evaluate_market(
+        intent = self._evaluate_market_with_ready_zone(
             context,
             strategy_params=params,
             order_policy=self._make_candidate_order_policy(),
@@ -1307,10 +1364,10 @@ class DecisionCoreTest(unittest.TestCase):
             },
         )
 
-        intent = evaluate_market(
+        intent = self._evaluate_market_with_ready_zone(
             context,
             strategy_params=replace(
-                self._make_candidate_params(), entry_score_threshold=3.8
+                self._make_candidate_params(), entry_score_threshold=5.5
             ),
             order_policy=self._make_candidate_order_policy(),
         )
@@ -1321,7 +1378,7 @@ class DecisionCoreTest(unittest.TestCase):
         self.assertIsInstance(effective_params, dict)
         if not isinstance(effective_params, dict):
             self.fail("effective_strategy_params should be a dict")
-        self.assertEqual(effective_params.get("entry_score_threshold"), 3.8)
+        self.assertEqual(effective_params.get("entry_score_threshold"), 5.5)
 
     def _entry_candles(self) -> list[dict[str, object]]:
         candles_oldest = [
@@ -1429,7 +1486,7 @@ class DecisionCoreTest(unittest.TestCase):
         )
 
     def test_candidate_v1_blocks_entry_on_poor_market_profile(self):
-        intent = evaluate_market(
+        intent = self._evaluate_market_with_ready_zone(
             self._candidate_market_profile_context(
                 symbol="KRW-ANKR",
                 trade_value_24h=5_000_000_000.0,
@@ -1447,7 +1504,7 @@ class DecisionCoreTest(unittest.TestCase):
         )
 
     def test_candidate_v1_keeps_entry_on_healthy_market_profile(self):
-        intent = evaluate_market(
+        intent = self._evaluate_market_with_ready_zone(
             self._candidate_market_profile_context(
                 symbol="KRW-BTC",
                 trade_value_24h=300_000_000_000.0,

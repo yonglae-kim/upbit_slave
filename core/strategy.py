@@ -99,7 +99,9 @@ class StrategyParams:
     strategy_cooldown_bars: int = 0
 
 
-def preprocess_candles(data: Sequence[dict[str, Any]], source_order: str = "newest") -> list[dict[str, Any]]:
+def preprocess_candles(
+    data: Sequence[dict[str, Any]], source_order: str = "newest"
+) -> list[dict[str, Any]]:
     candles = list(data)
     if source_order not in {"newest", "oldest"}:
         raise ValueError("source_order must be 'newest' or 'oldest'")
@@ -191,11 +193,17 @@ def _adx(candles_newest: Sequence[dict[str, Any]], period: int) -> float:
     return sum(dx_values[-window:]) / len(dx_values[-window:])
 
 
-def regime_filter_diagnostics(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> dict[str, Any]:
+def regime_filter_diagnostics(
+    c15_newest: Sequence[dict[str, Any]], params: StrategyParams
+) -> dict[str, Any]:
     if not params.regime_filter_enabled:
         return {"pass": True, "reason": "disabled", "regime": "weak_trend"}
 
-    need = max(params.regime_ema_slow, params.regime_adx_period + 1, params.regime_slope_lookback + 1)
+    need = max(
+        params.regime_ema_slow,
+        params.regime_adx_period + 1,
+        params.regime_slope_lookback + 1,
+    )
     if len(c15_newest) < need:
         return {
             "pass": False,
@@ -265,12 +273,20 @@ def regime_filter_diagnostics(c15_newest: Sequence[dict[str, Any]], params: Stra
     }
 
 
-def passes_regime_filter(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> bool:
+def passes_regime_filter(
+    c15_newest: Sequence[dict[str, Any]], params: StrategyParams
+) -> bool:
     return bool(regime_filter_diagnostics(c15_newest, params).get("pass", False))
 
 
-def classify_market_regime(c15_newest: Sequence[dict[str, Any]], params: StrategyParams) -> str:
-    need = max(params.regime_ema_slow, params.regime_adx_period + 1, params.regime_slope_lookback + 1)
+def classify_market_regime(
+    c15_newest: Sequence[dict[str, Any]], params: StrategyParams
+) -> str:
+    need = max(
+        params.regime_ema_slow,
+        params.regime_adx_period + 1,
+        params.regime_slope_lookback + 1,
+    )
     if len(c15_newest) < need:
         return "unknown"
 
@@ -295,7 +311,9 @@ def classify_market_regime(c15_newest: Sequence[dict[str, Any]], params: Strateg
     return "sideways"
 
 
-def detect_sr_pivots(candles_newest: Sequence[dict[str, Any]], left: int, right: int) -> list[dict[str, Any]]:
+def detect_sr_pivots(
+    candles_newest: Sequence[dict[str, Any]], left: int, right: int
+) -> list[dict[str, Any]]:
     candles = list(reversed(candles_newest))
     pivots: list[dict[str, Any]] = []
     for i in range(left, len(candles) - right):
@@ -304,15 +322,23 @@ def detect_sr_pivots(candles_newest: Sequence[dict[str, Any]], left: int, right:
         low = _price(candle, "low_price")
         left_slice = candles[i - left : i]
         right_slice = candles[i + 1 : i + 1 + right]
-        turnover = float(candle.get("candle_acc_trade_price", candle.get("trade_volume", 0.0)))
+        turnover = float(
+            candle.get("candle_acc_trade_price", candle.get("trade_volume", 0.0))
+        )
         if all(high >= _price(c, "high_price") for c in left_slice + right_slice):
-            pivots.append({"type": "resistance", "price": high, "index": i, "turnover": turnover})
+            pivots.append(
+                {"type": "resistance", "price": high, "index": i, "turnover": turnover}
+            )
         if all(low <= _price(c, "low_price") for c in left_slice + right_slice):
-            pivots.append({"type": "support", "price": low, "index": i, "turnover": turnover})
+            pivots.append(
+                {"type": "support", "price": low, "index": i, "turnover": turnover}
+            )
     return pivots
 
 
-def cluster_sr_levels(pivots: Sequence[dict[str, Any]], band_pct: float, min_touches: int) -> list[dict[str, Any]]:
+def cluster_sr_levels(
+    pivots: Sequence[dict[str, Any]], band_pct: float, min_touches: int
+) -> list[dict[str, Any]]:
     clusters: list[dict[str, Any]] = []
     for pivot in pivots:
         matched = False
@@ -320,7 +346,10 @@ def cluster_sr_levels(pivots: Sequence[dict[str, Any]], band_pct: float, min_tou
             mid = cluster["mid"]
             if mid == 0:
                 continue
-            if abs(pivot["price"] - mid) / mid <= band_pct and cluster["bias"] == pivot["type"]:
+            if (
+                abs(pivot["price"] - mid) / mid <= band_pct
+                and cluster["bias"] == pivot["type"]
+            ):
                 cluster["prices"].append(pivot["price"])
                 cluster["touches"] += 1
                 cluster["last_index"] = max(cluster["last_index"], pivot["index"])
@@ -355,7 +384,9 @@ def cluster_sr_levels(pivots: Sequence[dict[str, Any]], band_pct: float, min_tou
     ]
 
 
-def score_sr_levels(sr_levels: Sequence[dict[str, Any]], total_bars: int, params: StrategyParams) -> list[dict[str, Any]]:
+def score_sr_levels(
+    sr_levels: Sequence[dict[str, Any]], total_bars: int, params: StrategyParams
+) -> list[dict[str, Any]]:
     if not sr_levels:
         return []
 
@@ -384,11 +415,15 @@ def score_sr_levels(sr_levels: Sequence[dict[str, Any]], total_bars: int, params
     return sorted(scored, key=lambda item: item["score"], reverse=True)
 
 
-def detect_fvg_zones(candles_newest: Sequence[dict[str, Any]], params: StrategyParams) -> list[dict[str, Any]]:
+def detect_fvg_zones(
+    candles_newest: Sequence[dict[str, Any]], params: StrategyParams
+) -> list[dict[str, Any]]:
     candles = list(reversed(candles_newest))
     atr = _atr(candles_newest, params.fvg_atr_period)
     tick = min_krw_tick_from_candles(candles_newest)
-    min_width = max(atr * params.fvg_min_width_atr_mult, tick * params.fvg_min_width_ticks)
+    min_width = max(
+        atr * params.fvg_min_width_atr_mult, tick * params.fvg_min_width_ticks
+    )
     zones: list[dict[str, Any]] = []
 
     for i in range(2, len(candles)):
@@ -397,16 +432,37 @@ def detect_fvg_zones(candles_newest: Sequence[dict[str, Any]], params: StrategyP
         gap_down = _price(c0, "low_price") - _price(c2, "high_price")
         body = abs(_price(c1, "trade_price") - _price(c1, "opening_price"))
         range_size = max(_price(c1, "high_price") - _price(c1, "low_price"), 1e-8)
-        displacement_ok = body / range_size >= params.displacement_min_body_ratio and range_size >= atr * params.displacement_min_atr_mult
+        displacement_ok = (
+            body / range_size >= params.displacement_min_body_ratio
+            and range_size >= atr * params.displacement_min_atr_mult
+        )
 
         if gap_up >= min_width and displacement_ok:
-            zones.append({"type": "fvg", "bias": "bullish", "lower": _price(c0, "high_price"), "upper": _price(c2, "low_price"), "created_index": i})
+            zones.append(
+                {
+                    "type": "fvg",
+                    "bias": "bullish",
+                    "lower": _price(c0, "high_price"),
+                    "upper": _price(c2, "low_price"),
+                    "created_index": i,
+                }
+            )
         if gap_down >= min_width and displacement_ok:
-            zones.append({"type": "fvg", "bias": "bearish", "lower": _price(c2, "high_price"), "upper": _price(c0, "low_price"), "created_index": i})
+            zones.append(
+                {
+                    "type": "fvg",
+                    "bias": "bearish",
+                    "lower": _price(c2, "high_price"),
+                    "upper": _price(c0, "low_price"),
+                    "created_index": i,
+                }
+            )
     return zones
 
 
-def detect_ob_zones(candles_newest: Sequence[dict[str, Any]], params: StrategyParams) -> list[dict[str, Any]]:
+def detect_ob_zones(
+    candles_newest: Sequence[dict[str, Any]], params: StrategyParams
+) -> list[dict[str, Any]]:
     candles = list(reversed(candles_newest))
     atr = _atr(candles_newest, params.fvg_atr_period)
     zones: list[dict[str, Any]] = []
@@ -416,7 +472,10 @@ def detect_ob_zones(candles_newest: Sequence[dict[str, Any]], params: StrategyPa
         cur_close = _price(cur, "trade_price")
         cur_range = max(_price(cur, "high_price") - _price(cur, "low_price"), 1e-8)
         body_ratio = abs(cur_close - cur_open) / cur_range
-        displacement = cur_range >= atr * params.displacement_min_atr_mult and body_ratio >= params.displacement_min_body_ratio
+        displacement = (
+            cur_range >= atr * params.displacement_min_atr_mult
+            and body_ratio >= params.displacement_min_body_ratio
+        )
         if not displacement:
             continue
 
@@ -424,18 +483,39 @@ def detect_ob_zones(candles_newest: Sequence[dict[str, Any]], params: StrategyPa
             for lookback in range(1, min(params.ob_max_base_bars, i) + 1):
                 base = candles[i - lookback]
                 if _price(base, "trade_price") < _price(base, "opening_price"):
-                    zones.append({"type": "ob", "bias": "bullish", "lower": _price(base, "low_price"), "upper": _price(base, "high_price"), "created_index": i})
+                    zones.append(
+                        {
+                            "type": "ob",
+                            "bias": "bullish",
+                            "lower": _price(base, "low_price"),
+                            "upper": _price(base, "high_price"),
+                            "created_index": i,
+                        }
+                    )
                     break
         else:
             for lookback in range(1, min(params.ob_max_base_bars, i) + 1):
                 base = candles[i - lookback]
                 if _price(base, "trade_price") > _price(base, "opening_price"):
-                    zones.append({"type": "ob", "bias": "bearish", "lower": _price(base, "low_price"), "upper": _price(base, "high_price"), "created_index": i})
+                    zones.append(
+                        {
+                            "type": "ob",
+                            "bias": "bearish",
+                            "lower": _price(base, "low_price"),
+                            "upper": _price(base, "high_price"),
+                            "created_index": i,
+                        }
+                    )
                     break
     return zones
 
 
-def filter_active_zones(zones: Sequence[dict[str, Any]], current_price: float, current_index: int, params: StrategyParams) -> list[dict[str, Any]]:
+def filter_active_zones(
+    zones: Sequence[dict[str, Any]],
+    current_price: float,
+    current_index: int,
+    params: StrategyParams,
+) -> list[dict[str, Any]]:
     active: list[dict[str, Any]] = []
     for zone in zones:
         age = current_index - int(zone["created_index"])
@@ -451,11 +531,133 @@ def filter_active_zones(zones: Sequence[dict[str, Any]], current_price: float, c
     return active
 
 
+def evaluate_sr_flip(
+    candles_newest: Sequence[dict[str, Any]],
+    sr_levels: Sequence[dict[str, Any]],
+    *,
+    side: str,
+    params: StrategyParams,
+) -> dict[str, Any]:
+    candles = list(reversed(candles_newest))
+    if not candles:
+        return {"pass": False, "fail_code": "sr_flip_no_candles", "level": None}
+
+    target_bias = "resistance" if side == "buy" else "support"
+    candidate_levels = [
+        level for level in sr_levels if level.get("bias") == target_bias
+    ]
+    if not candidate_levels:
+        return {"pass": False, "fail_code": "sr_flip_no_level", "level": None}
+
+    atr = _atr(candles_newest, params.fvg_atr_period)
+    latest_price = _price(candles_newest[0], "trade_price")
+    tolerance = max(latest_price * params.zone_reentry_buffer_pct, atr * 0.1)
+    best_result: dict[str, Any] | None = None
+    best_score = float("-inf")
+
+    for level in candidate_levels:
+        level_lower = float(level.get("lower", 0.0))
+        level_upper = float(level.get("upper", 0.0))
+        break_index = -1
+        for idx, candle in enumerate(candles):
+            close_price = _price(candle, "trade_price")
+            if side == "buy":
+                broke_level = close_price >= level_upper + tolerance
+            else:
+                broke_level = close_price <= level_lower - tolerance
+            if not broke_level:
+                continue
+
+            range_size = max(
+                _price(candle, "high_price") - _price(candle, "low_price"),
+                1e-8,
+            )
+            body = abs(_price(candle, "trade_price") - _price(candle, "opening_price"))
+            body_ratio = body / range_size
+            displacement_ok = (
+                body_ratio >= params.displacement_min_body_ratio
+                and range_size >= atr * params.displacement_min_atr_mult
+            )
+            if displacement_ok:
+                break_index = idx
+                break
+
+        if break_index < 0:
+            continue
+
+        retest_index = -1
+        hold_index = -1
+        for idx in range(break_index + 1, len(candles)):
+            candle = candles[idx]
+            intersects = (
+                _price(candle, "low_price") <= level_upper + tolerance
+                and _price(candle, "high_price") >= level_lower - tolerance
+            )
+            if not intersects:
+                continue
+            retest_index = idx
+
+            confirm_limit = min(
+                len(candles), idx + max(2, params.trigger_confirm_lookback + 1)
+            )
+            for confirm_idx in range(idx, confirm_limit):
+                confirm_candle = candles[confirm_idx]
+                close_price = _price(confirm_candle, "trade_price")
+                if side == "buy" and close_price >= level_upper:
+                    hold_index = confirm_idx
+                    break
+                if side == "sell" and close_price <= level_lower:
+                    hold_index = confirm_idx
+                    break
+            break
+
+        if retest_index < 0:
+            continue
+        if hold_index < 0:
+            level_result = {
+                "pass": False,
+                "fail_code": "sr_flip_hold_miss",
+                "level": dict(level),
+                "break_index": break_index,
+                "retest_index": retest_index,
+                "hold_index": -1,
+                "tolerance": tolerance,
+            }
+            score = float(level.get("score", 0.0))
+            if score > best_score:
+                best_score = score
+                best_result = level_result
+            continue
+
+        score = float(level.get("score", 0.0))
+        level_result = {
+            "pass": True,
+            "fail_code": "pass",
+            "level": dict(level),
+            "break_index": break_index,
+            "retest_index": retest_index,
+            "hold_index": hold_index,
+            "tolerance": tolerance,
+        }
+        if score > best_score:
+            best_score = score
+            best_result = level_result
+
+    if best_result is not None:
+        return best_result
+    return {"pass": False, "fail_code": "sr_flip_break_miss", "level": None}
+
+
 def _intersects(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return max(a["lower"], b["lower"]) <= min(a["upper"], b["upper"])
 
 
-def pick_best_zone(sr_levels: Sequence[dict[str, Any]], setup_zones: Sequence[dict[str, Any]], side: str, params: StrategyParams) -> dict[str, Any] | None:
+def pick_best_zone(
+    sr_levels: Sequence[dict[str, Any]],
+    setup_zones: Sequence[dict[str, Any]],
+    side: str,
+    params: StrategyParams,
+) -> dict[str, Any] | None:
     target_bias = "support" if side == "buy" else "resistance"
     setup_bias = "bullish" if side == "buy" else "bearish"
 
@@ -490,8 +692,15 @@ def _candle_intersects_zone(candle: dict[str, Any], zone: dict[str, Any]) -> boo
     return max(low, zone["lower"]) <= min(high, zone["upper"])
 
 
-def _is_breakout(candle_idx: int, candles_newest: Sequence[dict[str, Any]], side: str, params: StrategyParams) -> bool:
-    previous = candles_newest[candle_idx + 1 : candle_idx + 1 + params.trigger_breakout_lookback]
+def _is_breakout(
+    candle_idx: int,
+    candles_newest: Sequence[dict[str, Any]],
+    side: str,
+    params: StrategyParams,
+) -> bool:
+    previous = candles_newest[
+        candle_idx + 1 : candle_idx + 1 + params.trigger_breakout_lookback
+    ]
     if len(previous) < params.trigger_breakout_lookback:
         return False
     close = _price(candles_newest[candle_idx], "trade_price")
@@ -514,12 +723,19 @@ def _is_rejection(candle: dict[str, Any], side: str, params: StrategyParams) -> 
     return wick_ratio >= params.trigger_rejection_wick_ratio
 
 
-def _passes_required_trigger_count(*, zone_touched: bool, breakout: bool, rejection: bool, params: StrategyParams) -> bool:
+def _passes_required_trigger_count(
+    *, zone_touched: bool, breakout: bool, rejection: bool, params: StrategyParams
+) -> bool:
     required = max(1, min(3, int(getattr(params, "required_trigger_count", 1) or 1)))
     return (int(zone_touched) + int(breakout) + int(rejection)) >= required
 
 
-def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str, Any], side: str, params: StrategyParams) -> dict[str, Any]:
+def evaluate_trigger_1m(
+    candles_newest: Sequence[dict[str, Any]],
+    zone: dict[str, Any],
+    side: str,
+    params: StrategyParams,
+) -> dict[str, Any]:
     if len(candles_newest) < params.trigger_breakout_lookback + 2:
         return {"pass": False, "fail_code": "trigger_insufficient_candles"}
 
@@ -534,7 +750,12 @@ def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str
             return {"pass": False, "fail_code": "trigger_strict_breakout_miss"}
         if not rejection:
             return {"pass": False, "fail_code": "trigger_strict_rejection_miss"}
-        if not _passes_required_trigger_count(zone_touched=near_zone, breakout=breakout, rejection=rejection, params=params):
+        if not _passes_required_trigger_count(
+            zone_touched=near_zone,
+            breakout=breakout,
+            rejection=rejection,
+            params=params,
+        ):
             return {"pass": False, "fail_code": "trigger_required_count_fail"}
         return {"pass": True, "fail_code": "pass"}
 
@@ -556,7 +777,9 @@ def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str
         for idx in range(confirm_limit):
             candle = candles_newest[idx]
             breakout = _is_breakout(idx, candles_newest, side=side, params=params)
-            rejection = _candle_intersects_zone(candle, zone) and _is_rejection(candle, side=side, params=params)
+            rejection = _candle_intersects_zone(candle, zone) and _is_rejection(
+                candle, side=side, params=params
+            )
             if breakout or rejection:
                 if not _passes_required_trigger_count(
                     zone_touched=True,
@@ -570,7 +793,9 @@ def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str
         return {"pass": False, "fail_code": "trigger_balanced_confirm_miss"}
 
     if params.trigger_mode == "adaptive":
-        zone_lookback = min(max(params.trigger_zone_lookback, 0), len(candles_newest) - 1)
+        zone_lookback = min(
+            max(params.trigger_zone_lookback, 0), len(candles_newest) - 1
+        )
         touch_idx = -1
         for idx in range(zone_lookback + 1):
             if _candle_intersects_zone(candles_newest[idx], zone):
@@ -587,7 +812,9 @@ def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str
         for idx in range(confirm_limit):
             candle = candles_newest[idx]
             breakout = _is_breakout(idx, candles_newest, side=side, params=params)
-            rejection = _candle_intersects_zone(candle, zone) and _is_rejection(candle, side=side, params=params)
+            rejection = _candle_intersects_zone(candle, zone) and _is_rejection(
+                candle, side=side, params=params
+            )
             if breakout or rejection:
                 if not _passes_required_trigger_count(
                     zone_touched=True,
@@ -603,7 +830,12 @@ def evaluate_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str
     return {"pass": False, "fail_code": "trigger_invalid_mode"}
 
 
-def check_trigger_1m(candles_newest: Sequence[dict[str, Any]], zone: dict[str, Any], side: str, params: StrategyParams) -> bool:
+def check_trigger_1m(
+    candles_newest: Sequence[dict[str, Any]],
+    zone: dict[str, Any],
+    side: str,
+    params: StrategyParams,
+) -> bool:
     return evaluate_trigger_1m(candles_newest, zone, side=side, params=params)["pass"]
 
 
@@ -621,16 +853,24 @@ def _normalize_timeframes(data: Any) -> dict[str, list[dict[str, Any]]] | None:
             RuntimeWarning,
             stacklevel=2,
         )
-        candles = list(data)
+        candles = [dict(item) for item in data if isinstance(item, dict)]
         return {"1m": candles, "5m": candles, "15m": candles}
     return None
 
 
-def _check_entry(data: Any, params: StrategyParams, side: str, source_order: str = "newest") -> bool:
-    return bool(debug_entry(data, params, side=side, source_order=source_order).get("final_pass", False))
+def _check_entry(
+    data: Any, params: StrategyParams, side: str, source_order: str = "newest"
+) -> bool:
+    return bool(
+        debug_entry(data, params, side=side, source_order=source_order).get(
+            "final_pass", False
+        )
+    )
 
 
-def debug_entry(data: Any, params: StrategyParams, side: str, source_order: str = "newest") -> dict[str, Any]:
+def debug_entry(
+    data: Any, params: StrategyParams, side: str, source_order: str = "newest"
+) -> dict[str, Any]:
     tf = _normalize_timeframes(data)
     if tf is None:
         return {
@@ -639,6 +879,8 @@ def debug_entry(data: Any, params: StrategyParams, side: str, source_order: str 
             "len_c15": 0,
             "zones_total": 0,
             "zones_active": 0,
+            "sr_flip_pass": False,
+            "sr_flip_level": None,
             "selected_zone": None,
             "trigger_pass": False,
             "final_pass": False,
@@ -655,13 +897,19 @@ def debug_entry(data: Any, params: StrategyParams, side: str, source_order: str 
         "len_c15": len(c15),
         "zones_total": 0,
         "zones_active": 0,
+        "sr_flip_pass": False,
+        "sr_flip_level": None,
         "selected_zone": None,
         "trigger_pass": False,
         "final_pass": False,
         "fail_code": "insufficient_candles",
     }
 
-    if len(c1) < params.min_candles_1m or len(c5) < params.min_candles_5m or len(c15) < params.min_candles_15m:
+    if (
+        len(c1) < params.min_candles_1m
+        or len(c5) < params.min_candles_5m
+        or len(c15) < params.min_candles_15m
+    ):
         return debug
 
     regime_diag = regime_filter_diagnostics(c15, params)
@@ -671,16 +919,45 @@ def debug_entry(data: Any, params: StrategyParams, side: str, source_order: str 
         debug["regime_filter_metrics"] = regime_diag
         return debug
 
-    pivots = detect_sr_pivots(c15[: params.sr_lookback_bars], params.sr_pivot_left, params.sr_pivot_right)
-    sr_levels = cluster_sr_levels(pivots, params.sr_cluster_band_pct, params.sr_min_touches)
-    sr_levels = score_sr_levels(sr_levels, total_bars=len(c15[: params.sr_lookback_bars]), params=params)
+    pivots = detect_sr_pivots(
+        c15[: params.sr_lookback_bars], params.sr_pivot_left, params.sr_pivot_right
+    )
+    sr_levels = cluster_sr_levels(
+        pivots, params.sr_cluster_band_pct, params.sr_min_touches
+    )
+    sr_levels = score_sr_levels(
+        sr_levels, total_bars=len(c15[: params.sr_lookback_bars]), params=params
+    )
 
-    zones = detect_fvg_zones(c5[: params.ob_lookback_bars], params) + detect_ob_zones(c5[: params.ob_lookback_bars], params)
+    sr_flip = evaluate_sr_flip(
+        c5[: params.ob_lookback_bars],
+        sr_levels,
+        side=side,
+        params=params,
+    )
+    debug["sr_flip_pass"] = bool(sr_flip.get("pass", False))
+    debug["sr_flip_level"] = sr_flip.get("level")
+    debug["sr_flip_break_index"] = int(sr_flip.get("break_index", -1) or -1)
+    debug["sr_flip_retest_index"] = int(sr_flip.get("retest_index", -1) or -1)
+    debug["sr_flip_hold_index"] = int(sr_flip.get("hold_index", -1) or -1)
+    if not sr_flip.get("pass", False):
+        debug["fail_code"] = str(sr_flip.get("fail_code", "sr_flip_missing"))
+        return debug
+
+    zones = detect_fvg_zones(c5[: params.ob_lookback_bars], params) + detect_ob_zones(
+        c5[: params.ob_lookback_bars], params
+    )
     debug["zones_total"] = len(zones)
     current_price_5m = _price(c5[0], "trade_price")
-    active = filter_active_zones(zones, current_price_5m, current_index=len(c5[: params.ob_lookback_bars]), params=params)
+    active = filter_active_zones(
+        zones,
+        current_price_5m,
+        current_index=len(c5[: params.ob_lookback_bars]),
+        params=params,
+    )
     debug["zones_active"] = len(active)
-    selected = pick_best_zone(sr_levels, active, side=side, params=params)
+    flip_levels = [sr_flip["level"]] if sr_flip.get("level") is not None else []
+    selected = pick_best_zone(flip_levels, active, side=side, params=params)
     debug["selected_zone"] = selected
     if selected is None:
         debug["fail_code"] = "no_selected_zone"

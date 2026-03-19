@@ -5,6 +5,7 @@ import types
 import unittest
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +20,7 @@ if "slave_constants" not in sys.modules:
     sys.modules["slave_constants"] = slave_constants
 
 from testing.parity_runner import ParityRunner
+import core.strategies.candidate_v1 as candidate_v1
 
 
 FIXTURE_DIR = ROOT / "testing" / "fixtures"
@@ -33,6 +35,48 @@ class ParityRunnerTest(unittest.TestCase):
 
     def _candidate_fixture_path(self) -> Path:
         return FIXTURE_DIR / "parity_candidate_v1_cases.json"
+
+    def _candidate_debug(self, *, accepted: bool) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "final_pass": accepted,
+            "fail_code": "pass" if accepted else "pullback_missing",
+            "regime_filter_metrics": {"pass": True, "regime": "strong_trend"},
+            "zones_total": 3,
+            "zones_active": 1,
+            "selected_zone": {
+                "type": "ob",
+                "bias": "bullish",
+                "lower": 100.9,
+                "upper": 101.5,
+            },
+            "sr_flip_pass": accepted,
+            "sr_flip_level": {
+                "bias": "resistance",
+                "lower": 100.8,
+                "upper": 101.2,
+                "score": 0.9,
+            },
+            "trigger_pass": accepted,
+        }
+        if not accepted:
+            payload["selected_zone"] = None
+            payload["sr_flip_level"] = None
+        return payload
+
+    def _candidate_debug_side_effect(
+        self,
+        data: dict[str, list[dict[str, object]]],
+        *_args: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        latest = data.get("1m", [{}])[0]
+        latest_close_raw = latest.get("trade_price", 0.0)
+        latest_close = (
+            float(latest_close_raw)
+            if isinstance(latest_close_raw, (int, float))
+            else 0.0
+        )
+        return self._candidate_debug(accepted=latest_close >= 102.3)
 
     def test_uses_strategy_default_fixture_when_fixture_is_omitted(self):
         with tempfile.TemporaryDirectory() as td:
@@ -91,13 +135,25 @@ class ParityRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             output_path = Path(td) / "candidate_v1_parity.json"
 
-            artifact = self._artifact(
-                ParityRunner(
-                    strategy_name="candidate_v1",
-                    fixture_path=str(self._candidate_fixture_path()),
-                    output_path=str(output_path),
-                ).run()
-            )
+            with (
+                patch.object(
+                    candidate_v1,
+                    "debug_entry",
+                    side_effect=self._candidate_debug_side_effect,
+                ),
+                patch.object(
+                    candidate_v1,
+                    "check_sell",
+                    return_value=False,
+                ),
+            ):
+                artifact = self._artifact(
+                    ParityRunner(
+                        strategy_name="candidate_v1",
+                        fixture_path=str(self._candidate_fixture_path()),
+                        output_path=str(output_path),
+                    ).run()
+                )
 
             self.assertTrue(output_path.exists())
             self._assert_schema(artifact)

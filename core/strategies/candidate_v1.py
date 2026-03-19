@@ -1,31 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from collections.abc import Sequence
+from typing import Any
 
 from core.decision_models import StrategySignal
-from core.strategy import StrategyParams, classify_market_regime
+from core.strategy import StrategyParams, check_sell, debug_entry
 
 
 STRATEGY_NAME = "candidate_v1"
-MIN_CANDLES_1M = 6
-MIN_CANDLES_5M = 8
-SHORT_HORIZON_REGIME_EMA_FAST_MAX = 8
-SHORT_HORIZON_REGIME_EMA_SLOW_MAX = 34
-MIN_RECLAIM_RECOVERY_RATIO = 0.5
-MAX_PULLBACK_DEPTH_RATIO = 1.3
-
-
-def _ema_last(candles_newest: Sequence[dict[str, object]], period: int) -> float:
-    candles = _candles_oldest(candles_newest)
-    closes = [_price(candle, "trade_price") for candle in candles]
-    if not closes:
-        return 0.0
-    alpha = 2.0 / (max(period, 1) + 1)
-    ema = closes[0]
-    for close_price in closes[1:]:
-        ema = (close_price * alpha) + (ema * (1 - alpha))
-    return float(ema)
+REGIME_EMA_FAST_MAX = 12
+REGIME_EMA_SLOW_MAX = 48
+MIN_CANDIDATE_REQUIRED_TRIGGER_COUNT = 2
+MIN_CANDIDATE_SELL_PROFIT_THRESHOLD = 1.003
 
 
 def _price(candle: dict[str, object], key: str, fallback: str = "trade_price") -> float:
@@ -35,21 +21,14 @@ def _price(candle: dict[str, object], key: str, fallback: str = "trade_price") -
     return 0.0
 
 
-def _numeric(value: object) -> float:
+def _as_float(value: object, default: float = 0.0) -> float:
     if isinstance(value, (int, float)):
         return float(value)
-    return 0.0
-
-
-def _candles_oldest(
-    candles_newest: Sequence[dict[str, object]],
-) -> list[dict[str, object]]:
-    return list(reversed(list(candles_newest)))
+    return float(default)
 
 
 def _candles_from_data(
-    data: dict[str, list[dict[str, object]]],
-    timeframe: str,
+    data: dict[str, list[dict[str, object]]], timeframe: str
 ) -> list[dict[str, object]]:
     return list(data.get(timeframe, []))
 
@@ -70,14 +49,14 @@ def _proof_window_diagnostics(symbol: str, *, active: bool) -> dict[str, object]
     defaults_module = import_module("core.candidate_strategy_defaults")
     resolve_defaults = getattr(defaults_module, "candidate_v1_proof_window_defaults")
     defaults = dict(resolve_defaults(symbol))
-    max_bars = max(1, int(_numeric(defaults.get("proof_window_max_bars"))))
+    max_bars = max(1, int(float(defaults.get("proof_window_max_bars", 1))))
     promotion_threshold_r = max(
         0.0,
-        _numeric(defaults.get("proof_window_promotion_threshold_r")),
+        float(defaults.get("proof_window_promotion_threshold_r", 0.0)),
     )
     cooldown_hint_bars = max(
         0,
-        int(_numeric(defaults.get("proof_window_cooldown_hint_bars"))),
+        int(float(defaults.get("proof_window_cooldown_hint_bars", 0))),
     )
     symbol_profile = str(defaults.get("proof_window_symbol_profile") or "default")
     return {
@@ -95,259 +74,116 @@ def _proof_window_diagnostics(symbol: str, *, active: bool) -> dict[str, object]
 
 
 def normalize_strategy_params(params: StrategyParams) -> StrategyParams:
-    regime_ema_fast = max(
-        2,
-        min(int(params.regime_ema_fast), SHORT_HORIZON_REGIME_EMA_FAST_MAX),
-    )
-    regime_ema_slow = min(
-        int(params.regime_ema_slow),
-        SHORT_HORIZON_REGIME_EMA_SLOW_MAX,
-    )
+    regime_ema_fast = max(2, min(int(params.regime_ema_fast), REGIME_EMA_FAST_MAX))
+    regime_ema_slow = min(int(params.regime_ema_slow), REGIME_EMA_SLOW_MAX)
     if regime_ema_slow <= regime_ema_fast:
         regime_ema_slow = regime_ema_fast + 1
-    return replace(
+    normalized = replace(
         params,
+        strategy_name=STRATEGY_NAME,
+        regime_filter_enabled=True,
         regime_ema_fast=regime_ema_fast,
         regime_ema_slow=regime_ema_slow,
     )
+    if str(normalized.trigger_mode).strip().lower() == "adaptive":
+        normalized = replace(normalized, trigger_mode="balanced")
+    if int(normalized.required_trigger_count) < MIN_CANDIDATE_REQUIRED_TRIGGER_COUNT:
+        normalized = replace(
+            normalized,
+            required_trigger_count=MIN_CANDIDATE_REQUIRED_TRIGGER_COUNT,
+        )
+    if not bool(normalized.sell_requires_profit):
+        normalized = replace(normalized, sell_requires_profit=True)
+    if float(normalized.sell_profit_threshold) < MIN_CANDIDATE_SELL_PROFIT_THRESHOLD:
+        normalized = replace(
+            normalized,
+            sell_profit_threshold=MIN_CANDIDATE_SELL_PROFIT_THRESHOLD,
+        )
+    return normalized
 
 
-def _required_15m_candles(params: StrategyParams) -> int:
-    return max(
-        int(params.regime_ema_slow),
-        int(params.regime_adx_period) + 1,
-        int(params.regime_slope_lookback) + 1,
-    )
+def _exit_strategy_params(params: StrategyParams) -> StrategyParams:
+    normalized = normalize_strategy_params(params)
+    return replace(normalized, trigger_mode="adaptive", required_trigger_count=1)
 
 
-def _compact_regime_map(
-    candles_newest: Sequence[dict[str, object]],
-    params: StrategyParams,
-) -> dict[str, object]:
-    regime = classify_market_regime(candles_newest, params)
-    regime_ready = regime in {"strong_trend", "weak_trend"}
-    fast_ema = _ema_last(candles_newest, max(2, int(params.regime_ema_fast)))
-    slow_ema = _ema_last(candles_newest, max(3, int(params.regime_ema_slow)))
-    latest_close = _price(candles_newest[0], "trade_price") if candles_newest else 0.0
-    regime_strength = (
-        1.0 if regime == "strong_trend" else 0.75 if regime == "weak_trend" else 0.0
-    )
-    return {
-        "regime": str(regime or "unknown"),
-        "regime_map_state": "trend_ready" if regime_ready else "blocked",
-        "expected_hold_type": (
-            "trend_expansion"
-            if regime == "strong_trend"
-            else "trend_rotation"
-            if regime == "weak_trend"
-            else "none"
-        ),
-        "regime_strength": float(regime_strength),
-        "ema_fast_15m": float(fast_ema),
-        "ema_slow_15m": float(slow_ema),
-        "latest_close_15m": float(latest_close),
-    }
+def _regime_label(debug: dict[str, object]) -> str:
+    regime_metrics = debug.get("regime_filter_metrics")
+    if isinstance(regime_metrics, dict):
+        value = regime_metrics.get("regime")
+        if value is not None:
+            return str(value)
+    return "unknown"
 
 
-def _five_minute_setup(
-    candles_newest: Sequence[dict[str, object]],
-) -> dict[str, float | bool]:
-    candles = _candles_oldest(candles_newest)
-    if len(candles) < MIN_CANDLES_5M:
-        return {
-            "trend_confirmed": False,
-            "setup_ready": False,
-            "setup_quality": 0.0,
-            "pullback_depth_ratio": 0.0,
-            "reset_low": 0.0,
-            "anchor_high": 0.0,
-        }
-
-    lows = [_price(candle, "low_price") for candle in candles]
-    highs = [_price(candle, "high_price") for candle in candles]
-    closes = [_price(candle, "trade_price") for candle in candles]
-    fast_ema = _ema_last(list(reversed(candles)), 5)
-    slow_ema = _ema_last(list(reversed(candles)), 9)
-
-    prior_lows = lows[-8:-4]
-    recent_lows = lows[-4:-1]
-    anchor_high = max(highs[-6:-1])
-    reset_low = min(recent_lows)
-    impulse_floor = min(prior_lows)
-    depth_denominator = max(anchor_high - impulse_floor, 1e-9)
-    pullback_depth_ratio = max(anchor_high - reset_low, 0.0) / depth_denominator
-    last_close = closes[-1]
-    trend_confirmed = last_close > fast_ema > slow_ema and min(recent_lows) > min(
-        prior_lows
-    )
-    setup_ready = trend_confirmed and 0.12 <= pullback_depth_ratio <= 0.75
-    pullback_quality = max(0.0, 1.0 - abs(pullback_depth_ratio - 0.38) / 0.38)
-    setup_quality = (0.55 if trend_confirmed else 0.0) + (0.45 * pullback_quality)
-    return {
-        "trend_confirmed": trend_confirmed,
-        "setup_ready": setup_ready,
-        "setup_quality": float(min(setup_quality, 1.0)),
-        "pullback_depth_ratio": float(pullback_depth_ratio),
-        "reset_low": float(reset_low),
-        "anchor_high": float(anchor_high),
-    }
+def _expected_hold_type(regime: str) -> str:
+    if regime == "strong_trend":
+        return "trend_expansion"
+    if regime == "weak_trend":
+        return "trend_rotation"
+    return "none"
 
 
-def _pullback_reclaim_signal(
-    candles_newest: Sequence[dict[str, object]],
-) -> dict[str, float | bool]:
-    candles = _candles_oldest(candles_newest)
-    if len(candles) < 6:
-        return {
-            "pullback_seen": False,
-            "reclaim_confirmed": False,
-            "reclaim_level": 0.0,
-            "reclaim_recovery_ratio": 0.0,
-            "pullback_depth_ratio": 0.0,
-            "pullback_too_deep": False,
-            "pullback_low": 0.0,
-            "entry_price": 0.0,
-            "micro_breakout_level": 0.0,
-        }
-
-    impulse_slice = candles[-6:-3]
-    pullback_slice = candles[-3:-1]
-    reclaim_candle = candles[-1]
-
-    reclaim_level = max(_price(candle, "trade_price") for candle in impulse_slice)
-    pullback_low = min(_price(candle, "low_price") for candle in pullback_slice)
-    last_pullback_close = _price(pullback_slice[-1], "trade_price")
-    entry_price = _price(reclaim_candle, "trade_price")
-    micro_breakout_level = max(
-        _price(candle, "high_price") for candle in candles[-4:-1]
-    )
-    reclaim_gap = max(reclaim_level - last_pullback_close, 0.0)
-    reclaim_floor = last_pullback_close + (reclaim_gap * MIN_RECLAIM_RECOVERY_RATIO)
-    micro_trigger_floor = max(
-        reclaim_floor,
-        micro_breakout_level - reclaim_gap,
-    )
-    reclaim_recovery_ratio = (
-        max(entry_price - last_pullback_close, 0.0) / reclaim_gap
-        if reclaim_gap > 0
-        else 0.0
-    )
-    pullback_depth_ratio = (
-        max(reclaim_level - pullback_low, 0.0) / reclaim_gap if reclaim_gap > 0 else 0.0
-    )
-    reclaim_confirmed = entry_price >= micro_trigger_floor and entry_price > _price(
-        reclaim_candle, "opening_price"
-    )
-    pullback_too_deep = pullback_depth_ratio > MAX_PULLBACK_DEPTH_RATIO
-    pullback_seen = pullback_low < reclaim_level and last_pullback_close < reclaim_level
-
-    return {
-        "pullback_seen": pullback_seen,
-        "reclaim_confirmed": reclaim_confirmed,
-        "reclaim_level": float(reclaim_level),
-        "reclaim_floor": float(reclaim_floor),
-        "micro_trigger_floor": float(micro_trigger_floor),
-        "reclaim_recovery_ratio": float(reclaim_recovery_ratio),
-        "pullback_depth_ratio": float(pullback_depth_ratio),
-        "pullback_too_deep": pullback_too_deep,
-        "pullback_low": float(pullback_low),
-        "entry_price": float(entry_price),
-        "micro_breakout_level": float(micro_breakout_level),
-    }
+def _as_mapping(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        raw = value
+        return {str(key): item for key, item in raw.items()}
+    return {}
 
 
 def evaluate_long_entry(
     data: dict[str, list[dict[str, object]]],
     params: StrategyParams,
 ) -> StrategySignal:
-    candles_1m = _candles_from_data(data, "1m")
-    candles_5m = _candles_from_data(data, "5m")
-    candles_15m = _candles_from_data(data, "15m")
+    effective_params = normalize_strategy_params(params)
+    debug = debug_entry(data, effective_params, side="buy")
     symbol = _symbol_from_data(data)
-    regime_params = normalize_strategy_params(params)
-    required_15m = _required_15m_candles(regime_params)
-    if len(candles_1m) < MIN_CANDLES_1M:
-        return StrategySignal(
-            accepted=False,
-            reason="insufficient_1m_candles",
-            diagnostics={
-                "required_1m": MIN_CANDLES_1M,
-                "actual_1m": len(candles_1m),
-            },
+    regime = _regime_label(debug)
+    selected_zone = _as_mapping(debug.get("selected_zone"))
+    sr_flip_level = _as_mapping(debug.get("sr_flip_level"))
+    candles_1m = _candles_from_data(data, "1m")
+    entry_price = _price(candles_1m[0], "trade_price") if candles_1m else 0.0
+    stop_candidates = [
+        float(value)
+        for value in (
+            selected_zone.get("lower"),
+            sr_flip_level.get("lower"),
         )
-    if len(candles_5m) < MIN_CANDLES_5M:
-        return StrategySignal(
-            accepted=False,
-            reason="insufficient_5m_candles",
-            diagnostics={
-                "required_5m": MIN_CANDLES_5M,
-                "actual_5m": len(candles_5m),
-            },
-        )
-    if len(candles_15m) < required_15m:
-        return StrategySignal(
-            accepted=False,
-            reason="insufficient_15m_candles",
-            diagnostics={
-                "required_15m": required_15m,
-                "actual_15m": len(candles_15m),
-            },
-        )
-    regime_map = _compact_regime_map(candles_15m, regime_params)
-    regime = str(regime_map["regime"])
-    regime_ok = bool(regime_map["regime_map_state"] == "trend_ready")
-    setup_5m = _five_minute_setup(candles_5m)
-    trend_confirmed_5m = bool(setup_5m["trend_confirmed"])
-    pullback = _pullback_reclaim_signal(candles_1m)
-    pullback_seen = bool(pullback["pullback_seen"])
-    reclaim_confirmed = bool(pullback["reclaim_confirmed"])
-    pullback_too_deep = bool(pullback["pullback_too_deep"])
-    entry_price = float(pullback["entry_price"])
-    pullback_stop = float(pullback["pullback_low"])
-    reset_stop = float(setup_5m["reset_low"] or pullback_stop)
-    stop_price = min(pullback_stop, reset_stop)
-    stop_basis = "reset_low_5m" if reset_stop < pullback_stop else "pullback_low"
+        if isinstance(value, (int, float)) and float(value) > 0
+    ]
+    stop_price = (
+        min(stop_candidates)
+        - (entry_price * float(effective_params.zone_reentry_buffer_pct))
+        if stop_candidates and entry_price > 0
+        else 0.0
+    )
     risk = max(entry_price - stop_price, 0.0)
-    safety_pass = entry_price > 0 and stop_price > 0 and risk > 0
-    continuation_quality = min(
-        float(pullback["reclaim_recovery_ratio"]) / 1.25,
-        1.0,
-    )
-    signal_quality = min(
-        1.0,
-        (0.4 * _numeric(regime_map["regime_strength"]))
-        + (0.3 * _numeric(setup_5m["setup_quality"]))
-        + (0.3 * continuation_quality),
-    )
+    trigger_pass = bool(debug.get("trigger_pass", False))
+    sr_flip_pass = bool(debug.get("sr_flip_pass", False))
+    zone_type = str(selected_zone.get("type") or "")
+    flip_score = _as_float(sr_flip_level.get("score"), 0.0)
+    zone_type_bonus = 0.55 if zone_type == "ob" else 0.45 if zone_type == "fvg" else 0.0
     entry_score = (
-        (1.2 * float(regime_ok))
-        + (1.0 * float(setup_5m["setup_ready"]))
-        + (0.6 * float(pullback_seen))
-        + (1.2 * continuation_quality if reclaim_confirmed else 0.0)
+        1.25 * float(sr_flip_pass)
+        + 1.0 * float(bool(selected_zone))
+        + 1.0 * float(trigger_pass)
+        + 1.4 * min(max(flip_score, 0.0), 1.0)
+        + zone_type_bonus
     )
-    score_pass = entry_score >= float(params.entry_score_threshold)
+    quality_score = min(
+        1.0,
+        (0.5 * min(max(flip_score, 0.0), 1.0))
+        + (0.2 * float(sr_flip_pass))
+        + (0.2 * float(trigger_pass))
+        + (0.1 * float(zone_type == "ob")),
+    )
+    safety_pass = entry_price > 0 and stop_price > 0 and risk > 0
+    score_pass = entry_score >= float(effective_params.entry_score_threshold)
+    helper_pass = bool(debug.get("final_pass", False))
+    accepted = helper_pass and safety_pass and score_pass
 
-    filter_pass = regime_ok
-    setup_pass = (
-        bool(setup_5m["setup_ready"]) and pullback_seen and not pullback_too_deep
-    )
-    trigger_pass = reclaim_confirmed
-    final_pass = (
-        filter_pass and setup_pass and trigger_pass and safety_pass and score_pass
-    )
-
-    if not regime_ok:
-        reason = "regime_blocked"
-    elif not trend_confirmed_5m:
-        reason = "trend_context_fail"
-    elif not bool(setup_5m["setup_ready"]):
-        reason = "setup_context_fail"
-    elif not pullback_seen:
-        reason = "pullback_missing"
-    elif pullback_too_deep:
-        reason = "pullback_too_deep"
-    elif not reclaim_confirmed:
-        reason = "reclaim_missing"
+    if not helper_pass:
+        reason = str(debug.get("fail_code") or "hold")
     elif not safety_pass:
         reason = "safety_fail"
     elif not score_pass:
@@ -355,45 +191,44 @@ def evaluate_long_entry(
     else:
         reason = "ok"
 
-    regime_quality_base = (
-        0.47 if regime == "strong_trend" else 0.42 if regime == "weak_trend" else 0.0
-    )
-    quality_score = regime_quality_base + (0.08 * continuation_quality)
     diagnostics: dict[str, object] = {
-        "regime": str(regime or "unknown"),
-        "regime_map_state": str(regime_map["regime_map_state"]),
-        "expected_hold_type": str(regime_map["expected_hold_type"]),
-        "trend_confirmed_5m": trend_confirmed_5m,
-        "setup_ready": bool(setup_5m["setup_ready"]),
-        "setup_quality": float(setup_5m["setup_quality"]),
-        "pullback_seen": pullback_seen,
-        "pullback_too_deep": pullback_too_deep,
-        "reclaim_confirmed": reclaim_confirmed,
-        "reclaim_level": float(pullback["reclaim_level"]),
-        "reclaim_floor": float(pullback["reclaim_floor"]),
-        "micro_breakout_level": float(pullback["micro_breakout_level"]),
-        "reclaim_recovery_ratio": float(pullback["reclaim_recovery_ratio"]),
-        "pullback_depth_ratio": float(pullback["pullback_depth_ratio"]),
-        "setup_depth_ratio": float(setup_5m["pullback_depth_ratio"]),
-        "continuation_quality": continuation_quality,
-        "pullback_low": pullback_stop,
+        "regime": regime,
+        "entry_regime": regime,
+        "expected_hold_type": _expected_hold_type(regime),
+        "regime_filter_metrics": _as_mapping(debug.get("regime_filter_metrics")),
+        "zones_total": int(debug.get("zones_total", 0) or 0),
+        "zones_active": int(debug.get("zones_active", 0) or 0),
+        "selected_zone": selected_zone or None,
+        "selected_zone_type": zone_type,
+        "selected_zone_lower": _as_float(selected_zone.get("lower"), 0.0),
+        "selected_zone_upper": _as_float(selected_zone.get("upper"), 0.0),
+        "sr_flip_pass": sr_flip_pass,
+        "sr_flip_level": sr_flip_level or None,
+        "sr_flip_break_index": int(debug.get("sr_flip_break_index", -1) or -1),
+        "sr_flip_retest_index": int(debug.get("sr_flip_retest_index", -1) or -1),
+        "sr_flip_hold_index": int(debug.get("sr_flip_hold_index", -1) or -1),
+        "trigger_pass": trigger_pass,
         "entry_price": entry_price,
         "stop_price": stop_price,
         "invalidation_price": stop_price,
-        "stop_basis": stop_basis,
+        "stop_basis": "sr_flip_zone_low",
         "r_value": risk,
         "entry_score": entry_score,
-        "score_threshold": float(params.entry_score_threshold),
+        "score_threshold": float(effective_params.entry_score_threshold),
         "quality_score": quality_score,
-        "signal_quality": signal_quality,
+        "signal_quality": quality_score,
         "use_quality_multiplier": False,
-        **_proof_window_diagnostics(symbol, active=final_pass),
+        "effective_strategy_params": {
+            "strategy_name": STRATEGY_NAME,
+            "trigger_mode": effective_params.trigger_mode,
+            "required_trigger_count": int(effective_params.required_trigger_count),
+            "sell_requires_profit": bool(effective_params.sell_requires_profit),
+            "sell_profit_threshold": float(effective_params.sell_profit_threshold),
+            "entry_score_threshold": float(effective_params.entry_score_threshold),
+        },
+        **_proof_window_diagnostics(symbol, active=accepted),
     }
-    return StrategySignal(
-        accepted=final_pass,
-        reason=reason,
-        diagnostics=diagnostics,
-    )
+    return StrategySignal(accepted=accepted, reason=reason, diagnostics=diagnostics)
 
 
 def should_exit_long(
@@ -404,8 +239,17 @@ def should_exit_long(
     initial_stop_price: float,
     risk_per_unit: float,
 ) -> bool:
-    _ = data, params, entry_price, initial_stop_price, risk_per_unit
-    return False
+    effective_params = _exit_strategy_params(params)
+    return bool(
+        check_sell(
+            data,
+            avg_buy_price=entry_price,
+            params=effective_params,
+            entry_price=entry_price,
+            initial_stop_price=initial_stop_price,
+            risk_per_unit=risk_per_unit,
+        )
+    )
 
 
 __all__ = [
