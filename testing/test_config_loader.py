@@ -35,6 +35,25 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.strategy_name, "baseline")
         self.assertEqual(config.strategy_decision_path, "")
 
+    def test_ict_v1_can_run_without_strategy_decision_artifact_in_paper_mode(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "paper",
+                "TRADING_STRATEGY_NAME": "ict_v1",
+            },
+            clear=False,
+        ):
+            config = load_trading_config()
+
+        self.assertEqual(config.strategy_name, "ict_v1")
+        self.assertEqual(config.strategy_decision_path, "")
+
+    def test_default_runtime_strategy_is_ict_v1(self):
+        config = load_trading_config()
+
+        self.assertEqual(config.strategy_name, "ict_v1")
+
     def test_candidate_strategy_requires_decision_artifact_in_paper_mode(self):
         with patch.dict(
             os.environ,
@@ -347,7 +366,15 @@ class ConfigLoaderTest(unittest.TestCase):
         )
 
     def test_regime_strategy_override_profile_is_available(self):
-        config = load_trading_config()
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "dry_run",
+                "TRADING_STRATEGY_NAME": "baseline",
+            },
+            clear=False,
+        ):
+            config = load_trading_config()
         strong = config.regime_strategy_overrides("strong_trend")
         side = config.regime_strategy_overrides("sideways")
 

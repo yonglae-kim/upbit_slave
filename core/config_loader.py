@@ -142,7 +142,7 @@ class ConfigValidationError(ValueError):
 
 
 _PROMOTION_GATE_MODES = {"paper", "live"}
-_BASELINE_STRATEGY_NAME = "baseline"
+_UNGATED_RUNTIME_STRATEGY_NAMES = {"baseline", "ict_v1"}
 _PROMOTION_GATED_CANDIDATES = {"candidate_v1"}
 
 
@@ -339,7 +339,7 @@ def _validate_runtime_strategy_selection(config: dict[str, Any]) -> None:
 
     if (
         mode not in _PROMOTION_GATE_MODES
-        or strategy_name == _BASELINE_STRATEGY_NAME
+        or strategy_name in _UNGATED_RUNTIME_STRATEGY_NAMES
         or strategy_name not in _PROMOTION_GATED_CANDIDATES
     ):
         return

@@ -71,7 +71,7 @@ TRADING_CONFIG = {
     "zone_profile": "aggressive",
     "reentry_cooldown_bars": 10,
     "cooldown_on_loss_exits_only": False,
-    "strategy_name": "rsi_bb_reversal_long",
+    "strategy_name": "ict_v1",
     "strategy_decision_path": "",
     "rsi_period": 14,
     "rsi_long_threshold": 30,

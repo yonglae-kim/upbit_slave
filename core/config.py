@@ -26,11 +26,18 @@ DEFAULT_ENTRY_SCORE_THRESHOLD = 2.5
 CANDIDATE_ENTRY_SCORE_THRESHOLD_DEFAULT = 3.6
 
 
-STRATEGY_PARAM_DEFAULT_OVERRIDES: dict[str, dict[str, int | float]] = {
+STRATEGY_PARAM_DEFAULT_OVERRIDES: dict[str, dict[str, int | float | str]] = {
     "candidate_v1": {
         "regime_ema_fast": 12,
         "regime_ema_slow": 48,
-    }
+    },
+    "ict_v1": {
+        "regime_ema_fast": 8,
+        "regime_ema_slow": 24,
+        "trigger_mode": "balanced",
+        "required_trigger_count": 2,
+        "take_profit_r": 1.6,
+    },
 }
 
 
@@ -62,6 +69,11 @@ REGIME_STRATEGY_PARAM_OVERRIDES: dict[str, dict[str, int | float]] = {
 STRATEGY_REGIME_PARAM_OVERRIDES: dict[str, dict[str, dict[str, int | float]]] = {
     "baseline": REGIME_STRATEGY_PARAM_OVERRIDES,
     "candidate_v1": {
+        "strong_trend": {},
+        "weak_trend": {},
+        "sideways": {},
+    },
+    "ict_v1": {
         "strong_trend": {},
         "weak_trend": {},
         "sideways": {},
@@ -183,7 +195,7 @@ class TradingConfig:
     zone_profile: str = "aggressive"
     reentry_cooldown_bars: int = 10
     cooldown_on_loss_exits_only: bool = False
-    strategy_name: str = "rsi_bb_reversal_long"
+    strategy_name: str = "ict_v1"
     strategy_decision_path: str = ""
     rsi_period: int = 14
     rsi_long_threshold: float = 30.0

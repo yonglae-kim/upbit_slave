@@ -37,11 +37,13 @@ def make_candle(price: float, spread: float = 1.0, bull: bool = True):
 
 
 class MainSignalValidationTest(unittest.TestCase):
-    config: TradingConfig = TradingConfig(do_not_trading=[])
-    params: StrategyParams = TradingConfig(do_not_trading=[]).to_strategy_params()
+    config: TradingConfig = TradingConfig(do_not_trading=[], strategy_name="baseline")
+    params: StrategyParams = TradingConfig(
+        do_not_trading=[], strategy_name="baseline"
+    ).to_strategy_params()
 
     def setUp(self):
-        self.config = TradingConfig(do_not_trading=[])
+        self.config = TradingConfig(do_not_trading=[], strategy_name="baseline")
         self.params = self.config.to_strategy_params()
 
     def _tf(self, c1, c5, c15):

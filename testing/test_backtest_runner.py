@@ -1188,6 +1188,7 @@ class BacktestRunnerTest(unittest.TestCase):
     ):
         config = TradingConfig(
             do_not_trading=[],
+            strategy_name="baseline",
             candle_interval=1,
             regime_filter_enabled=True,
             regime_ema_slow=200,
