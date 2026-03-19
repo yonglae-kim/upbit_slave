@@ -440,7 +440,9 @@ class BacktestRunner:
 
     def _market_damping_policy_payload(self) -> SnapshotState:
         return {
-            "enabled": bool(self.config.market_damping_enabled),
+            "enabled": bool(self.config.market_damping_enabled)
+            or str(self.strategy_params.strategy_name).strip().lower()
+            == "candidate_v1",
             "max_spread": float(self.config.market_damping_max_spread),
             "min_trade_value_24h": float(
                 self.config.market_damping_min_trade_value_24h

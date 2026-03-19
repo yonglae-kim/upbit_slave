@@ -78,6 +78,16 @@ class BacktestRunnerTest(unittest.TestCase):
                 "highest_r": 0.0,
                 "lowest_r": 0.0,
                 "drawdown_from_peak_r": 0.0,
+                "proof_window_active": False,
+                "proof_window_promoted": False,
+                "proof_window_status": "inactive",
+                "proof_window_start_bar": 0,
+                "proof_window_elapsed_bars": 0,
+                "proof_window_max_bars": 0,
+                "proof_window_max_favorable_excursion_r": 0.0,
+                "proof_window_promotion_threshold_r": 0.0,
+                "proof_window_cooldown_hint_bars": 0,
+                "proof_window_symbol_profile": "default",
             }
         )
         return DecisionIntent(

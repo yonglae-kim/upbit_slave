@@ -1375,6 +1375,95 @@ class DecisionCoreTest(unittest.TestCase):
         closes_oldest = [100.0 + (idx * 0.9) for idx in range(candle_count)]
         return candles_from_closes(closes_oldest, spread=0.6)
 
+    def _candidate_market_profile_context(
+        self,
+        *,
+        symbol: str,
+        trade_value_24h: float,
+        spread_bps: float,
+    ) -> DecisionContext:
+        candles_1m = self._candidate_pullback_reclaim_1m(final_close=102.35)
+        trade_price_value = trade_price(candles_1m[0])
+        ask_price = trade_price_value * (1.0 + (spread_bps / 20000.0))
+        bid_price = trade_price_value * (1.0 - (spread_bps / 20000.0))
+        return DecisionContext(
+            strategy_name="candidate_v1",
+            market=MarketSnapshot(
+                symbol=symbol,
+                candles_by_timeframe={
+                    "1m": candles_1m,
+                    "5m": self._candidate_trend_5m(),
+                    "15m": self._candidate_strong_trend_15m(candle_count=60),
+                },
+                price=trade_price_value,
+                diagnostics={
+                    "current_atr": 0.8,
+                    "swing_low": 101.1,
+                    "ticker": {
+                        "market": symbol,
+                        "trade_price": trade_price_value,
+                        "ask_price": ask_price,
+                        "bid_price": bid_price,
+                        "acc_trade_price_24h": trade_value_24h,
+                    },
+                },
+            ),
+            position=PositionSnapshot(),
+            portfolio=PortfolioSnapshot(available_krw=1_000_000.0),
+            diagnostics={
+                "entry_sizing_policy": {
+                    "risk_per_trade_pct": 0.01,
+                    "fee_rate": 0.0005,
+                    "max_holdings": 3,
+                    "position_sizing_mode": "risk_first",
+                    "max_order_krw_by_cash_management": 300000,
+                },
+                "market_damping_policy": {
+                    "enabled": True,
+                    "max_spread": 0.003,
+                    "min_trade_value_24h": 100_000_000_000.0,
+                    "atr_period": 14,
+                    "max_atr_ratio": 0.03,
+                },
+            },
+        )
+
+    def test_candidate_v1_blocks_entry_on_poor_market_profile(self):
+        intent = evaluate_market(
+            self._candidate_market_profile_context(
+                symbol="KRW-ANKR",
+                trade_value_24h=5_000_000_000.0,
+                spread_bps=20.0,
+            ),
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "hold")
+        self.assertEqual(intent.reason, "market_profile_blocked")
+        self.assertLess(
+            float(intent.diagnostics["market_damping"]["damping_factor"]),
+            0.5,
+        )
+
+    def test_candidate_v1_keeps_entry_on_healthy_market_profile(self):
+        intent = evaluate_market(
+            self._candidate_market_profile_context(
+                symbol="KRW-BTC",
+                trade_value_24h=300_000_000_000.0,
+                spread_bps=0.04,
+            ),
+            strategy_params=self._make_candidate_params(),
+            order_policy=self._make_candidate_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "enter")
+        self.assertEqual(intent.reason, "ok")
+        self.assertGreaterEqual(
+            float(intent.diagnostics["market_damping"]["damping_factor"]),
+            0.5,
+        )
+
 
 if __name__ == "__main__":
     _ = unittest.main()

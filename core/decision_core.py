@@ -84,6 +84,16 @@ def _evaluate_entry(
             diagnostics=entry_diagnostics,
             next_position_state=dict(context.position.state),
         )
+    if strategy.name == candidate_v1.STRATEGY_NAME:
+        market_damping = _dict_str_object(entry_diagnostics.get("market_damping"))
+        damping_factor = _value_as_float(market_damping.get("damping_factor"), 1.0)
+        if damping_factor < 0.5:
+            return DecisionIntent(
+                action="hold",
+                reason="market_profile_blocked",
+                diagnostics=entry_diagnostics,
+                next_position_state=dict(context.position.state),
+            )
 
     next_position_state = _build_entry_position_state(
         context,

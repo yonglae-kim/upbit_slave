@@ -763,7 +763,9 @@ class TradingEngine:
             diagnostics={
                 "regime_strategy_overrides": self.config.all_regime_strategy_overrides(),
                 "entry_sizing_policy": self._entry_sizing_policy_payload(),
-                "market_damping_policy": self._market_damping_policy_payload(),
+                "market_damping_policy": self._market_damping_policy_payload(
+                    strategy_name=strategy_name
+                ),
             },
         )
 
@@ -885,9 +887,12 @@ class TradingEngine:
             "max_daily_loss_pct": float(self.config.max_daily_loss_pct),
         }
 
-    def _market_damping_policy_payload(self) -> dict[str, object]:
+    def _market_damping_policy_payload(
+        self, *, strategy_name: str = ""
+    ) -> dict[str, object]:
         return {
-            "enabled": bool(self.config.market_damping_enabled),
+            "enabled": bool(self.config.market_damping_enabled)
+            or str(strategy_name).strip().lower() == "candidate_v1",
             "max_spread": float(self.config.market_damping_max_spread),
             "min_trade_value_24h": float(
                 self.config.market_damping_min_trade_value_24h
