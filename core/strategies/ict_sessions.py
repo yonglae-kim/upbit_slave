@@ -1,10 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone, tzinfo
+
+try:
+    from zoneinfo import ZoneInfo
+
+    def _load_timezone(name: str) -> tzinfo:
+        return ZoneInfo(name)
+
+except ImportError:
+    import pytz
+
+    def _load_timezone(name: str) -> tzinfo:
+        return pytz.timezone(name)
 
 
-NEW_YORK_TZ = ZoneInfo("America/New_York")
+NEW_YORK_TZ = _load_timezone("America/New_York")
 SILVER_BULLET_WINDOWS_NY: tuple[tuple[int, int], ...] = ((3, 4), (10, 11), (14, 15))
 
 
@@ -18,7 +29,7 @@ def parse_candle_timestamp(candle: dict[str, object]) -> datetime | None:
         except ValueError:
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+            parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed
     return None
 
@@ -34,6 +45,7 @@ def is_in_silver_bullet_window(candle: dict[str, object]) -> bool:
 __all__ = [
     "NEW_YORK_TZ",
     "SILVER_BULLET_WINDOWS_NY",
+    "_load_timezone",
     "is_in_silver_bullet_window",
     "parse_candle_timestamp",
 ]
