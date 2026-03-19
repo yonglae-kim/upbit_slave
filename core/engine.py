@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
@@ -322,7 +322,16 @@ class TradingEngine:
                 str(ticker.get("market"))
             )
 
-        top_and_spread_result = self.universe.select_watch_markets_with_report(
+        pre_rank_builder = UniverseBuilder(
+            replace(
+                self.config,
+                low_spec_watch_cap_n2=max(
+                    int(self.config.universe_top_n1),
+                    int(self.config.low_spec_watch_cap_n2),
+                ),
+            )
+        )
+        top_and_spread_result = pre_rank_builder.select_watch_markets_with_report(
             tickers_for_selection
         )
         candles_by_market = {

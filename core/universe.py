@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from core.config import TradingConfig
+from core.strategy_registry import normalize_strategy_name
 
 
 @dataclass
@@ -41,10 +42,14 @@ class UniverseBuilder:
         candidates = [ticker for ticker in tickers if ticker.get("market")]
         drop_reasons: list[UniverseDropReason] = []
 
-        top_selected, top_drops = select_top_by_trading_value_with_drops(candidates, self.config.universe_top_n1)
+        top_selected, top_drops = select_top_by_trading_value_with_drops(
+            candidates, self.config.universe_top_n1
+        )
         drop_reasons.extend(top_drops)
 
-        spread_selected, spread_drops = filter_by_relative_spread_with_drops(top_selected, self.config.max_relative_spread)
+        spread_selected, spread_drops = filter_by_relative_spread_with_drops(
+            top_selected, self.config.max_relative_spread
+        )
         drop_reasons.extend(spread_drops)
 
         current_markets = [ticker["market"] for ticker in spread_selected]
@@ -55,9 +60,20 @@ class UniverseBuilder:
                 self.config.max_candle_missing_rate,
             )
             drop_reasons.extend(missing_drops)
-            spread_selected = [ticker for ticker in spread_selected if ticker["market"] in missing_selected]
+            spread_selected = [
+                ticker
+                for ticker in spread_selected
+                if ticker["market"] in missing_selected
+            ]
+            spread_selected = reorder_tickers_for_strategy(
+                spread_selected,
+                strategy_name=self.config.strategy_name,
+                candles_by_market=candles_by_market,
+            )
 
-        final_tickers, cap_drops = limit_watch_tickers_with_drops(spread_selected, self.config.low_spec_watch_cap_n2)
+        final_tickers, cap_drops = limit_watch_tickers_with_drops(
+            spread_selected, self.config.low_spec_watch_cap_n2
+        )
         drop_reasons.extend(cap_drops)
 
         return UniverseSelectionResult(
@@ -67,7 +83,9 @@ class UniverseBuilder:
         )
 
 
-def collect_krw_markets(markets: Iterable[dict[str, Any]], excluded_keywords: list[str]) -> list[str]:
+def collect_krw_markets(
+    markets: Iterable[dict[str, Any]], excluded_keywords: list[str]
+) -> list[str]:
     krw_markets = []
     for item in markets:
         market = str(item.get("market", ""))
@@ -104,12 +122,72 @@ def _ticker_trading_value(ticker: dict[str, Any]) -> float:
     return _to_float(
         ticker.get(
             "recent_trade_value_10m",
-            ticker.get("acc_trade_price_24h", ticker.get("acc_trade_price", ticker.get("trade_volume", 0.0))),
+            ticker.get(
+                "acc_trade_price_24h",
+                ticker.get("acc_trade_price", ticker.get("trade_volume", 0.0)),
+            ),
         )
     )
 
 
-def select_top_by_trading_value(tickers: Iterable[dict[str, Any]], top_n1: int) -> list[dict[str, Any]]:
+def _candle_movement_quality(candles: Iterable[dict[str, Any]]) -> float:
+    candle_list = list(candles)
+    if not candle_list:
+        return 0.0
+    quality = 0.0
+    for candle in candle_list:
+        open_price = _to_float(
+            candle.get("opening_price"), _to_float(candle.get("trade_price"))
+        )
+        close_price = _to_float(candle.get("trade_price"))
+        high_price = _to_float(candle.get("high_price"), max(open_price, close_price))
+        low_price = _to_float(candle.get("low_price"), min(open_price, close_price))
+        reference_price = max(close_price, open_price, 1e-8)
+        body_ratio = abs(close_price - open_price) / reference_price
+        range_ratio = max(high_price - low_price, 0.0) / reference_price
+        quality += body_ratio + (0.5 * range_ratio)
+    return quality
+
+
+def reorder_tickers_for_strategy(
+    tickers: Iterable[dict[str, Any]],
+    *,
+    strategy_name: str,
+    candles_by_market: dict[str, list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    ranked = list(tickers)
+    if not ranked or not candles_by_market:
+        return ranked
+    try:
+        canonical_strategy_name = normalize_strategy_name(strategy_name)
+    except Exception:
+        canonical_strategy_name = str(strategy_name or "").strip().lower()
+    if canonical_strategy_name != "ict_v1":
+        return ranked
+
+    liquidity_values = [_ticker_trading_value(ticker) for ticker in ranked]
+    movement_values = [
+        _candle_movement_quality(candles_by_market.get(str(ticker.get("market")), []))
+        for ticker in ranked
+    ]
+    max_liquidity = max(liquidity_values, default=0.0)
+    max_movement = max(movement_values, default=0.0)
+
+    def suitability_score(ticker: dict[str, Any]) -> tuple[float, float, float, str]:
+        market = str(ticker.get("market", ""))
+        liquidity = _ticker_trading_value(ticker)
+        movement = _candle_movement_quality(candles_by_market.get(market, []))
+        liquidity_norm = (liquidity / max_liquidity) if max_liquidity > 0 else 0.0
+        movement_norm = (movement / max_movement) if max_movement > 0 else 0.0
+        suitability = (0.45 * liquidity_norm) + (0.55 * movement_norm)
+        return suitability, liquidity, movement, market
+
+    return sorted(ranked, key=suitability_score, reverse=True)
+
+
+def select_top_by_trading_value(
+    tickers: Iterable[dict[str, Any]], top_n1: int
+) -> list[dict[str, Any]]:
     selected, _drops = select_top_by_trading_value_with_drops(tickers, top_n1)
     return selected
 
@@ -149,7 +227,9 @@ def select_top_by_trading_value_with_drops(
     return selected, dropped
 
 
-def limit_watch_markets(selected_tickers: Iterable[dict[str, Any]], watch_n2: int) -> list[str]:
+def limit_watch_markets(
+    selected_tickers: Iterable[dict[str, Any]], watch_n2: int
+) -> list[str]:
     if watch_n2 <= 0:
         return []
 
@@ -188,8 +268,12 @@ def limit_watch_tickers_with_drops(
     return selected, dropped
 
 
-def filter_by_relative_spread(tickers: Iterable[dict[str, Any]], max_relative_spread: float) -> list[dict[str, Any]]:
-    filtered, _drops = filter_by_relative_spread_with_drops(tickers, max_relative_spread)
+def filter_by_relative_spread(
+    tickers: Iterable[dict[str, Any]], max_relative_spread: float
+) -> list[dict[str, Any]]:
+    filtered, _drops = filter_by_relative_spread_with_drops(
+        tickers, max_relative_spread
+    )
     return filtered
 
 
@@ -235,7 +319,9 @@ def filter_by_missing_rate(
     candles_by_market: dict[str, list[dict[str, Any]]],
     max_missing_rate: float,
 ) -> list[str]:
-    selected, _drops = filter_by_missing_rate_with_drops(markets, candles_by_market, max_missing_rate)
+    selected, _drops = filter_by_missing_rate_with_drops(
+        markets, candles_by_market, max_missing_rate
+    )
     return selected
 
 
