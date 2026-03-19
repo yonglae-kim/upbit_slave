@@ -12,7 +12,7 @@ from core.position_policy import (
 )
 from core.strategy import classify_market_regime, regime_filter_diagnostics
 from core.strategy import StrategyParams
-from core.strategies import candidate_v1
+from core.strategies import candidate_v1, ict_v1
 from core.strategy_registry import RegisteredStrategy, get_strategy
 
 
@@ -115,6 +115,9 @@ def _evaluate_exit(
     order_policy: PositionOrderPolicy,
     strategy: RegisteredStrategy,
 ) -> DecisionIntent:
+    effective_strategy_params = _normalize_exit_strategy_params(
+        strategy, strategy_params
+    )
     price = _current_price(context)
     current_atr = _market_metric(context, "current_atr")
     swing_low = _market_metric(context, "swing_low")
@@ -135,7 +138,7 @@ def _evaluate_exit(
     signal_exit = bool(
         strategy.exit_evaluator(
             _strategy_market_data(context),
-            strategy_params,
+            effective_strategy_params,
             entry_price=strategy_entry_price,
             initial_stop_price=_state_float(state_payload, "initial_stop_price"),
             risk_per_unit=_state_float(state_payload, "risk_per_unit"),
@@ -155,13 +158,17 @@ def _evaluate_exit(
         current_atr=current_atr,
         swing_low=swing_low,
         strategy_name=strategy.runtime_name,
-        partial_take_profit_enabled=bool(strategy_params.partial_take_profit_enabled),
-        partial_take_profit_r=float(strategy_params.partial_take_profit_r),
-        partial_take_profit_size=float(strategy_params.partial_take_profit_size),
-        move_stop_to_breakeven_after_partial=bool(
-            strategy_params.move_stop_to_breakeven_after_partial
+        partial_take_profit_enabled=bool(
+            effective_strategy_params.partial_take_profit_enabled
         ),
-        max_hold_bars=int(strategy_params.max_hold_bars),
+        partial_take_profit_r=float(effective_strategy_params.partial_take_profit_r),
+        partial_take_profit_size=float(
+            effective_strategy_params.partial_take_profit_size
+        ),
+        move_stop_to_breakeven_after_partial=bool(
+            effective_strategy_params.move_stop_to_breakeven_after_partial
+        ),
+        max_hold_bars=int(effective_strategy_params.max_hold_bars),
     )
     next_position_state = _merge_proof_window_state(
         advanced_state_payload,
@@ -343,6 +350,16 @@ def _normalize_entry_strategy_params(
 ) -> StrategyParams:
     if strategy.name == candidate_v1.STRATEGY_NAME:
         return candidate_v1.normalize_strategy_params(strategy_params)
+    if strategy.name == ict_v1.STRATEGY_NAME:
+        return ict_v1.normalize_strategy_params(strategy_params)
+    return strategy_params
+
+
+def _normalize_exit_strategy_params(
+    strategy: RegisteredStrategy, strategy_params: StrategyParams
+) -> StrategyParams:
+    if strategy.name == ict_v1.STRATEGY_NAME:
+        return ict_v1.normalize_strategy_params(strategy_params)
     return strategy_params
 
 

@@ -239,10 +239,11 @@ class PositionOrderPolicy:
         ):
             return ExitDecision(True, 1.0, "time_stop")
 
-        strategy_mode = str(strategy_name).lower().strip() == "rsi_bb_reversal_long"
+        normalized_strategy_name = str(strategy_name).lower().strip()
+        strategy_mode = normalized_strategy_name == "rsi_bb_reversal_long"
 
         strategy_partial_enabled = (
-            strategy_mode
+            normalized_strategy_name != "candidate_v1"
             and partial_take_profit_enabled
             and partial_take_profit_size > 0
             and partial_take_profit_r > 0

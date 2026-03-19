@@ -310,6 +310,52 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertTrue(breakeven_stop.should_exit)
         self.assertEqual(breakeven_stop.reason, "stop_loss")
 
+    def test_ict_v1_strategy_partial_take_profit_arms_breakeven_stop(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.0,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+        )
+        state = PositionExitState(
+            peak_price=100.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            bars_held=7,
+        )
+
+        partial = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=105.0,
+            signal_exit=False,
+            strategy_name="ict_v1",
+            partial_take_profit_enabled=True,
+            partial_take_profit_r=1.0,
+            partial_take_profit_size=0.5,
+            move_stop_to_breakeven_after_partial=True,
+        )
+        breakeven_stop = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=100.0,
+            signal_exit=False,
+            strategy_name="ict_v1",
+            partial_take_profit_enabled=True,
+            partial_take_profit_r=1.0,
+            partial_take_profit_size=0.5,
+            move_stop_to_breakeven_after_partial=True,
+        )
+
+        self.assertTrue(partial.should_exit)
+        self.assertEqual(partial.reason, "strategy_partial_take_profit")
+        self.assertTrue(state.strategy_partial_done)
+        self.assertTrue(state.breakeven_armed)
+        self.assertTrue(breakeven_stop.should_exit)
+        self.assertEqual(breakeven_stop.reason, "stop_loss")
+
     def test_candidate_mode_does_not_activate_trailing_on_bars_held_alone(self):
         policy = PositionOrderPolicy(
             stop_loss_threshold=0.95,
