@@ -755,10 +755,12 @@ class TradingEngine:
         except OSError:
             return []
 
+        payload_prefix = "PAYLOAD_JSON: "
         for line in lines:
-            if not line.startswith("PAYLOAD_JSON: "):
+            line_text = str(line)
+            if not line_text.startswith(payload_prefix):
                 continue
-            payload = line.removeprefix("PAYLOAD_JSON: ").strip()
+            payload = line_text[len(payload_prefix) :].strip()
             try:
                 decoded = json.loads(payload)
             except json.JSONDecodeError:

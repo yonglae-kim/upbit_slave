@@ -222,6 +222,44 @@ class RoundTripBroker(BuyOnlyBroker):
 
 
 class TradingEngineOrderAcceptanceTest(unittest.TestCase):
+    def test_recent_trade_log_loader_supports_python38_string_lines(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+
+        class _CompatLine:
+            def __init__(self, value: str):
+                self.value = value
+
+            def startswith(self, prefix: str) -> bool:
+                return self.value.startswith(prefix)
+
+            def __str__(self) -> str:
+                return self.value
+
+        class _CompatText:
+            def splitlines(self):
+                return [
+                    _CompatLine(
+                        'PAYLOAD_JSON: {"market": "KRW-BTC", "entry_reason": "ok"}'
+                    )
+                ]
+
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "recent_trades.txt"
+            log_path.write_text("placeholder\n", encoding="utf-8")
+            config = TradingConfig(
+                do_not_trading=[],
+                krw_markets=["KRW-BTC"],
+                strategy_name="baseline",
+                recent_trade_log_path=str(log_path),
+            )
+
+            with patch.object(Path, "read_text", return_value=_CompatText()):
+                engine = TradingEngine(broker, notifier, config)
+
+            self.assertEqual(len(engine._recent_trade_records), 1)
+            self.assertEqual(engine._recent_trade_records[0]["market"], "KRW-BTC")
+
     def test_full_exit_writes_recent_trade_log_with_reasons_and_candles(self):
         broker = RoundTripBroker()
         notifier = DummyNotifier()
