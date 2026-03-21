@@ -218,6 +218,25 @@ class ICTStrategyV1Test(unittest.TestCase):
 
         self._assert_rejected(signal)
 
+    def test_rejects_unicorn_entry_when_price_is_too_high_in_overlap(self):
+        signal = evaluate_long_entry(
+            {
+                "1m": self._bullish_trigger_1m(latest_close=101.9),
+                "5m": [
+                    make_candle(101.6, 101.9, 102.1, 101.5),
+                    make_candle(103.2, 104.8, 105.0, 103.0),
+                    make_candle(101.2, 103.0, 103.2, 101.0),
+                    make_candle(100.6, 101.0, 101.4, 100.2),
+                    make_candle(101.8, 100.8, 102.0, 100.0),
+                    make_candle(101.2, 101.8, 102.2, 100.8),
+                ],
+                "15m": self._bullish_regime_15m(),
+            },
+            self.params,
+        )
+
+        self._assert_rejected(signal)
+
     def test_accepts_silver_bullet_long_entry(self):
         self.assertTrue(callable(evaluate_long_entry))
         signal = evaluate_long_entry(

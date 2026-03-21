@@ -6,6 +6,9 @@ from core.strategy import StrategyParams, detect_fvg_zones, detect_ob_zones
 from core.strategies.ict_sessions import is_in_silver_bullet_window
 
 
+UNICORN_MAX_ENTRY_OVERLAP_RATIO = 2.0 / 3.0
+
+
 def _price(candle: dict[str, object], key: str) -> float:
     value = candle.get(key, 0.0)
     if isinstance(value, (int, float)):
@@ -88,6 +91,8 @@ def detect_bullish_unicorn(
     current_price = _price(candles[0], "trade_price")
     best_match: dict[str, object] | None = None
     best_overlap_upper = float("-inf")
+    best_high_entry_reject: dict[str, object] | None = None
+    best_high_entry_reject_overlap_upper = float("-inf")
 
     for fvg in bullish_fvgs:
         fvg_lower = _as_float(fvg.get("lower"))
@@ -100,6 +105,22 @@ def detect_bullish_unicorn(
                 continue
             overlap_lower, overlap_upper = overlap
             if not (overlap_lower <= current_price <= overlap_upper):
+                continue
+            overlap_width = overlap_upper - overlap_lower
+            if overlap_width <= 0:
+                continue
+            overlap_entry_ratio = (current_price - overlap_lower) / overlap_width
+            if overlap_entry_ratio > UNICORN_MAX_ENTRY_OVERLAP_RATIO:
+                reject_candidate: dict[str, object] = {
+                    "pass": False,
+                    "reason": "entry_too_high_in_overlap",
+                    "overlap_lower": overlap_lower,
+                    "overlap_upper": overlap_upper,
+                    "entry_price": current_price,
+                }
+                if overlap_upper > best_high_entry_reject_overlap_upper:
+                    best_high_entry_reject = reject_candidate
+                    best_high_entry_reject_overlap_upper = overlap_upper
                 continue
             candidate: dict[str, object] = {
                 "pass": True,
@@ -121,6 +142,8 @@ def detect_bullish_unicorn(
 
     if best_match is not None:
         return best_match
+    if best_high_entry_reject is not None:
+        return best_high_entry_reject
     return {"pass": False, "reason": "no_overlap"}
 
 

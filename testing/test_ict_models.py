@@ -124,6 +124,22 @@ class ICTModelHelpersTest(unittest.TestCase):
         self.assertFalse(result["pass"])
         self.assertEqual(result["reason"], "no_overlap")
 
+    def test_bullish_unicorn_rejects_entries_too_close_to_overlap_upper_bound(self):
+        self.assertTrue(callable(detect_bullish_unicorn))
+        candles = [
+            make_candle(101.6, 101.9, 102.1, 101.5),
+            make_candle(103.2, 104.8, 105.0, 103.0),
+            make_candle(101.2, 103.0, 103.2, 101.0),
+            make_candle(100.6, 101.0, 101.4, 100.2),
+            make_candle(101.8, 100.8, 102.0, 100.0),
+            make_candle(101.2, 101.8, 102.2, 100.8),
+        ]
+
+        result = detect_bullish_unicorn(candles, self.params)
+
+        self.assertFalse(result["pass"])
+        self.assertEqual(result["reason"], "entry_too_high_in_overlap")
+
     def test_ote_pocket_detection_passes_inside_discount_pocket(self):
         self.assertTrue(callable(is_price_in_ote_long_pocket))
 
