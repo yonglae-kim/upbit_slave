@@ -73,6 +73,7 @@ TRADING_CONFIG = {
     "cooldown_on_loss_exits_only": False,
     "strategy_name": "ict_v1",
     "strategy_decision_path": "",
+    "recent_trade_log_path": "runtime_logs/recent_trades.txt",
     "rsi_period": 14,
     "rsi_long_threshold": 30,
     "rsi_neutral_filter_enabled": True,

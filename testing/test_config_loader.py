@@ -54,6 +54,16 @@ class ConfigLoaderTest(unittest.TestCase):
 
         self.assertEqual(config.strategy_name, "ict_v1")
 
+    def test_recent_trade_log_path_can_be_overridden_from_env(self):
+        with patch.dict(
+            os.environ,
+            {"TRADING_RECENT_TRADE_LOG_PATH": "/tmp/runtime-recent-trades.txt"},
+            clear=False,
+        ):
+            config = load_trading_config()
+
+        self.assertEqual(config.recent_trade_log_path, "/tmp/runtime-recent-trades.txt")
+
     def test_candidate_strategy_requires_decision_artifact_in_paper_mode(self):
         with patch.dict(
             os.environ,

@@ -89,6 +89,7 @@ _ENV_KEY_MAP = {
     "cooldown_on_loss_exits_only": "TRADING_COOLDOWN_ON_LOSS_EXITS_ONLY",
     "strategy_name": "TRADING_STRATEGY_NAME",
     "strategy_decision_path": "TRADING_STRATEGY_DECISION_PATH",
+    "recent_trade_log_path": "TRADING_RECENT_TRADE_LOG_PATH",
     "rsi_period": "TRADING_RSI_PERIOD",
     "rsi_long_threshold": "TRADING_RSI_LONG_THRESHOLD",
     "rsi_neutral_filter_enabled": "TRADING_RSI_NEUTRAL_FILTER_ENABLED",
@@ -457,6 +458,7 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "strategy_cooldown_bars": int,
         "strategy_name": str,
         "strategy_decision_path": str,
+        "recent_trade_log_path": str,
         "rsi_period": int,
         "rsi_long_threshold": (int, float),
         "rsi_neutral_filter_enabled": bool,
@@ -722,6 +724,7 @@ def load_trading_config() -> TradingConfig:
     raw_config = _load_module_config(path)
     raw_config = _apply_env_overrides(raw_config)
     raw_config.setdefault("strategy_decision_path", "")
+    raw_config.setdefault("recent_trade_log_path", "runtime_logs/recent_trades.txt")
     _validate_schema(raw_config)
     _validate_runtime_strategy_selection(raw_config)
     return TradingConfig(**raw_config)

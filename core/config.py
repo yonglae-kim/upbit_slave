@@ -197,6 +197,7 @@ class TradingConfig:
     cooldown_on_loss_exits_only: bool = False
     strategy_name: str = "ict_v1"
     strategy_decision_path: str = ""
+    recent_trade_log_path: str = "runtime_logs/recent_trades.txt"
     rsi_period: int = 14
     rsi_long_threshold: float = 30.0
     rsi_neutral_filter_enabled: bool = True
