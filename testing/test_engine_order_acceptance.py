@@ -35,7 +35,7 @@ class BuyOnlyBroker:
         _ = markets
         return [{"market": "KRW-BTC", "trade_price": 100000.0, "trade_volume": 1000}]
 
-    def get_candles(self, market, interval, count=200):
+    def get_candles(self, market, interval, count=200) -> list[dict[str, float | str]]:
         _ = market, interval, count
         return [{"trade_price": 100.0} for _ in range(3)]
 
@@ -60,8 +60,8 @@ class BuyOnlyBroker:
         return {"state": "wait"}
 
 
-def _entry_candles() -> list[dict[str, float]]:
-    candles_oldest = [
+def _entry_candles() -> list[dict[str, float | str]]:
+    candles_oldest: list[dict[str, float | str]] = [
         {
             "opening_price": 100 - i * 0.2,
             "high_price": 101 - i * 0.2,
@@ -86,14 +86,14 @@ class RealSeamEntryBroker(BuyOnlyBroker):
             }
         ]
 
-    def get_candles(self, market, interval, count=200):
+    def get_candles(self, market, interval, count=200) -> list[dict[str, float | str]]:
         _ = market, count
         if interval == 1:
             return list(_entry_candles())
         if interval == 5:
             return list(_entry_candles())
         if interval == 15:
-            candles_oldest = []
+            candles_oldest: list[dict[str, float | str]] = []
             price = 100.0
             for _ in range(240):
                 open_price = price
@@ -148,7 +148,235 @@ class TimeoutFlowBroker(BuyOnlyBroker):
         return {"uuid": order_uuid, "state": "cancel"}
 
 
+class RoundTripBroker(BuyOnlyBroker):
+    def __init__(self):
+        super().__init__()
+        self.sell_calls = []
+        self.asset_balance = 0.0
+        self.avg_buy_price = 0.0
+        self.latest_trade_price = 100.0
+        self.latest_1m_time = "2024-01-01T00:01:00"
+        self.latest_5m_time = "2024-01-01T00:00:00"
+        self.latest_15m_time = "2024-01-01T00:00:00"
+
+    def get_accounts(self):
+        accounts = [
+            {
+                "unit_currency": "KRW",
+                "currency": "KRW",
+                "balance": "100000",
+                "locked": "0",
+                "avg_buy_price": "0",
+            }
+        ]
+        if self.asset_balance > 0:
+            accounts.append(
+                {
+                    "unit_currency": "KRW",
+                    "currency": "BTC",
+                    "balance": str(self.asset_balance),
+                    "locked": "0",
+                    "avg_buy_price": str(self.avg_buy_price),
+                }
+            )
+        return accounts
+
+    def get_ticker(self, markets):
+        _ = markets
+        return [
+            {
+                "market": "KRW-BTC",
+                "trade_price": self.latest_trade_price,
+                "trade_volume": 1000.0,
+                "bid_price": self.latest_trade_price - 0.2,
+                "ask_price": self.latest_trade_price + 0.2,
+            }
+        ]
+
+    def get_candles(self, market, interval, count=200):
+        _ = market, count
+        candle_time = self.latest_1m_time
+        if interval == 5:
+            candle_time = self.latest_5m_time
+        elif interval == 15:
+            candle_time = self.latest_15m_time
+        candle = {
+            "candle_date_time_utc": candle_time,
+            "opening_price": self.latest_trade_price - 1.0,
+            "high_price": self.latest_trade_price + 1.5,
+            "low_price": self.latest_trade_price - 2.0,
+            "trade_price": self.latest_trade_price,
+        }
+        return [dict(candle) for _ in range(5)]
+
+    def buy_market(self, market, price, identifier=None):
+        response = super().buy_market(market, price, identifier=identifier)
+        self.asset_balance = 100.0
+        self.avg_buy_price = self.latest_trade_price
+        return response
+
+    def sell_market(self, market, volume, identifier=None):
+        self.sell_calls.append((market, volume, identifier))
+        self.asset_balance = 0.0
+        return {"uuid": f"sell-{len(self.sell_calls)}"}
+
+
 class TradingEngineOrderAcceptanceTest(unittest.TestCase):
+    def test_full_exit_writes_recent_trade_log_with_reasons_and_candles(self):
+        broker = RoundTripBroker()
+        notifier = DummyNotifier()
+
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "recent_trades.txt"
+            config = TradingConfig(
+                do_not_trading=[],
+                krw_markets=["KRW-BTC"],
+                strategy_name="baseline",
+                recent_trade_log_path=str(log_path),
+            )
+            engine = TradingEngine(broker, notifier, config)
+
+            entry_intent = DecisionIntent(
+                action="enter",
+                reason="zone_reclaim",
+                diagnostics={
+                    "strategy_name": "baseline",
+                    "entry_score": 3.2,
+                    "entry_regime": "weak_trend",
+                    "quality_score": 0.81,
+                    "quality_bucket": "high",
+                    "quality_multiplier": 1.15,
+                    "regime_diagnostics": {"regime": "weak_trend", "pass": True},
+                    "sizing": {
+                        "risk_sized_order_krw": 18000.0,
+                        "cash_cap_order_krw": 15000.0,
+                        "base_order_krw": 15000.0,
+                        "final_order_krw": 12345.0,
+                        "entry_price": 101.0,
+                        "stop_price": 95.0,
+                        "risk_per_unit": 6.0,
+                    },
+                },
+                next_position_state={
+                    "peak_price": 100.0,
+                    "entry_atr": 1.5,
+                    "entry_swing_low": 95.0,
+                    "entry_price": 101.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 6.0,
+                    "bars_held": 0,
+                    "entry_regime": "weak_trend",
+                    "partial_take_profit_done": False,
+                    "strategy_partial_done": False,
+                    "breakeven_armed": False,
+                    "highest_r": 0.0,
+                    "lowest_r": 0.0,
+                    "drawdown_from_peak_r": 0.0,
+                },
+            )
+            exit_intent = DecisionIntent(
+                action="exit_full",
+                reason="stop_loss",
+                diagnostics={"strategy_name": "baseline", "qty_ratio": 1.0},
+                next_position_state={},
+            )
+
+            with (
+                patch(
+                    "core.engine.evaluate_market",
+                    create=True,
+                    side_effect=[entry_intent, exit_intent],
+                ),
+                patch.object(engine, "_should_run_strategy", return_value=True),
+                patch.object(
+                    engine,
+                    "_refresh_watch_markets_if_needed",
+                    return_value=["KRW-BTC"],
+                ),
+            ):
+                engine.run_once()
+                broker.latest_trade_price = 96.0
+                broker.latest_1m_time = "2024-01-01T00:04:00"
+                broker.latest_5m_time = "2024-01-01T00:05:00"
+                broker.latest_15m_time = "2024-01-01T00:15:00"
+                engine.run_once()
+
+            self.assertTrue(log_path.exists())
+            text = log_path.read_text(encoding="utf-8")
+            self.assertIn("Entry Reason: zone_reclaim", text)
+            self.assertIn("Final Exit Reason: stop_loss", text)
+            self.assertIn("Entry Candles:", text)
+            self.assertIn("Exit Candles:", text)
+            self.assertIn("PAYLOAD_JSON:", text)
+
+    def test_recent_trade_log_keeps_only_latest_ten_completed_trades(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "recent_trades.txt"
+            config = TradingConfig(
+                do_not_trading=[],
+                krw_markets=["KRW-BTC"],
+                strategy_name="baseline",
+                recent_trade_log_path=str(log_path),
+            )
+            engine = TradingEngine(broker, notifier, config)
+
+            for idx in range(11):
+                engine._store_completed_trade_record(
+                    {
+                        "market": f"KRW-COIN-{idx:02d}",
+                        "entry_reason": f"entry-{idx:02d}",
+                        "final_exit_reason": f"exit-{idx:02d}",
+                        "closed_at": f"2024-01-01T00:{idx:02d}:00+00:00",
+                    }
+                )
+
+            text = log_path.read_text(encoding="utf-8")
+            self.assertEqual(text.count("PAYLOAD_JSON:"), 10)
+            self.assertNotIn("KRW-COIN-00", text)
+            self.assertIn("KRW-COIN-10", text)
+
+    def test_recent_trade_log_preserves_latest_ten_after_reload(self):
+        broker = BuyOnlyBroker()
+        notifier = DummyNotifier()
+
+        with tempfile.TemporaryDirectory() as td:
+            log_path = Path(td) / "recent_trades.txt"
+            config = TradingConfig(
+                do_not_trading=[],
+                krw_markets=["KRW-BTC"],
+                strategy_name="baseline",
+                recent_trade_log_path=str(log_path),
+            )
+            first_engine = TradingEngine(broker, notifier, config)
+
+            for idx in range(10):
+                first_engine._store_completed_trade_record(
+                    {
+                        "market": f"KRW-COIN-{idx:02d}",
+                        "entry_reason": f"entry-{idx:02d}",
+                        "final_exit_reason": f"exit-{idx:02d}",
+                        "closed_at": f"2024-01-01T00:{idx:02d}:00+00:00",
+                    }
+                )
+
+            reloaded_engine = TradingEngine(broker, notifier, config)
+            reloaded_engine._store_completed_trade_record(
+                {
+                    "market": "KRW-COIN-10",
+                    "entry_reason": "entry-10",
+                    "final_exit_reason": "exit-10",
+                    "closed_at": "2024-01-01T00:10:00+00:00",
+                }
+            )
+
+            text = log_path.read_text(encoding="utf-8")
+            self.assertEqual(text.count("PAYLOAD_JSON:"), 10)
+            self.assertNotIn("KRW-COIN-00", text)
+            self.assertIn("KRW-COIN-10", text)
+
     def test_paper_candidate_runtime_accepts_matching_promote_artifact(self):
         broker = BuyOnlyBroker()
         notifier = DummyNotifier()

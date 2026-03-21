@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 from typing import Any
 
 from core.candle_buffer import CandleBuffer
@@ -95,15 +96,14 @@ class TradingEngine:
             swing_lookback=config.swing_lookback,
         )
         self._position_exit_states: dict[str, PositionExitState] = {}
-        self._entry_tracking_by_market: dict[
-            str, dict[str, float | str | datetime]
-        ] = {}
+        self._entry_tracking_by_market: dict[str, dict[str, Any]] = {}
         self._entry_strategy_params_by_market: dict[str, StrategyParams] = {}
         self._last_processed_candle_at: dict[str, datetime] = {}
         self._last_exit_snapshot_by_market: dict[str, dict[str, datetime | str]] = {}
         self._last_strategy_exit_snapshot_by_market: dict[
             str, dict[str, datetime | str]
         ] = {}
+        self._recent_trade_records = self._load_recent_trade_records()
         self.debug_counters: dict[str, int] = {
             "fail_reentry_cooldown": 0,
             "fail_strategy_cooldown": 0,
@@ -250,8 +250,10 @@ class TradingEngine:
                 avg_buy_price=avg_buy_price,
                 current_price=current_price,
                 sold_volume=preflight["order_value"],
+                data=data,
             )
             if intent.action == "exit_full":
+                self._finalize_completed_trade_record(market)
                 self._reset_position_exit_state(market)
                 latest_candle = data.get("1m", [{}])[0]
                 exit_time = self.candle_buffer.parse_candle_time(
@@ -579,19 +581,31 @@ class TradingEngine:
                 response, identifier, market, "bid", order_value
             )
             self._persist_position_state(market, next_position_state)
+            entry_candles = self._recent_trade_candle_context(data)
             self._entry_tracking_by_market[market] = {
+                "market": market,
                 "entry_time": latest_time,
+                "entry_reason": str(intent.reason or "hold"),
+                "strategy_name": str(
+                    getattr(effective_strategy_params, "strategy_name", "")
+                ),
                 "entry_price": strategy_entry_price,
+                "stop_price": stop_price,
                 "risk_per_unit": strategy_risk_per_unit,
                 "entry_score": self._safe_float(diagnostics.get("entry_score"), 0.0),
                 "quality_score": quality_score,
                 "quality_bucket": quality_bucket,
                 "quality_multiplier": quality_multiplier,
                 "regime": regime,
+                "entry_diagnostics": self._json_safe(diagnostics),
+                "regime_diagnostics": self._json_safe(regime_diag),
+                "entry_candles": entry_candles,
+                "ticker": self._json_safe(ticker_by_market.get(market, {})),
                 "risk_sized_order_krw": risk_sized_order_krw,
                 "cash_cap_order_krw": cash_cap_order_krw,
                 "base_order_krw": base_order_krw,
                 "final_order_krw": final_order_krw,
+                "exit_events": [],
             }
             self._log_entry_diagnostics(
                 market=market,
@@ -710,6 +724,238 @@ class TradingEngine:
     def _coerce_optional_str_object_dict(self, value: object) -> dict[str, Any] | None:
         resolved = self._coerce_str_object_dict(value)
         return resolved or None
+
+    def _json_safe(self, value: object) -> Any:
+        if isinstance(value, datetime):
+            return self._to_utc_aware(value).isoformat()
+        if isinstance(value, dict):
+            return {str(key): self._json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._json_safe(item) for item in value]
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        return str(value)
+
+    def _recent_trade_log_path(self) -> Path | None:
+        path_value = str(
+            getattr(self.config, "recent_trade_log_path", "") or ""
+        ).strip()
+        if not path_value:
+            return None
+        return Path(path_value).expanduser()
+
+    def _load_recent_trade_records(self) -> list[dict[str, Any]]:
+        path = self._recent_trade_log_path()
+        if path is None or not path.exists():
+            return []
+
+        records: list[dict[str, Any]] = []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+
+        for line in lines:
+            if not line.startswith("PAYLOAD_JSON: "):
+                continue
+            payload = line.removeprefix("PAYLOAD_JSON: ").strip()
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                records.append(decoded)
+        return list(reversed(records[-10:]))
+
+    def _candle_time_iso(self, candle: dict[str, Any]) -> str:
+        candle_time = self.candle_buffer.parse_candle_time(candle)
+        if candle_time is None:
+            raw_time = candle.get("candle_date_time_utc") or candle.get(
+                "candle_date_time_kst"
+            )
+            return str(raw_time or "")
+        return self._to_utc_aware(candle_time).isoformat()
+
+    def _compact_candle(self, candle: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "time": self._candle_time_iso(candle),
+            "open": self._safe_float(
+                candle.get("opening_price", candle.get("trade_price"))
+            ),
+            "high": self._safe_float(
+                candle.get("high_price", candle.get("trade_price"))
+            ),
+            "low": self._safe_float(candle.get("low_price", candle.get("trade_price"))),
+            "close": self._safe_float(candle.get("trade_price")),
+            "missing": bool(candle.get("missing", False)),
+        }
+
+    def _recent_trade_candle_context(
+        self, data: dict[str, list[dict[str, Any]]]
+    ) -> dict[str, list[dict[str, Any]]]:
+        return {
+            "1m": [self._compact_candle(candle) for candle in data.get("1m", [])[:3]],
+            "5m": [self._compact_candle(candle) for candle in data.get("5m", [])[:2]],
+            "15m": [self._compact_candle(candle) for candle in data.get("15m", [])[:1]],
+        }
+
+    @staticmethod
+    def _format_trade_log_value(value: object) -> str:
+        if isinstance(value, float):
+            return f"{value:.6f}".rstrip("0").rstrip(".")
+        return str(value)
+
+    def _append_trade_log_candles(
+        self, lines: list[str], title: str, candles_by_timeframe: object
+    ) -> None:
+        lines.append(f"{title}:")
+        if not isinstance(candles_by_timeframe, dict):
+            lines.append("  (none)")
+            return
+        for timeframe in ("1m", "5m", "15m"):
+            candles = candles_by_timeframe.get(timeframe)
+            if not isinstance(candles, list) or not candles:
+                lines.append(f"  {timeframe}: (none)")
+                continue
+            latest = candles[0]
+            if not isinstance(latest, dict):
+                lines.append(f"  {timeframe}: (invalid)")
+                continue
+            lines.append(
+                "  "
+                + timeframe
+                + ": time="
+                + self._format_trade_log_value(latest.get("time", ""))
+                + " open="
+                + self._format_trade_log_value(latest.get("open", ""))
+                + " high="
+                + self._format_trade_log_value(latest.get("high", ""))
+                + " low="
+                + self._format_trade_log_value(latest.get("low", ""))
+                + " close="
+                + self._format_trade_log_value(latest.get("close", ""))
+                + " missing="
+                + self._format_trade_log_value(latest.get("missing", False))
+            )
+
+    def _write_recent_trade_log(self) -> None:
+        path = self._recent_trade_log_path()
+        if path is None:
+            return
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rendered_records = list(reversed(self._recent_trade_records[-10:]))
+        lines = [
+            "Recent Completed Trades (latest 10)",
+            f"Updated At: {datetime.now(timezone.utc).isoformat()}",
+            "",
+        ]
+        for index, record in enumerate(rendered_records, start=1):
+            exit_events = record.get("exit_events")
+            if not isinstance(exit_events, list):
+                exit_events = []
+            lines.extend(
+                [
+                    f"=== Trade {index} ===",
+                    f"Market: {self._format_trade_log_value(record.get('market', ''))}",
+                    f"Strategy: {self._format_trade_log_value(record.get('strategy_name', ''))}",
+                    f"Opened At: {self._format_trade_log_value(record.get('opened_at', ''))}",
+                    f"Closed At: {self._format_trade_log_value(record.get('closed_at', ''))}",
+                    f"Entry Reason: {self._format_trade_log_value(record.get('entry_reason', ''))}",
+                    f"Final Exit Reason: {self._format_trade_log_value(record.get('final_exit_reason', ''))}",
+                    f"Entry Price: {self._format_trade_log_value(record.get('entry_price', ''))}",
+                    f"Final Exit Price: {self._format_trade_log_value(record.get('final_exit_price', ''))}",
+                    f"Entry Regime: {self._format_trade_log_value(record.get('entry_regime', ''))}",
+                    f"Entry Score: {self._format_trade_log_value(record.get('entry_score', ''))}",
+                    f"Quality Score: {self._format_trade_log_value(record.get('quality_score', ''))}",
+                    f"Quality Bucket: {self._format_trade_log_value(record.get('quality_bucket', ''))}",
+                    f"Quality Multiplier: {self._format_trade_log_value(record.get('quality_multiplier', ''))}",
+                    f"Final Order KRW: {self._format_trade_log_value(record.get('final_order_krw', ''))}",
+                    f"Stop Price: {self._format_trade_log_value(record.get('stop_price', ''))}",
+                    f"Risk Per Unit: {self._format_trade_log_value(record.get('risk_per_unit', ''))}",
+                    "Exit Events:",
+                ]
+            )
+            if exit_events:
+                for event_index, exit_event in enumerate(exit_events, start=1):
+                    if not isinstance(exit_event, dict):
+                        continue
+                    lines.append(
+                        "  "
+                        + str(event_index)
+                        + ". reason="
+                        + self._format_trade_log_value(exit_event.get("reason", ""))
+                        + " qty_ratio="
+                        + self._format_trade_log_value(exit_event.get("qty_ratio", ""))
+                        + " exit_price="
+                        + self._format_trade_log_value(exit_event.get("exit_price", ""))
+                        + " realized_r="
+                        + self._format_trade_log_value(exit_event.get("realized_r", ""))
+                        + " holding_minutes="
+                        + self._format_trade_log_value(
+                            exit_event.get("holding_minutes", "")
+                        )
+                    )
+            else:
+                lines.append("  (none)")
+            self._append_trade_log_candles(
+                lines, "Entry Candles", record.get("entry_candles")
+            )
+            final_exit_candles = {}
+            if exit_events and isinstance(exit_events[-1], dict):
+                final_exit_candles = exit_events[-1].get("exit_candles", {})
+            self._append_trade_log_candles(lines, "Exit Candles", final_exit_candles)
+            lines.append(
+                "PAYLOAD_JSON: "
+                + json.dumps(record, ensure_ascii=False, sort_keys=True, default=str)
+            )
+            lines.append("")
+
+        path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+    def _store_completed_trade_record(self, record: dict[str, Any]) -> None:
+        self._recent_trade_records.append(self._json_safe(record))
+        self._recent_trade_records = self._recent_trade_records[-10:]
+        self._write_recent_trade_log()
+
+    def _finalize_completed_trade_record(self, market: str) -> None:
+        entry_tracking = self._entry_tracking_by_market.get(market)
+        if not isinstance(entry_tracking, dict):
+            return
+
+        exit_events = entry_tracking.get("exit_events")
+        if not isinstance(exit_events, list):
+            exit_events = []
+        final_exit_event = exit_events[-1] if exit_events else {}
+        if not isinstance(final_exit_event, dict):
+            final_exit_event = {}
+
+        record = {
+            "market": market,
+            "strategy_name": entry_tracking.get("strategy_name", ""),
+            "opened_at": entry_tracking.get("entry_time"),
+            "closed_at": final_exit_event.get("exit_time", ""),
+            "entry_reason": entry_tracking.get("entry_reason", ""),
+            "final_exit_reason": final_exit_event.get("reason", ""),
+            "entry_price": self._safe_float(entry_tracking.get("entry_price")),
+            "final_exit_price": self._safe_float(final_exit_event.get("exit_price")),
+            "entry_regime": entry_tracking.get("regime", "unknown"),
+            "entry_score": self._safe_float(entry_tracking.get("entry_score")),
+            "quality_score": self._safe_float(entry_tracking.get("quality_score")),
+            "quality_bucket": entry_tracking.get("quality_bucket", "low"),
+            "quality_multiplier": self._safe_float(
+                entry_tracking.get("quality_multiplier"), 1.0
+            ),
+            "final_order_krw": self._safe_float(entry_tracking.get("final_order_krw")),
+            "stop_price": self._safe_float(entry_tracking.get("stop_price")),
+            "risk_per_unit": self._safe_float(entry_tracking.get("risk_per_unit")),
+            "entry_candles": entry_tracking.get("entry_candles", {}),
+            "entry_diagnostics": entry_tracking.get("entry_diagnostics", {}),
+            "regime_diagnostics": entry_tracking.get("regime_diagnostics", {}),
+            "ticker": entry_tracking.get("ticker", {}),
+            "exit_events": exit_events,
+        }
+        self._store_completed_trade_record(record)
 
     def _build_market_snapshot(
         self,
@@ -1123,15 +1369,25 @@ class TradingEngine:
         avg_buy_price: float,
         current_price: float,
         sold_volume: float,
+        data: dict[str, list[dict[str, Any]]],
     ) -> None:
         entry_tracking = self._entry_tracking_by_market.get(market, {})
         state = self._position_exit_states.get(market)
-        now_at = datetime.now(timezone.utc)
+        latest_1m_candles = data.get("1m", [])
+        exit_time_at = datetime.now(timezone.utc)
+        if latest_1m_candles:
+            parsed_exit_time = self.candle_buffer.parse_candle_time(
+                latest_1m_candles[0]
+            )
+            if parsed_exit_time is not None:
+                exit_time_at = self._to_utc_aware(parsed_exit_time)
         entry_time = entry_tracking.get("entry_time")
         holding_minutes = 0.0
         if isinstance(entry_time, datetime):
             entry_time = self._to_utc_aware(entry_time)
-            holding_minutes = max(0.0, (now_at - entry_time).total_seconds() / 60.0)
+            holding_minutes = max(
+                0.0, (exit_time_at - entry_time).total_seconds() / 60.0
+            )
         elif state is not None:
             holding_minutes = float(
                 max(0, int(state.bars_held)) * max(1, int(self.config.candle_interval))
@@ -1161,6 +1417,42 @@ class TradingEngine:
             entry_score=self._safe_float(entry_tracking.get("entry_score"), 0.0),
             entry_regime=str(entry_tracking.get("regime", "unknown") or "unknown"),
             daily_realized_pnl_krw=self._daily_realized_pnl_krw(),
+        )
+        exit_events = entry_tracking.get("exit_events")
+        if not isinstance(exit_events, list):
+            exit_events = []
+            entry_tracking["exit_events"] = exit_events
+        stop_snapshot = {}
+        if state is not None:
+            stop_snapshot = {
+                "entry_price": float(state.entry_price),
+                "initial_stop_price": float(state.initial_stop_price),
+                "risk_per_unit": float(state.risk_per_unit),
+                "highest_r": float(state.highest_r),
+                "lowest_r": float(state.lowest_r),
+                "drawdown_from_peak_r": float(state.drawdown_from_peak_r),
+                "bars_held": int(state.bars_held),
+                "entry_regime": str(state.entry_regime),
+            }
+        exit_time = exit_time_at.isoformat()
+        exit_events.append(
+            self._json_safe(
+                {
+                    "reason": reason,
+                    "qty_ratio": float(qty_ratio),
+                    "holding_minutes": holding_minutes,
+                    "mfe_r": mfe_r,
+                    "mae_r": mae_r,
+                    "realized_r": realized_r,
+                    "fee_estimate_krw": fee_estimate,
+                    "slippage_estimate_krw": slippage_estimate,
+                    "daily_realized_pnl_krw": self._daily_realized_pnl_krw(),
+                    "exit_price": current_price,
+                    "exit_time": exit_time,
+                    "exit_candles": self._recent_trade_candle_context(data),
+                    "stop_snapshot": stop_snapshot,
+                }
+            )
         )
 
     def _daily_realized_pnl_krw(self) -> float:
