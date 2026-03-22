@@ -37,6 +37,9 @@ STRATEGY_PARAM_DEFAULT_OVERRIDES: dict[str, dict[str, int | float | str]] = {
         "trigger_mode": "balanced",
         "required_trigger_count": 2,
         "take_profit_r": 1.6,
+        "max_hold_bars": 24,
+        "stale_trade_max_bars": 8,
+        "stale_trade_min_progress_r": 0.5,
     },
 }
 
@@ -186,12 +189,17 @@ class TradingConfig:
     min_candles_1m: int = 80
     min_candles_5m: int = 30
     min_candles_15m: int = 40
+    min_candles_1h: int = 8
     regime_filter_enabled: bool = True
     regime_ema_fast: int = 50
     regime_ema_slow: int = 200
     regime_adx_period: int = 14
     regime_adx_min: float = 18.0
     regime_slope_lookback: int = 3
+    regime_1h_ema_fast: int = 4
+    regime_1h_ema_slow: int = 8
+    regime_1h_adx_period: int = 4
+    regime_1h_adx_min: float = 18.0
     zone_profile: str = "aggressive"
     reentry_cooldown_bars: int = 10
     cooldown_on_loss_exits_only: bool = False
@@ -241,6 +249,9 @@ class TradingConfig:
     partial_take_profit_r: float = 1.0
     partial_take_profit_size: float = 0.5
     move_stop_to_breakeven_after_partial: bool = True
+    trailing_activation_r: float = 1.0
+    stale_trade_max_bars: int = 0
+    stale_trade_min_progress_r: float = 0.0
     max_hold_bars: int = 0
     strategy_cooldown_bars: int = 0
 
@@ -377,12 +388,20 @@ class TradingConfig:
             min_candles_1m=self.min_candles_1m,
             min_candles_5m=self.min_candles_5m,
             min_candles_15m=self.min_candles_15m,
+            min_candles_1h=self.min_candles_1h,
             regime_filter_enabled=self.regime_filter_enabled,
             regime_ema_fast=self.regime_ema_fast,
             regime_ema_slow=self.regime_ema_slow,
             regime_adx_period=self.regime_adx_period,
             regime_adx_min=self.regime_adx_min,
             regime_slope_lookback=self.regime_slope_lookback,
+            regime_1h_ema_fast=self.regime_1h_ema_fast,
+            regime_1h_ema_slow=self.regime_1h_ema_slow,
+            regime_1h_adx_period=self.regime_1h_adx_period,
+            regime_1h_adx_min=self.regime_1h_adx_min,
+            trailing_activation_r=self.trailing_activation_r,
+            stale_trade_max_bars=self.stale_trade_max_bars,
+            stale_trade_min_progress_r=self.stale_trade_min_progress_r,
         )
         for override_key, override_value in {
             **strategy_default_overrides,

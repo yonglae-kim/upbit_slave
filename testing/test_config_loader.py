@@ -235,12 +235,17 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'min_candles_1m': 80,\n"
                 "    'min_candles_5m': 120,\n"
                 "    'min_candles_15m': 120,\n"
+                "    'min_candles_1h': 8,\n"
                 "    'regime_filter_enabled': True,\n"
                 "    'regime_ema_fast': 50,\n"
                 "    'regime_ema_slow': 200,\n"
                 "    'regime_adx_period': 14,\n"
                 "    'regime_adx_min': 18.0,\n"
                 "    'regime_slope_lookback': 3,\n"
+                "    'regime_1h_ema_fast': 4,\n"
+                "    'regime_1h_ema_slow': 8,\n"
+                "    'regime_1h_adx_period': 4,\n"
+                "    'regime_1h_adx_min': 18.0,\n"
                 "    'zone_profile': 'aggressive',\n"
                 "    'reentry_cooldown_bars': 10,\n"
                 "    'cooldown_on_loss_exits_only': False,\n"
@@ -288,6 +293,9 @@ class ConfigLoaderTest(unittest.TestCase):
                 "    'partial_take_profit_r': 1.0,\n"
                 "    'partial_take_profit_size': 0.5,\n"
                 "    'move_stop_to_breakeven_after_partial': True,\n"
+                "    'trailing_activation_r': 1.0,\n"
+                "    'stale_trade_max_bars': 0,\n"
+                "    'stale_trade_min_progress_r': 0.0,\n"
                 "    'max_hold_bars': 0,\n"
                 "    'strategy_cooldown_bars': 0\n"
                 "}\n",
@@ -345,6 +353,76 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.entry_score_threshold, 3.25)
         self.assertEqual(config.macd_cross_weight, 1.7)
         self.assertEqual(config.quality_multiplier_high, 1.3)
+
+    def test_ict_v1_accepts_zone_limit_entry_mode_from_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "dry_run",
+                "TRADING_STRATEGY_NAME": "ict_v1",
+                "TRADING_ENTRY_MODE": "zone_limit",
+            },
+            clear=False,
+        ):
+            config = load_trading_config()
+
+        self.assertEqual(config.entry_mode, "zone_limit")
+
+    def test_ict_v1_redesign_params_can_be_overridden_from_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "dry_run",
+                "TRADING_STRATEGY_NAME": "ict_v1",
+                "TRADING_TRAILING_ACTIVATION_R": "0.8",
+                "TRADING_STALE_TRADE_MAX_BARS": "6",
+                "TRADING_STALE_TRADE_MIN_PROGRESS_R": "0.4",
+                "TRADING_MIN_CANDLES_1H": "12",
+                "TRADING_REGIME_1H_EMA_FAST": "4",
+                "TRADING_REGIME_1H_EMA_SLOW": "12",
+                "TRADING_REGIME_1H_ADX_PERIOD": "6",
+                "TRADING_REGIME_1H_ADX_MIN": "15.0",
+            },
+            clear=False,
+        ):
+            config = load_trading_config()
+
+        self.assertEqual(config.trailing_activation_r, 0.8)
+        self.assertEqual(config.stale_trade_max_bars, 6)
+        self.assertEqual(config.stale_trade_min_progress_r, 0.4)
+        self.assertEqual(config.min_candles_1h, 12)
+        self.assertEqual(config.regime_1h_ema_fast, 4)
+        self.assertEqual(config.regime_1h_ema_slow, 12)
+        self.assertEqual(config.regime_1h_adx_period, 6)
+        self.assertEqual(config.regime_1h_adx_min, 15.0)
+
+    def test_ict_v1_strategy_defaults_enable_intraday_timeouts(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "dry_run",
+                "TRADING_STRATEGY_NAME": "ict_v1",
+            },
+            clear=False,
+        ):
+            config = load_trading_config()
+
+        params = config.to_strategy_params()
+        self.assertGreater(params.max_hold_bars, 0)
+        self.assertGreater(params.stale_trade_max_bars, 0)
+
+    def test_invalid_ict_v1_redesign_values_raise(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "dry_run",
+                "TRADING_STRATEGY_NAME": "ict_v1",
+                "TRADING_STALE_TRADE_MAX_BARS": "-1",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(ConfigValidationError):
+                load_trading_config()
 
     def test_candidate_strategy_uses_stricter_entry_threshold_default(self):
         with patch.dict(

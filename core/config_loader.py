@@ -78,12 +78,17 @@ _ENV_KEY_MAP = {
     "min_candles_1m": "TRADING_MIN_CANDLES_1M",
     "min_candles_5m": "TRADING_MIN_CANDLES_5M",
     "min_candles_15m": "TRADING_MIN_CANDLES_15M",
+    "min_candles_1h": "TRADING_MIN_CANDLES_1H",
     "regime_filter_enabled": "TRADING_REGIME_FILTER_ENABLED",
     "regime_ema_fast": "TRADING_REGIME_EMA_FAST",
     "regime_ema_slow": "TRADING_REGIME_EMA_SLOW",
     "regime_adx_period": "TRADING_REGIME_ADX_PERIOD",
     "regime_adx_min": "TRADING_REGIME_ADX_MIN",
     "regime_slope_lookback": "TRADING_REGIME_SLOPE_LOOKBACK",
+    "regime_1h_ema_fast": "TRADING_REGIME_1H_EMA_FAST",
+    "regime_1h_ema_slow": "TRADING_REGIME_1H_EMA_SLOW",
+    "regime_1h_adx_period": "TRADING_REGIME_1H_ADX_PERIOD",
+    "regime_1h_adx_min": "TRADING_REGIME_1H_ADX_MIN",
     "zone_profile": "TRADING_ZONE_PROFILE",
     "reentry_cooldown_bars": "TRADING_REENTRY_COOLDOWN_BARS",
     "cooldown_on_loss_exits_only": "TRADING_COOLDOWN_ON_LOSS_EXITS_ONLY",
@@ -133,6 +138,9 @@ _ENV_KEY_MAP = {
     "partial_take_profit_r": "TRADING_PARTIAL_TAKE_PROFIT_R",
     "partial_take_profit_size": "TRADING_PARTIAL_TAKE_PROFIT_SIZE",
     "move_stop_to_breakeven_after_partial": "TRADING_MOVE_STOP_TO_BREAKEVEN_AFTER_PARTIAL",
+    "trailing_activation_r": "TRADING_TRAILING_ACTIVATION_R",
+    "stale_trade_max_bars": "TRADING_STALE_TRADE_MAX_BARS",
+    "stale_trade_min_progress_r": "TRADING_STALE_TRADE_MIN_PROGRESS_R",
     "max_hold_bars": "TRADING_MAX_HOLD_BARS",
     "strategy_cooldown_bars": "TRADING_STRATEGY_COOLDOWN_BARS",
 }
@@ -202,10 +210,14 @@ def _parse_env_value(key: str, value: str):
         "min_candles_1m",
         "min_candles_5m",
         "min_candles_15m",
+        "min_candles_1h",
         "regime_ema_fast",
         "regime_ema_slow",
         "regime_adx_period",
         "regime_slope_lookback",
+        "regime_1h_ema_fast",
+        "regime_1h_ema_slow",
+        "regime_1h_adx_period",
         "reentry_cooldown_bars",
         "rsi_period",
         "bb_period",
@@ -216,6 +228,7 @@ def _parse_env_value(key: str, value: str):
         "pivot_left",
         "pivot_right",
         "double_bottom_lookback_bars",
+        "stale_trade_max_bars",
         "max_hold_bars",
         "strategy_cooldown_bars",
     }:
@@ -241,6 +254,7 @@ def _parse_env_value(key: str, value: str):
         "zone_reentry_buffer_pct",
         "trigger_rejection_wick_ratio",
         "regime_adx_min",
+        "regime_1h_adx_min",
         "rsi_long_threshold",
         "rsi_neutral_low",
         "rsi_neutral_high",
@@ -263,6 +277,8 @@ def _parse_env_value(key: str, value: str):
         "take_profit_r",
         "partial_take_profit_r",
         "partial_take_profit_size",
+        "trailing_activation_r",
+        "stale_trade_min_progress_r",
     }:
         return float(value)
     if key in {
@@ -447,12 +463,17 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "min_candles_1m": int,
         "min_candles_5m": int,
         "min_candles_15m": int,
+        "min_candles_1h": int,
         "regime_filter_enabled": bool,
         "regime_ema_fast": int,
         "regime_ema_slow": int,
         "regime_adx_period": int,
         "regime_adx_min": (int, float),
         "regime_slope_lookback": int,
+        "regime_1h_ema_fast": int,
+        "regime_1h_ema_slow": int,
+        "regime_1h_adx_period": int,
+        "regime_1h_adx_min": (int, float),
         "reentry_cooldown_bars": int,
         "cooldown_on_loss_exits_only": bool,
         "strategy_cooldown_bars": int,
@@ -502,6 +523,9 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "partial_take_profit_r": (int, float),
         "partial_take_profit_size": (int, float),
         "move_stop_to_breakeven_after_partial": bool,
+        "trailing_activation_r": (int, float),
+        "stale_trade_max_bars": int,
+        "stale_trade_min_progress_r": (int, float),
         "max_hold_bars": int,
     }
 
@@ -547,10 +571,14 @@ def _validate_schema(config: dict[str, Any]) -> None:
         "min_candles_1m",
         "min_candles_5m",
         "min_candles_15m",
+        "min_candles_1h",
         "regime_ema_fast",
         "regime_ema_slow",
         "regime_adx_period",
         "regime_slope_lookback",
+        "regime_1h_ema_fast",
+        "regime_1h_ema_slow",
+        "regime_1h_adx_period",
         "rsi_period",
         "bb_period",
         "macd_fast",
@@ -643,6 +671,12 @@ def _validate_schema(config: dict[str, Any]) -> None:
         )
     if config["regime_adx_min"] < 0:
         raise ConfigValidationError("regime_adx_min must be >= 0")
+    if config["regime_1h_ema_fast"] >= config["regime_1h_ema_slow"]:
+        raise ConfigValidationError(
+            "regime_1h_ema_fast must be smaller than regime_1h_ema_slow"
+        )
+    if config["regime_1h_adx_min"] < 0:
+        raise ConfigValidationError("regime_1h_adx_min must be >= 0")
     if config["reentry_cooldown_bars"] < 0:
         raise ConfigValidationError("reentry_cooldown_bars must be >= 0")
 
@@ -701,8 +735,17 @@ def _validate_schema(config: dict[str, Any]) -> None:
     ):
         if config[weight_key] < 0:
             raise ConfigValidationError(f"{weight_key} must be >= 0")
-    if config["entry_mode"] not in {"close", "next_open"}:
-        raise ConfigValidationError("entry_mode must be one of: close, next_open")
+    if config["entry_mode"] not in {"close", "next_open", "zone_limit"}:
+        raise ConfigValidationError(
+            "entry_mode must be one of: close, next_open, zone_limit"
+        )
+    if (
+        config["entry_mode"] == "zone_limit"
+        and _canonical_strategy_name(str(config["strategy_name"])) != "ict_v1"
+    ):
+        raise ConfigValidationError(
+            "entry_mode 'zone_limit' is only supported for ict_v1"
+        )
     if config["stop_mode_long"] not in {"swing_low", "lower_band", "conservative"}:
         raise ConfigValidationError(
             "stop_mode_long must be one of: swing_low, lower_band, conservative"
@@ -713,9 +756,17 @@ def _validate_schema(config: dict[str, Any]) -> None:
         raise ConfigValidationError("partial_take_profit_r must be > 0")
     if not 0 <= config["partial_take_profit_size"] <= 1:
         raise ConfigValidationError("partial_take_profit_size must be in [0, 1]")
-    if config["max_hold_bars"] < 0 or config["strategy_cooldown_bars"] < 0:
+    if config["trailing_activation_r"] < 0:
+        raise ConfigValidationError("trailing_activation_r must be >= 0")
+    if config["stale_trade_min_progress_r"] < 0:
+        raise ConfigValidationError("stale_trade_min_progress_r must be >= 0")
+    if (
+        config["stale_trade_max_bars"] < 0
+        or config["max_hold_bars"] < 0
+        or config["strategy_cooldown_bars"] < 0
+    ):
         raise ConfigValidationError(
-            "max_hold_bars and strategy_cooldown_bars must be >= 0"
+            "stale_trade_max_bars, max_hold_bars, and strategy_cooldown_bars must be >= 0"
         )
 
 

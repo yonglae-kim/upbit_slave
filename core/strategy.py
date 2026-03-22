@@ -47,12 +47,17 @@ class StrategyParams:
     min_candles_1m: int = 80
     min_candles_5m: int = 120
     min_candles_15m: int = 120
+    min_candles_1h: int = 8
     regime_filter_enabled: bool = False
     regime_ema_fast: int = 20
     regime_ema_slow: int = 50
     regime_adx_period: int = 14
     regime_adx_min: float = 20.0
     regime_slope_lookback: int = 3
+    regime_1h_ema_fast: int = 4
+    regime_1h_ema_slow: int = 8
+    regime_1h_adx_period: int = 4
+    regime_1h_adx_min: float = 18.0
     strategy_name: str = "sr_ob_fvg"
     rsi_period: int = 14
     rsi_long_threshold: float = 30.0
@@ -95,6 +100,9 @@ class StrategyParams:
     partial_take_profit_r: float = 1.0
     partial_take_profit_size: float = 0.5
     move_stop_to_breakeven_after_partial: bool = True
+    trailing_activation_r: float = 1.0
+    stale_trade_max_bars: int = 0
+    stale_trade_min_progress_r: float = 0.0
     max_hold_bars: int = 0
     strategy_cooldown_bars: int = 0
 
