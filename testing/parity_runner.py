@@ -126,6 +126,10 @@ class ParityRunner:
             atr_stop_mult=config.atr_stop_mult,
             atr_trailing_mult=config.atr_trailing_mult,
             swing_lookback=config.swing_lookback,
+            fee_rate=config.fee_rate,
+            trailing_activation_r=config.trailing_activation_r,
+            stale_trade_max_bars=config.stale_trade_max_bars,
+            stale_trade_min_progress_r=config.stale_trade_min_progress_r,
         )
 
         context = DecisionContext(

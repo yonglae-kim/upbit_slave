@@ -228,6 +228,10 @@ class BacktestRunner:
             atr_stop_mult=self.config.atr_stop_mult,
             atr_trailing_mult=self.config.atr_trailing_mult,
             swing_lookback=self.config.swing_lookback,
+            fee_rate=self.config.fee_rate,
+            trailing_activation_r=self.config.trailing_activation_r,
+            stale_trade_max_bars=self.config.stale_trade_max_bars,
+            stale_trade_min_progress_r=self.config.stale_trade_min_progress_r,
         )
         self.sell_decision_rule = str(sell_decision_rule).lower().strip()
         self.debug_mode = bool(debug_mode)

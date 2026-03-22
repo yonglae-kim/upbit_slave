@@ -162,6 +162,10 @@ class DecisionCoreTest(unittest.TestCase):
             atr_stop_mult=config.atr_stop_mult,
             atr_trailing_mult=config.atr_trailing_mult,
             swing_lookback=config.swing_lookback,
+            fee_rate=config.fee_rate,
+            trailing_activation_r=config.trailing_activation_r,
+            stale_trade_max_bars=config.stale_trade_max_bars,
+            stale_trade_min_progress_r=config.stale_trade_min_progress_r,
         )
 
     def _make_candidate_order_policy(self) -> PositionOrderPolicy:
@@ -177,6 +181,10 @@ class DecisionCoreTest(unittest.TestCase):
             atr_stop_mult=config.atr_stop_mult,
             atr_trailing_mult=config.atr_trailing_mult,
             swing_lookback=config.swing_lookback,
+            fee_rate=config.fee_rate,
+            trailing_activation_r=config.trailing_activation_r,
+            stale_trade_max_bars=config.stale_trade_max_bars,
+            stale_trade_min_progress_r=config.stale_trade_min_progress_r,
         )
 
     def _make_ict_params(self) -> StrategyParams:
@@ -196,6 +204,10 @@ class DecisionCoreTest(unittest.TestCase):
             atr_stop_mult=config.atr_stop_mult,
             atr_trailing_mult=config.atr_trailing_mult,
             swing_lookback=config.swing_lookback,
+            fee_rate=config.fee_rate,
+            trailing_activation_r=config.trailing_activation_r,
+            stale_trade_max_bars=config.stale_trade_max_bars,
+            stale_trade_min_progress_r=config.stale_trade_min_progress_r,
         )
 
     def _ready_candidate_debug(self, **overrides: object) -> dict[str, object]:
@@ -549,6 +561,46 @@ class DecisionCoreTest(unittest.TestCase):
         self.assertTrue(intent.next_position_state["strategy_partial_done"])
         self.assertTrue(intent.next_position_state["breakeven_armed"])
 
+    def test_ict_v1_fee_aware_breakeven_stop_flows_through_shared_seam(self):
+        context = DecisionContext(
+            strategy_name="ict_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": [candle(99.95, 100.15, 99.9, 100.05)],
+                    "15m": [candle(99.95, 100.15, 99.9, 100.05)],
+                },
+                price=100.05,
+                diagnostics={"current_atr": 1.0, "swing_low": 95.0},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 105.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 8,
+                    "strategy_partial_done": True,
+                    "breakeven_armed": True,
+                    "highest_r": 1.0,
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=500_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_ict_params(),
+            order_policy=self._make_ict_order_policy(),
+        )
+
+        self.assertEqual(intent.action, "exit_full")
+        self.assertEqual(intent.reason, "stop_loss")
+        self.assertTrue(float(intent.diagnostics["breakeven_floor_price"]) > 100.0)
+
     def test_ict_v1_tp2_strategy_exit_flows_through_shared_seam(self):
         context = DecisionContext(
             strategy_name="ict_v1",
@@ -589,6 +641,61 @@ class DecisionCoreTest(unittest.TestCase):
         self.assertEqual(intent.next_position_state["bars_held"], 0)
         self.assertFalse(intent.next_position_state["strategy_partial_done"])
         self.assertFalse(intent.next_position_state["breakeven_armed"])
+
+    def test_ict_v1_stale_trade_exit_flows_through_shared_seam(self):
+        config = TradingConfig(do_not_trading=[], strategy_name="ict_v1")
+        order_policy = PositionOrderPolicy(
+            stop_loss_threshold=config.stop_loss_threshold,
+            trailing_stop_pct=config.trailing_stop_pct,
+            partial_take_profit_threshold=config.partial_take_profit_threshold,
+            partial_take_profit_ratio=config.partial_take_profit_ratio,
+            partial_stop_loss_ratio=config.partial_stop_loss_ratio,
+            exit_mode=config.exit_mode,
+            atr_period=config.atr_period,
+            atr_stop_mult=config.atr_stop_mult,
+            atr_trailing_mult=config.atr_trailing_mult,
+            swing_lookback=config.swing_lookback,
+            fee_rate=config.fee_rate,
+            stale_trade_max_bars=8,
+            stale_trade_min_progress_r=0.5,
+        )
+        context = DecisionContext(
+            strategy_name="ict_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": [candle(101.4, 101.6, 101.3, 101.5)],
+                    "15m": [candle(101.4, 101.6, 101.3, 101.5)],
+                },
+                price=101.5,
+                diagnostics={"current_atr": 1.0, "swing_low": 95.0},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 102.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 8,
+                    "highest_r": 0.4,
+                    "lowest_r": 0.0,
+                    "entry_regime": "strong_trend",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=500_000.0, open_positions=1),
+        )
+
+        intent = evaluate_market(
+            context,
+            strategy_params=self._make_ict_params(),
+            order_policy=order_policy,
+        )
+
+        self.assertEqual(intent.action, "exit_full")
+        self.assertEqual(intent.reason, "stale_trade_time_exit")
 
     def test_legacy_baseline_alias_matches_canonical_baseline_through_seam(self):
         market = MarketSnapshot(

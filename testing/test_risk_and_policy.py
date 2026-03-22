@@ -310,13 +310,14 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertTrue(breakeven_stop.should_exit)
         self.assertEqual(breakeven_stop.reason, "stop_loss")
 
-    def test_ict_v1_strategy_partial_take_profit_arms_breakeven_stop(self):
+    def test_ict_v1_strategy_partial_take_profit_arms_fee_aware_breakeven_stop(self):
         policy = PositionOrderPolicy(
             stop_loss_threshold=0.95,
             trailing_stop_pct=0.0,
             partial_take_profit_threshold=1.05,
             partial_take_profit_ratio=0.0,
             partial_stop_loss_ratio=1.0,
+            fee_rate=0.0005,
         )
         state = PositionExitState(
             peak_price=100.0,
@@ -340,7 +341,7 @@ class RiskAndPolicyTest(unittest.TestCase):
         breakeven_stop = policy.evaluate(
             state=state,
             avg_buy_price=100.0,
-            current_price=100.0,
+            current_price=100.05,
             signal_exit=False,
             strategy_name="ict_v1",
             partial_take_profit_enabled=True,
@@ -355,6 +356,9 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertTrue(state.breakeven_armed)
         self.assertTrue(breakeven_stop.should_exit)
         self.assertEqual(breakeven_stop.reason, "stop_loss")
+        self.assertTrue(
+            float(breakeven_stop.diagnostics["breakeven_floor_price"]) > 100.0
+        )
 
     def test_candidate_mode_does_not_activate_trailing_on_bars_held_alone(self):
         policy = PositionOrderPolicy(
@@ -453,6 +457,263 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertTrue(promoted_decision.should_exit)
         self.assertEqual(promoted_decision.reason, "trailing_stop")
         self.assertEqual(promoted_decision.diagnostics["exit_stage"], "late_trailing")
+
+    def test_non_candidate_mode_does_not_trail_below_breakeven_before_1r(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            exit_mode="fixed_pct",
+        )
+        state = PositionExitState(
+            peak_price=103.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=24,
+            highest_r=0.6,
+            lowest_r=0.0,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=100.5,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="ict_v1",
+            partial_take_profit_enabled=True,
+            partial_take_profit_r=1.0,
+            partial_take_profit_size=0.5,
+            move_stop_to_breakeven_after_partial=True,
+        )
+
+        self.assertFalse(decision.should_exit)
+        self.assertNotEqual(decision.reason, "trailing_stop")
+        self.assertEqual(decision.diagnostics["exit_stage"], "mid_management")
+
+    def test_ict_v1_exits_stale_trade_without_progress(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            stale_trade_max_bars=8,
+            stale_trade_min_progress_r=0.5,
+        )
+        state = PositionExitState(
+            peak_price=102.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=8,
+            highest_r=0.4,
+            lowest_r=0.0,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=101.5,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="ict_v1",
+            partial_take_profit_enabled=True,
+            partial_take_profit_r=1.0,
+            partial_take_profit_size=0.5,
+            move_stop_to_breakeven_after_partial=True,
+        )
+
+        self.assertTrue(decision.should_exit)
+        self.assertEqual(decision.reason, "stale_trade_time_exit")
+
+    def test_ict_v1_does_not_stale_exit_once_protection_is_secured(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            stale_trade_max_bars=8,
+            stale_trade_min_progress_r=0.5,
+        )
+        state = PositionExitState(
+            peak_price=102.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=8,
+            highest_r=0.4,
+            lowest_r=0.0,
+            breakeven_armed=True,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=101.5,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="ict_v1",
+            partial_take_profit_enabled=True,
+            partial_take_profit_r=1.0,
+            partial_take_profit_size=0.5,
+            move_stop_to_breakeven_after_partial=True,
+        )
+
+        self.assertFalse(decision.should_exit)
+        self.assertNotEqual(decision.reason, "stale_trade_time_exit")
+
+    def test_hard_stop_precedes_stale_trade_exit_for_ict_v1(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            stale_trade_max_bars=8,
+            stale_trade_min_progress_r=0.5,
+        )
+        state = PositionExitState(
+            peak_price=102.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=8,
+            highest_r=0.4,
+            lowest_r=-1.2,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=94.8,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="ict_v1",
+            partial_take_profit_enabled=True,
+            partial_take_profit_r=1.0,
+            partial_take_profit_size=0.5,
+            move_stop_to_breakeven_after_partial=True,
+        )
+
+        self.assertTrue(decision.should_exit)
+        self.assertEqual(decision.reason, "stop_loss")
+
+    def test_max_hold_bars_remains_absolute_timeout_after_stale_trade_window(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            stale_trade_max_bars=8,
+            stale_trade_min_progress_r=0.5,
+        )
+        state = PositionExitState(
+            peak_price=103.5,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=24,
+            highest_r=0.8,
+            lowest_r=0.0,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=102.5,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="ict_v1",
+            partial_take_profit_enabled=True,
+            partial_take_profit_r=1.0,
+            partial_take_profit_size=0.5,
+            move_stop_to_breakeven_after_partial=True,
+            max_hold_bars=24,
+        )
+
+        self.assertTrue(decision.should_exit)
+        self.assertEqual(decision.reason, "time_stop")
+
+    def test_hard_stop_precedes_max_hold_timeout(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+        )
+        state = PositionExitState(
+            peak_price=102.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=24,
+            highest_r=0.4,
+            lowest_r=-1.0,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=94.5,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="ict_v1",
+            partial_take_profit_enabled=True,
+            partial_take_profit_r=1.0,
+            partial_take_profit_size=0.5,
+            move_stop_to_breakeven_after_partial=True,
+            max_hold_bars=24,
+        )
+
+        self.assertTrue(decision.should_exit)
+        self.assertEqual(decision.reason, "stop_loss")
+
+    def test_candidate_mode_ignores_ict_v1_stale_trade_rule(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.02,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            stale_trade_max_bars=8,
+            stale_trade_min_progress_r=0.5,
+        )
+        state = PositionExitState(
+            peak_price=102.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=8,
+            highest_r=0.4,
+            lowest_r=0.0,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=101.5,
+            signal_exit=False,
+            current_atr=1.0,
+            strategy_name="candidate_v1",
+            partial_take_profit_enabled=False,
+        )
+
+        self.assertFalse(decision.should_exit)
+        self.assertNotEqual(decision.reason, "stale_trade_time_exit")
 
     def test_candidate_exits_on_expired_failed_proof_without_symbol_lane(self):
         policy = PositionOrderPolicy(

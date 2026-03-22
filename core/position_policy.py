@@ -195,6 +195,10 @@ class PositionOrderPolicy:
         atr_stop_mult: float = 2.0,
         atr_trailing_mult: float = 1.0,
         swing_lookback: int = 5,
+        fee_rate: float = 0.0,
+        trailing_activation_r: float = 1.0,
+        stale_trade_max_bars: int = 0,
+        stale_trade_min_progress_r: float = 0.0,
     ):
         self.stop_loss_threshold = float(stop_loss_threshold)
         self.trailing_stop_pct = max(0.0, float(trailing_stop_pct))
@@ -210,6 +214,25 @@ class PositionOrderPolicy:
         self.atr_stop_mult = max(0.0, float(atr_stop_mult))
         self.atr_trailing_mult = max(0.0, float(atr_trailing_mult))
         self.swing_lookback = max(1, int(swing_lookback))
+        self.fee_rate = min(0.999999, max(0.0, float(fee_rate)))
+        self.trailing_activation_r = max(0.0, float(trailing_activation_r))
+        self.stale_trade_max_bars = max(0, int(stale_trade_max_bars))
+        self.stale_trade_min_progress_r = max(0.0, float(stale_trade_min_progress_r))
+
+    def _breakeven_floor_price(self, entry_price: float) -> float:
+        if entry_price <= 0:
+            return 0.0
+        if self.fee_rate <= 0:
+            return float(entry_price)
+        return float(entry_price) * ((1.0 + self.fee_rate) / (1.0 - self.fee_rate))
+
+    def _has_protective_room(self, state: PositionExitState) -> bool:
+        return bool(
+            state.breakeven_armed
+            or state.partial_take_profit_done
+            or state.strategy_partial_done
+            or state.highest_r >= self.trailing_activation_r
+        )
 
     def evaluate(
         self,
@@ -234,13 +257,9 @@ class PositionOrderPolicy:
         if state.entry_price <= 0:
             state.entry_price = float(avg_buy_price)
 
-        if max(0, int(max_hold_bars)) > 0 and max(0, int(state.bars_held)) >= int(
-            max_hold_bars
-        ):
-            return ExitDecision(True, 1.0, "time_stop")
-
         normalized_strategy_name = str(strategy_name).lower().strip()
         strategy_mode = normalized_strategy_name == "rsi_bb_reversal_long"
+        ict_mode = normalized_strategy_name == "ict_v1"
 
         strategy_partial_enabled = (
             normalized_strategy_name != "candidate_v1"
@@ -271,12 +290,20 @@ class PositionOrderPolicy:
             and self._has_proof_window_state(state)
             and not bool(state.proof_window_promoted)
         )
+        protective_room_secured = self._has_protective_room(state)
+        breakeven_floor_price = self._breakeven_floor_price(state.entry_price)
 
         exit_stage = "initial_defense"
         if state.highest_r >= 1.0 or (not candidate_mode and state.bars_held >= 8):
             exit_stage = "mid_management"
         if state.highest_r >= 2.0 or (not candidate_mode and state.bars_held >= 24):
             exit_stage = "late_trailing"
+        if (
+            not candidate_mode
+            and exit_stage == "late_trailing"
+            and not protective_room_secured
+        ):
+            exit_stage = "mid_management"
         if candidate_requires_proof_promotion:
             exit_stage = "initial_defense"
 
@@ -304,18 +331,18 @@ class PositionOrderPolicy:
                 if entry_defined_stop > 0:
                     hard_stop_price = max(hard_stop_price, entry_defined_stop)
                 if state.breakeven_armed or state.highest_r >= 1.5:
-                    hard_stop_price = max(hard_stop_price, state.entry_price)
+                    hard_stop_price = max(hard_stop_price, breakeven_floor_price)
             elif exit_stage in {"mid_management", "late_trailing"} and (
-                state.breakeven_armed or state.highest_r >= 1.0
+                state.breakeven_armed or state.highest_r >= self.trailing_activation_r
             ):
-                hard_stop_price = max(hard_stop_price, state.entry_price)
+                hard_stop_price = max(hard_stop_price, breakeven_floor_price)
 
         if (
             strategy_partial_enabled
             and state.breakeven_armed
             and move_stop_to_breakeven_after_partial
         ):
-            hard_stop_price = max(hard_stop_price, state.entry_price)
+            hard_stop_price = max(hard_stop_price, breakeven_floor_price)
 
         atr_to_risk = 0.0
         if state.risk_per_unit > 0 and current_atr > 0:
@@ -325,12 +352,17 @@ class PositionOrderPolicy:
             "exit_stage": exit_stage,
             "hard_stop_price": float(hard_stop_price),
             "entry_price": float(state.entry_price),
+            "breakeven_floor_price": float(breakeven_floor_price),
             "initial_stop_price": float(state.initial_stop_price),
             "stop_basis": str(state.stop_basis or "unknown"),
             "risk_per_unit": float(state.risk_per_unit),
             "atr_to_risk": float(atr_to_risk),
             "bars_held": float(max(0, int(state.bars_held))),
             "highest_r": float(state.highest_r),
+            "trailing_activation_r": float(self.trailing_activation_r),
+            "stale_trade_max_bars": float(self.stale_trade_max_bars),
+            "stale_trade_min_progress_r": float(self.stale_trade_min_progress_r),
+            "protective_room_secured": 1.0 if protective_room_secured else 0.0,
         }
 
         if (
@@ -396,6 +428,21 @@ class PositionOrderPolicy:
                 diagnostics=stop_diagnostics,
             )
 
+        if (
+            ict_mode
+            and not candidate_mode
+            and self.stale_trade_max_bars > 0
+            and max(0, int(state.bars_held)) >= self.stale_trade_max_bars
+            and float(state.highest_r) < self.stale_trade_min_progress_r
+            and not protective_room_secured
+        ):
+            return ExitDecision(
+                True,
+                1.0,
+                "stale_trade_time_exit",
+                diagnostics=stop_diagnostics,
+            )
+
         trailing_floor = 0.0
         if self.exit_mode == "atr":
             trailing_floor = self._atr_trailing_floor(state, current_atr)
@@ -413,6 +460,17 @@ class PositionOrderPolicy:
 
         if candidate_mode and exit_stage != "late_trailing":
             trailing_floor = 0.0
+
+        if (
+            not candidate_mode
+            and trailing_floor > 0
+            and not protective_room_secured
+            and state.highest_r < self.trailing_activation_r
+        ):
+            trailing_floor = 0.0
+
+        if trailing_floor > 0 and protective_room_secured:
+            trailing_floor = max(trailing_floor, breakeven_floor_price)
 
         if trailing_floor > 0 and current_price <= trailing_floor:
             return ExitDecision(
@@ -433,6 +491,11 @@ class PositionOrderPolicy:
                 if current_r < required_r:
                     return ExitDecision(False, diagnostics=stop_diagnostics)
             return ExitDecision(True, 1.0, "strategy_signal")
+
+        if max(0, int(max_hold_bars)) > 0 and max(0, int(state.bars_held)) >= int(
+            max_hold_bars
+        ):
+            return ExitDecision(True, 1.0, "time_stop", diagnostics=stop_diagnostics)
 
         return ExitDecision(False, diagnostics=stop_diagnostics)
 
