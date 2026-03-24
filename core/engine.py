@@ -255,6 +255,7 @@ class TradingEngine:
                 current_price=current_price,
                 sold_volume=preflight["order_value"],
                 data=data,
+                exit_diagnostics=intent.diagnostics,
             )
             if intent.action == "exit_full":
                 self._finalize_completed_trade_record(market)
@@ -1376,9 +1377,11 @@ class TradingEngine:
         current_price: float,
         sold_volume: float,
         data: dict[str, list[dict[str, Any]]],
+        exit_diagnostics: dict[str, Any] | None = None,
     ) -> None:
         entry_tracking = self._entry_tracking_by_market.get(market, {})
         state = self._position_exit_states.get(market)
+        diagnostics = dict(exit_diagnostics or {})
         latest_1m_candles = data.get("1m", [])
         exit_time_at = datetime.now(timezone.utc)
         if latest_1m_candles:
@@ -1423,6 +1426,13 @@ class TradingEngine:
             entry_score=self._safe_float(entry_tracking.get("entry_score"), 0.0),
             entry_regime=str(entry_tracking.get("regime", "unknown") or "unknown"),
             daily_realized_pnl_krw=self._daily_realized_pnl_krw(),
+            active_stop_price=self._safe_float(diagnostics.get("hard_stop_price")),
+            active_stop_mode=str(
+                diagnostics.get("active_stop_mode", "unknown") or "unknown"
+            ),
+            stop_recalc_allowed=self._safe_float(
+                diagnostics.get("stop_recalc_allowed"), 1.0
+            ),
         )
         exit_events = entry_tracking.get("exit_events")
         if not isinstance(exit_events, list):
@@ -1433,6 +1443,15 @@ class TradingEngine:
             stop_snapshot = {
                 "entry_price": float(state.entry_price),
                 "initial_stop_price": float(state.initial_stop_price),
+                "active_stop_price": self._safe_float(
+                    diagnostics.get("hard_stop_price"), state.initial_stop_price
+                ),
+                "active_stop_mode": str(
+                    diagnostics.get("active_stop_mode", "unknown") or "unknown"
+                ),
+                "stop_recalc_allowed": self._safe_float(
+                    diagnostics.get("stop_recalc_allowed"), 1.0
+                ),
                 "risk_per_unit": float(state.risk_per_unit),
                 "highest_r": float(state.highest_r),
                 "lowest_r": float(state.lowest_r),

@@ -356,9 +356,59 @@ class RiskAndPolicyTest(unittest.TestCase):
         self.assertTrue(state.breakeven_armed)
         self.assertTrue(breakeven_stop.should_exit)
         self.assertEqual(breakeven_stop.reason, "stop_loss")
+        self.assertGreater(
+            float(breakeven_stop.diagnostics["hard_stop_price"]),
+            float(breakeven_stop.diagnostics["initial_stop_price"]),
+        )
         self.assertTrue(
             float(breakeven_stop.diagnostics["breakeven_floor_price"]) > 100.0
         )
+
+    def test_ict_v1_keeps_initial_stop_until_strategy_partial_executes(self):
+        policy = PositionOrderPolicy(
+            stop_loss_threshold=0.95,
+            trailing_stop_pct=0.0,
+            partial_take_profit_threshold=1.05,
+            partial_take_profit_ratio=0.0,
+            partial_stop_loss_ratio=1.0,
+            exit_mode="atr",
+            atr_stop_mult=1.4,
+            atr_trailing_mult=2.0,
+            fee_rate=0.0005,
+            trailing_activation_r=1.0,
+            stale_trade_max_bars=8,
+            stale_trade_min_progress_r=0.5,
+        )
+        state = PositionExitState(
+            peak_price=103.0,
+            entry_price=100.0,
+            initial_stop_price=95.0,
+            entry_swing_low=99.0,
+            risk_per_unit=5.0,
+            entry_regime="strong_trend",
+            bars_held=7,
+            highest_r=0.6,
+            lowest_r=0.0,
+        )
+
+        decision = policy.evaluate(
+            state=state,
+            avg_buy_price=100.0,
+            current_price=98.5,
+            signal_exit=False,
+            current_atr=1.0,
+            swing_low=99.0,
+            strategy_name="ict_v1",
+            partial_take_profit_enabled=True,
+            partial_take_profit_r=1.0,
+            partial_take_profit_size=0.5,
+            move_stop_to_breakeven_after_partial=True,
+        )
+
+        self.assertFalse(decision.should_exit)
+        self.assertEqual(decision.reason, "hold")
+        self.assertEqual(float(decision.diagnostics["hard_stop_price"]), 95.0)
+        self.assertEqual(float(decision.diagnostics["stop_recalc_allowed"]), 0.0)
 
     def test_candidate_mode_does_not_activate_trailing_on_bars_held_alone(self):
         policy = PositionOrderPolicy(

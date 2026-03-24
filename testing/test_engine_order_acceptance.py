@@ -315,7 +315,13 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
             exit_intent = DecisionIntent(
                 action="exit_full",
                 reason="stop_loss",
-                diagnostics={"strategy_name": "baseline", "qty_ratio": 1.0},
+                diagnostics={
+                    "strategy_name": "baseline",
+                    "qty_ratio": 1.0,
+                    "hard_stop_price": 97.5,
+                    "active_stop_mode": "initial_stop_locked",
+                    "stop_recalc_allowed": 0.0,
+                },
                 next_position_state={},
             )
 
@@ -346,6 +352,14 @@ class TradingEngineOrderAcceptanceTest(unittest.TestCase):
             self.assertIn("Entry Candles:", text)
             self.assertIn("Exit Candles:", text)
             self.assertIn("PAYLOAD_JSON:", text)
+            payload_line = next(
+                line for line in text.splitlines() if line.startswith("PAYLOAD_JSON: ")
+            )
+            payload = json.loads(payload_line.removeprefix("PAYLOAD_JSON: "))
+            stop_snapshot = payload["exit_events"][0]["stop_snapshot"]
+            self.assertEqual(stop_snapshot["active_stop_price"], 97.5)
+            self.assertEqual(stop_snapshot["active_stop_mode"], "initial_stop_locked")
+            self.assertEqual(stop_snapshot["stop_recalc_allowed"], 0.0)
 
     def test_recent_trade_log_keeps_only_latest_ten_completed_trades(self):
         broker = BuyOnlyBroker()

@@ -599,7 +599,61 @@ class DecisionCoreTest(unittest.TestCase):
 
         self.assertEqual(intent.action, "exit_full")
         self.assertEqual(intent.reason, "stop_loss")
+        self.assertGreater(
+            float(intent.diagnostics["hard_stop_price"]),
+            float(intent.diagnostics["initial_stop_price"]),
+        )
         self.assertTrue(float(intent.diagnostics["breakeven_floor_price"]) > 100.0)
+
+    def test_ict_v1_pre_partial_exit_keeps_initial_stop_through_shared_seam(self):
+        strategy = RegisteredStrategy(
+            canonical_name="ict_v1",
+            entry_evaluator=Mock(),
+            exit_evaluator=Mock(return_value=False),
+            aliases=(),
+            metadata={},
+        )
+        context = DecisionContext(
+            strategy_name="ict_v1",
+            market=MarketSnapshot(
+                symbol="KRW-BTC",
+                candles_by_timeframe={
+                    "1m": [candle(98.7, 98.9, 98.4, 98.5)],
+                    "15m": [candle(98.7, 98.9, 98.4, 98.5)],
+                },
+                price=98.5,
+                diagnostics={"current_atr": 1.0, "swing_low": 99.0},
+            ),
+            position=PositionSnapshot(
+                market="KRW-BTC",
+                quantity=0.1,
+                entry_price=100.0,
+                state={
+                    "peak_price": 103.0,
+                    "entry_price": 100.0,
+                    "initial_stop_price": 95.0,
+                    "entry_swing_low": 99.0,
+                    "risk_per_unit": 5.0,
+                    "bars_held": 7,
+                    "highest_r": 0.6,
+                    "lowest_r": 0.0,
+                    "entry_regime": "strong_trend",
+                },
+            ),
+            portfolio=PortfolioSnapshot(available_krw=500_000.0, open_positions=1),
+        )
+
+        with patch("core.decision_core.get_strategy", return_value=strategy):
+            intent = evaluate_market(
+                context,
+                strategy_params=self._make_ict_params(),
+                order_policy=self._make_ict_order_policy(),
+            )
+
+        self.assertEqual(intent.action, "hold")
+        self.assertEqual(intent.reason, "hold")
+        self.assertEqual(float(intent.diagnostics["hard_stop_price"]), 95.0)
+        self.assertEqual(float(intent.diagnostics["stop_recalc_allowed"]), 0.0)
 
     def test_ict_v1_tp2_strategy_exit_flows_through_shared_seam(self):
         context = DecisionContext(

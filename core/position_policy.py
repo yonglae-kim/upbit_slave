@@ -267,6 +267,10 @@ class PositionOrderPolicy:
             and partial_take_profit_size > 0
             and partial_take_profit_r > 0
         )
+        partial_exit_taken = bool(
+            state.partial_take_profit_done or state.strategy_partial_done
+        )
+        stop_recalc_allowed = (not strategy_partial_enabled) or partial_exit_taken
 
         if strategy_partial_enabled and state.risk_per_unit <= 0:
             fallback_stop = (
@@ -320,7 +324,13 @@ class PositionOrderPolicy:
         ).strip().lower() not in {"", "unknown"}:
             entry_defined_stop = float(state.initial_stop_price)
 
-        if exit_stage == "initial_defense" and entry_defined_stop > 0:
+        if (
+            strategy_partial_enabled
+            and not stop_recalc_allowed
+            and state.initial_stop_price > 0
+        ):
+            hard_stop_price = float(state.initial_stop_price)
+        elif exit_stage == "initial_defense" and entry_defined_stop > 0:
             hard_stop_price = entry_defined_stop
         elif state.risk_per_unit > 0 and state.entry_price > 0:
             if exit_stage == "initial_defense":
@@ -338,7 +348,8 @@ class PositionOrderPolicy:
                 hard_stop_price = max(hard_stop_price, breakeven_floor_price)
 
         if (
-            strategy_partial_enabled
+            stop_recalc_allowed
+            and strategy_partial_enabled
             and state.breakeven_armed
             and move_stop_to_breakeven_after_partial
         ):
@@ -351,6 +362,13 @@ class PositionOrderPolicy:
         stop_diagnostics: dict[str, float | str] = {
             "exit_stage": exit_stage,
             "hard_stop_price": float(hard_stop_price),
+            "active_stop_mode": (
+                "initial_stop_locked"
+                if strategy_partial_enabled
+                and not stop_recalc_allowed
+                and state.initial_stop_price > 0
+                else "dynamic"
+            ),
             "entry_price": float(state.entry_price),
             "breakeven_floor_price": float(breakeven_floor_price),
             "initial_stop_price": float(state.initial_stop_price),
@@ -363,6 +381,8 @@ class PositionOrderPolicy:
             "stale_trade_max_bars": float(self.stale_trade_max_bars),
             "stale_trade_min_progress_r": float(self.stale_trade_min_progress_r),
             "protective_room_secured": 1.0 if protective_room_secured else 0.0,
+            "partial_exit_taken": 1.0 if partial_exit_taken else 0.0,
+            "stop_recalc_allowed": 1.0 if stop_recalc_allowed else 0.0,
         }
 
         if (
@@ -448,6 +468,9 @@ class PositionOrderPolicy:
             trailing_floor = self._atr_trailing_floor(state, current_atr)
         elif self.trailing_stop_pct > 0:
             trailing_floor = state.peak_price * (1 - self.trailing_stop_pct)
+
+        if strategy_partial_enabled and not stop_recalc_allowed:
+            trailing_floor = 0.0
 
         if (
             trailing_floor > 0
