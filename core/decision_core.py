@@ -12,7 +12,7 @@ from core.position_policy import (
 )
 from core.strategy import classify_market_regime, regime_filter_diagnostics
 from core.strategy import StrategyParams
-from core.strategies import candidate_v1, ict_v1
+from core.strategies import candidate_v1, ict_v1, nfi_v1
 from core.strategy_registry import RegisteredStrategy, get_strategy
 
 
@@ -352,6 +352,8 @@ def _normalize_entry_strategy_params(
         return candidate_v1.normalize_strategy_params(strategy_params)
     if strategy.name == ict_v1.STRATEGY_NAME:
         return ict_v1.normalize_strategy_params(strategy_params)
+    if strategy.name == nfi_v1.STRATEGY_NAME:
+        return nfi_v1.normalize_strategy_params(strategy_params)
     return strategy_params
 
 
@@ -360,6 +362,8 @@ def _normalize_exit_strategy_params(
 ) -> StrategyParams:
     if strategy.name == ict_v1.STRATEGY_NAME:
         return ict_v1.normalize_strategy_params(strategy_params)
+    if strategy.name == nfi_v1.STRATEGY_NAME:
+        return nfi_v1.normalize_strategy_params(strategy_params)
     return strategy_params
 
 

@@ -20,6 +20,15 @@ class StrategyRegistryTest(unittest.TestCase):
         self.assertTrue(callable(strategy.exit_evaluator))
         self.assertEqual(strategy.metadata["surface_module"], "core.strategies.ict_v1")
 
+    def test_lookup_nfi_v1_strategy(self):
+        strategy = get_strategy("nfi_v1")
+
+        self.assertEqual(strategy.name, "nfi_v1")
+        self.assertEqual(strategy.canonical_name, "nfi_v1")
+        self.assertTrue(callable(strategy.entry_evaluator))
+        self.assertTrue(callable(strategy.exit_evaluator))
+        self.assertEqual(strategy.metadata["surface_module"], "core.strategies.nfi_v1")
+
     def test_lookup_baseline_strategy(self):
         strategy = get_strategy("baseline")
 
@@ -81,6 +90,7 @@ class StrategyRegistryTest(unittest.TestCase):
         baseline = get_strategy("baseline")
         candidate = get_strategy("candidate_v1")
         ict_v1 = get_strategy("ict_v1")
+        nfi_v1 = get_strategy("nfi_v1")
         config = TradingConfig(do_not_trading=[], strategy_name="baseline")
         params = config.to_strategy_params()
 
@@ -89,10 +99,14 @@ class StrategyRegistryTest(unittest.TestCase):
             {"1m": [], "5m": [], "15m": []}, params
         )
         ict_result = ict_v1.entry_evaluator({"1m": [], "5m": [], "15m": []}, params)
+        nfi_result = nfi_v1.entry_evaluator(
+            {"1m": [], "5m": [], "15m": []}, params
+        )
 
         self.assertIsInstance(baseline_result, StrategySignal)
         self.assertIsInstance(candidate_result, StrategySignal)
         self.assertIsInstance(ict_result, StrategySignal)
+        self.assertIsInstance(nfi_result, StrategySignal)
 
 
 if __name__ == "__main__":

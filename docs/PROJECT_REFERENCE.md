@@ -3,9 +3,14 @@
 이 문서는 `upbit_slave` 저장소를 **빠르게 파악**하기 위한 요약 문서입니다.
 코드 변경 시 아래 "업데이트 규칙"에 따라 함께 최신화합니다.
 
+## 1-1) 2026-08 NFI-inspired 전략 변경 요약
+- 변경 요약: `NostalgiaForInfinity`의 일반 개념인 closed-candle multi-timeframe trend context, pullback reclaim, volume confirmation, signal tag, bounded long-only exit을 독립 구현한 opt-in `nfi_v1` 전략을 추가했습니다. 원본 Freqtrade 코드와 averaging-down/short 로직은 이식하지 않았습니다.
+- 영향 파일: `core/strategies/nfi_v1.py`, `core/strategy_registry.py`, `core/strategies/__init__.py`, `testing/test_nfi_strategy_v1.py`, `testing/test_strategy_registry.py`.
+- 실행/검증 방법 변경 여부: 기본 `ict_v1`는 유지됩니다. `TRADING_STRATEGY_NAME=nfi_v1`를 지정해 dry-run/backtest에서 선택하며, paper/live에서는 `TRADING_STRATEGY_DECISION_PATH` 승인 artifact가 필요합니다. `python -m unittest testing.test_nfi_strategy_v1 testing.test_strategy_registry testing.test_config_loader`로 검증합니다.
+
 ## 1) 실행 진입점
 - `main.py`: 실행 엔트리포인트
-- `core/config_loader.py`: 환경변수 기반 설정 로딩/검증. runtime promotion gate는 승인 대상 후보 전략(`candidate_v1`)에만 적용되며, `paper/live`에서만 `TRADING_STRATEGY_DECISION_PATH`의 decision artifact를 fail-closed로 검증한다. 현재 shared runtime seam에서 지원하는 selectable strategy는 `baseline`/`rsi_bb_reversal_long`/`candidate_v1`/`ict_v1`이며, 기본 active strategy는 `ict_v1`다. `baseline` 계열과 `ict_v1`는 ungated runtime strategy이고, `sr_ob_fvg`는 시작 전 config validation에서 reject된다. `dry_run`은 현재 정책상 candidate artifact gate 없이 전략 선택을 허용한다.
+- `core/config_loader.py`: 환경변수 기반 설정 로딩/검증. runtime promotion gate는 승인 대상 전략(`candidate_v1`, `nfi_v1`)에 적용되며, `paper/live`에서만 `TRADING_STRATEGY_DECISION_PATH`의 decision artifact를 fail-closed로 검증한다. 현재 shared runtime seam에서 지원하는 selectable strategy는 `baseline`/`rsi_bb_reversal_long`/`candidate_v1`/`ict_v1`/`nfi_v1`이며, 기본 active strategy는 `ict_v1`다. `baseline` 계열과 `ict_v1`는 ungated runtime strategy이고, `sr_ob_fvg`는 시작 전 config validation에서 reject된다. `dry_run`은 현재 정책상 artifact gate 없이 전략 선택을 허용한다.
 - `core/engine.py`: 실거래 adapter 엔진. raw market/portfolio/runtime snapshot만 조립해 `core.decision_core.evaluate_market`에 전달하고, seam이 돌려준 intent/sizing proposal을 기준으로 broker preflight/주문 실행/알림/정합성만 처리. 다만 live 메모리에 이전 청산 상태가 아직 없을 때의 bootstrap payload(`_default_position_state_payload`) 생성만 엔진 소유로 유지한다.
 - `testing/backtest_runner.py`: 백테스트 adapter. 진입/청산 판단은 `core.decision_core.evaluate_market`에 위임하고, backtest 쪽은 fill/slippage/fee accounting, ledger/segment CSV, stop diagnostics, `sell_decision_rule` 전달과 재진입 cooldown bookkeeping만 유지한다. 진입 context에는 live와 같은 market-damping seam을 위해 synthetic ticker diagnostics(`trade_price`, `ask_price`, `bid_price`, `acc_trade_price_24h`)도 함께 실어 backtest/live sizing divergence를 줄인다.
 - `testing/experiment_runner.py`: walk-forward 세그먼트 CSV와 parity artifact를 재사용해 후보 전략의 `promote/reject` decision artifact를 생성한다. OOS acceptance는 `testing/optimize_walkforward.py`의 scoring/threshold contract를 그대로 사용하고, parity gate는 후보 전략명과 parity artifact의 `strategy_name`이 일치할 때만 통과한다. 기본 parity fixture는 `testing/fixtures/parity_<strategy>_cases.json`가 있으면 그것을 자동 선택한다.
@@ -15,12 +20,13 @@
 ### Core
 - `core/config.py`: 트레이딩 설정 데이터 구조/기본값. 기본 전략 이름은 이제 `ict_v1`이며, `candidate_v1`는 전략 파라미터로 변환될 때만 stricter default `3.6`을 사용한다. `ict_v1`는 short-horizon 기본값(`regime_ema_fast=8`, `regime_ema_slow=24`, `trigger_mode=balanced`, `required_trigger_count=2`, `take_profit_r=1.6`) 위에서 deterministic ICT rule set을 사용하고, broader redesign 이후에는 `zone_limit`, `trailing_activation_r`, `stale_trade_*`, derived-`1h` regime params도 config surface에 노출된다. `ict_v1` strategy params는 non-zero `max_hold_bars=24`, `stale_trade_max_bars=8`, `stale_trade_min_progress_r=0.5` 기본값을 별도로 가진다.
 - `core/strategy.py`, `core/rsi_bb_reversal_long.py`: 기존 전략 인터페이스/구현과 SR/FVG/OB/trigger primitive library
-- `core/strategy_registry.py`: 전략 이름을 공유 전략 엔트리로 정규화/조회하는 레지스트리. `ict_v1`가 새 canonical runtime strategy로 등록됨
+- `core/strategy_registry.py`: 전략 이름을 공유 전략 엔트리로 정규화/조회하는 레지스트리. `ict_v1`와 opt-in `nfi_v1`가 canonical runtime strategy로 등록됨
 - `core/candidate_strategy_defaults.py`: `candidate_v1` proof-window 기본값과 bounded symbol-conditioned override를 별도 helper로 분리한 모듈. `core/config.py`와 `core/strategies/candidate_v1.py`가 같은 default source를 공유하면서 import cycle 없이 candidate-only state 기본값을 읽는다.
 - `core/decision_models.py`: 공유 의사결정용 순수 데이터 모델(`MarketSnapshot`, `DecisionIntent` 등)
 - `core/decision_core.py`: 전략 진입/청산 판단을 pure function 경계에서 평가하고 `DecisionIntent` + `next_position_state`를 반환하는 공유 decision core. `ict_v1` 청산 경로에서는 exit seam이 전략 파라미터를 정규화해 TP1 partial / breakeven / TP2 runner semantics가 shared `PositionOrderPolicy` 경계에 정확히 전달되도록 맞춘다. `candidate_v1` proof-window state propagation과 baseline/candidate alias semantics는 계속 유지한다.
 - `core/strategies/baseline.py`: 기존 `rsi_bb_reversal_long` 진입/청산 로직을 재사용하는 `baseline` 래퍼
 - `core/strategies/candidate_v1.py`: shared strategy seam 뒤에 붙는 regime-aware pullback continuation 후보 전략. promotion gate / proof-window semantics는 그대로 유지된다.
+- `core/strategies/nfi_v1.py`: NostalgiaForInfinity의 일반적 개념만 독립적으로 적용한 Upbit spot long 전략. `15m` higher-timeframe EMA 추세, `5m` pullback reclaim + 거래량 확인 + RSI, `1m` 실행가를 결합하고, entry tag/고정 stop/1.5R 이상 target 및 추세 실패 exit을 기록한다. NFI/Freqtrade 코드를 복사하지 않으며 averaging-down/short는 지원하지 않는다.
 - `core/strategies/ict_models.py`: `ict_v1` 전용 pure helper layer. Turtle Soup sweep/reclaim, Unicorn overlap, OTE pocket, Silver Bullet session-gated setup detection을 deterministic closed-candle rule로 계산한다. Unicorn long setup은 overlap 내부 진입이라도 상단 1/3 chase 구간이면 reject해 늦은 추격 진입을 줄인다.
 - `core/strategies/ict_sessions.py`: UTC candle timestamp를 New York local time으로 변환해 Silver Bullet windows(`03:00-04:00`, `10:00-11:00`, `14:00-15:00` NY local)를 판정한다. Python 3.9+에서는 `zoneinfo`, Python 3.8 배포 환경에서는 `pytz` fallback을 사용한다.
 - `core/strategies/ict_v1.py`: 기본 active ICT 전략. `15m` dealing range/OTE context, `5m` sweep/FVG/OB context, `1m` trigger를 조합해 Turtle Soup / Unicorn / Silver Bullet / OTE long setup을 동시에 평가하고 가장 높은 deterministic score의 setup 하나만 채택한다. broader redesign 이후에는 `15m` execution regime와 closed `15m` candle 4개씩을 합성한 derived `1h` bias가 모두 통과해야 하고, 선택된 setup은 setup validity와 execution-quality gate를 분리해서 평가한다. 선택된 setup의 model score는 `entry_score`로 기록되고 `TRADING_ENTRY_SCORE_THRESHOLD`를 실제 게이트로 적용하며, 정규화된 `quality_score`/`quality_bucket`은 low-quality hard skip 여부와 shared sizing seam 둘 다에 사용된다. 또한 `required_trigger_count`는 더 이상 dead config가 아니라 zone-touch + breakout + rejection count를 세는 execution trigger contract에 실제 반영되고, `TRADING_ENTRY_MODE=zone_limit`일 때는 Unicorn/Silver Bullet/OTE의 midpoint price를 preferred entry로 사용한다.
@@ -50,6 +56,9 @@ TRADING_MODE=dry_run python main.py
 
 # 테스트
 python -m unittest discover -s testing
+
+# NFI-inspired strategy registry/entry/exit 검증
+python -m unittest testing.test_nfi_strategy_v1 testing.test_strategy_registry
 
 # ict_v1 pure model / registry / config / exit / universe 검증
 python3 -m unittest testing.test_ict_models testing.test_ict_strategy_v1 testing.test_risk_and_policy testing.test_decision_core testing.test_universe testing.test_engine_universe_refresh testing.test_strategy_registry testing.test_config_loader
@@ -108,8 +117,8 @@ python3 -m testing.backtest_runner --market KRW-ETH --path testing/artifacts/bac
 
 ## 4) 환경변수 핵심 포인트
 - `TRADING_MODE`: `live | paper | dry_run`
-- `TRADING_STRATEGY_NAME`: 현재 shared runtime seam이 허용하는 값은 `baseline`, `candidate_v1`, `rsi_bb_reversal_long`, `ict_v1`다. 레지스트리는 `rsi_bb_reversal_long` 별칭을 `baseline` canonical identity로 정규화하고, `candidate_v1`/`ict_v1`는 별도 canonical 엔트리로 조회된다. 기본 runtime selection은 `ict_v1`이며, `sr_ob_fvg`는 레거시 research surface로만 남아 있고 runtime/backtest config selection에서는 reject된다. `StrategyParams.strategy_name` 자체는 canonical 이름을 유지함
-- `TRADING_STRATEGY_DECISION_PATH`: 승인 대상 후보 전략(`candidate_v1`)을 `paper/live`에서 실행할 때 필요한 promotion decision artifact 경로. baseline 계열(`baseline`, `rsi_bb_reversal_long`)과 `ict_v1`는 gate 대상이 아니며, `dry_run`도 현재 정책상 artifact 없이 실행 가능하다. Gate 대상 후보는 artifact의 `candidate_strategy`, `decision`, `oos_gate.pass`, `parity_gate.pass`, `parity_gate.strategy_name`, `parity_gate.expected_strategy_name`가 런타임 선택과 일치해야 하며, `oos_gate.pass`와 `parity_gate.pass`는 literal boolean `true`여야 한다
+ - `TRADING_STRATEGY_NAME`: 현재 shared runtime seam이 허용하는 값은 `baseline`, `candidate_v1`, `rsi_bb_reversal_long`, `ict_v1`, `nfi_v1`다. 레지스트리는 `rsi_bb_reversal_long` 별칭을 `baseline` canonical identity로 정규화하고, `candidate_v1`/`ict_v1`/`nfi_v1`는 별도 canonical 엔트리로 조회된다. 기본 runtime selection은 `ict_v1`이며, NFI-inspired 전략을 사용하려면 `TRADING_STRATEGY_NAME=nfi_v1`를 명시한다. `sr_ob_fvg`는 레거시 research surface로만 남아 있고 runtime/backtest config selection에서는 reject된다. `StrategyParams.strategy_name` 자체는 canonical 이름을 유지함
+- `TRADING_STRATEGY_DECISION_PATH`: 승인 대상 전략(`candidate_v1`, `nfi_v1`)을 `paper/live`에서 실행할 때 필요한 promotion decision artifact 경로. baseline 계열(`baseline`, `rsi_bb_reversal_long`)과 `ict_v1`는 gate 대상이 아니며, `dry_run`은 현재 정책상 artifact 없이 실행 가능하다. Gate 대상 전략은 artifact의 `candidate_strategy`, `decision`, `oos_gate.pass`, `parity_gate.pass`, `parity_gate.strategy_name`, `parity_gate.expected_strategy_name`가 런타임 선택과 일치해야 하며, `oos_gate.pass`와 `parity_gate.pass`는 literal boolean `true`여야 한다
 - `TRADING_MIN_ORDER_KRW`: 최소 주문금액 하한
 - `TRADING_MIN_BUYABLE_KRW`: 추가 버퍼(엔진 하한 계산 시 `max` 적용)
 - `TRADING_DO_NOT_TRADING`: 제외 심볼/마켓 목록(쉼표 구분)

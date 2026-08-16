@@ -152,7 +152,7 @@ class ConfigValidationError(ValueError):
 
 _PROMOTION_GATE_MODES = {"paper", "live"}
 _UNGATED_RUNTIME_STRATEGY_NAMES = {"baseline", "ict_v1"}
-_PROMOTION_GATED_CANDIDATES = {"candidate_v1"}
+_PROMOTION_GATED_CANDIDATES = {"candidate_v1", "nfi_v1"}
 
 
 def _default_config_path() -> Path:

@@ -76,6 +76,19 @@ class ConfigLoaderTest(unittest.TestCase):
             with self.assertRaises(ConfigValidationError):
                 load_trading_config()
 
+    def test_nfi_strategy_requires_decision_artifact_in_paper_mode(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TRADING_MODE": "paper",
+                "TRADING_STRATEGY_NAME": "nfi_v1",
+                "TRADING_STRATEGY_DECISION_PATH": "",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(ConfigValidationError):
+                load_trading_config()
+
     def test_candidate_strategy_does_not_require_decision_artifact_in_dry_run_mode(
         self,
     ):

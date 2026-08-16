@@ -5,7 +5,7 @@ from typing import Callable
 
 from core.decision_models import StrategySignal
 from core.strategy import StrategyParams
-from core.strategies import baseline, candidate_v1, ict_v1
+from core.strategies import baseline, candidate_v1, ict_v1, nfi_v1
 
 
 class UnknownStrategyError(ValueError):
@@ -57,6 +57,14 @@ _REGISTERED_STRATEGIES: dict[str, RegisteredStrategy] = {
         exit_evaluator=ict_v1.should_exit_long,
         metadata={
             "surface_module": "core.strategies.ict_v1",
+        },
+    ),
+    nfi_v1.STRATEGY_NAME: RegisteredStrategy(
+        canonical_name=nfi_v1.STRATEGY_NAME,
+        entry_evaluator=nfi_v1.evaluate_long_entry,
+        exit_evaluator=nfi_v1.should_exit_long,
+        metadata={
+            "surface_module": "core.strategies.nfi_v1",
         },
     ),
 }
