@@ -1,5 +1,11 @@
 # 프로젝트 참고 문서 (업데이트 기준 포함)
 
+## 교차시장 contrarian bounce 평가 전용 후보 (2026-08-26)
+
+- 변경 요약: `cross_sectional_contrarian_bounce` 평가 전용 후보를 추가하고, BTC gate가 `btc_gate_lookback`을 독립적으로 사용하도록 보정했습니다. 고정 8시장 공통 실제 timestamp 교집합에서 36봉 수익률, BTC 72봉 수익률 `>0`, 양수 시장 breadth `5/8` 이상, 최저 수익률 시장 `<=-0.005` 조건을 적용하고, close 진입·48봉 보유 또는 실제 저가 3% stop·fee/spread/slippage의 고정 양방향 비용·노출 `0.50`을 순서대로 계산합니다. manifest의 필수 키와 허용된 collection/evaluation metadata, 실제 데이터 provenance(`synthetic_rows` 정수 0, finite positive candle 및 low `<=` close)도 경계에서 검증하며, 알 수 없는 키는 거부합니다. 이 후보는 `evaluation_only`이며 runtime 전략 승격·promotion authority가 없습니다. live readiness를 의미하지 않습니다. 수정 전 contrarian evidence는 gate/provenance 결함을 포함하므로 superseded 처리해야 합니다.
+- 영향 파일: `testing/cross_sectional_contrarian_evaluation.py`, `testing/cross_sectional_contrarian_runner.py`, `testing/test_cross_sectional_contrarian_evaluation.py`, `testing/test_cross_sectional_contrarian_runner.py`, `docs/PROJECT_REFERENCE.md`. 이 후보 작업은 runtime/core 파일과 runtime registry를 변경하지 않았으며, 이는 다른 dirty worktree 변경이 없다는 의미가 아닙니다. `.omo` state 파일도 이 후보에서 변경하지 않았습니다.
+- 실행/검증 방법 변경 여부: 새 CLI 형식은 `py -3.8 -B -m testing.cross_sectional_contrarian_runner --manifest <manifest> --output <json> --window-start <UTC> --window-end <UTC> [--momentum-lookback <int>] [--hold-bars <int>] [--btc-gate-lookback <int>] [--btc-gate-threshold <float>] [--breadth-min <int>] [--selected-return-max <float>] [--stop-loss-pct <float>] [--exposure <float>] [--fee <float>] [--spread <float>] [--slippage <float>]`이며 창은 UTC 반열린 구간입니다. 검증은 offline unittest·`py_compile`·로컬 manifest 산출물만 사용하고 live/API/order 호출은 하지 않습니다. 이 문서는 evaluation-only 결과를 live readiness 또는 promotion 승인으로 해석하지 않습니다.
+
 이 문서는 `upbit_slave` 저장소를 **빠르게 파악**하기 위한 요약 문서입니다.
 코드 변경 시 아래 "업데이트 규칙"에 따라 함께 최신화합니다.
 
