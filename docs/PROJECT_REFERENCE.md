@@ -1,5 +1,17 @@
 # 프로젝트 참고 문서 (업데이트 기준 포함)
 
+## KRW 전체 유니버스 성능 안전 감시 구현 (2026-08-29)
+
+- 변경 요약: `core/engine.py`가 전체 KRW ticker의 `acc_trade_price_24h`를 이용해 먼저 순위를 정한 뒤 `universe_top_n1=30`개에만 1m·5m·15m 캔들을 조회하고, 최종 `low_spec_watch_cap_n2=10`개만 감시합니다. 유니버스 갱신에서 제거했던 전체 후보별 1m `count=10` fan-out을 다시 만들지 않으며, 갱신 시 읽은 전략 캔들을 같은 매수 사이클에서 재사용해 중복 REST 요청을 막습니다. `apis.py`의 market/ticker/candles public helper는 Upbit 응답의 `Remaining-Req.group`과 일치하는 독립 throttle 그룹(각 보수적 8 req/s)을 사용합니다. BTC는 계속 KRW 후보에 포함되고, `max_holdings=1`과 live authorization/promotion gate는 변경하지 않았습니다.
+- 영향 파일: `apis.py`, `core/engine.py`, `testing/test_apis.py`, `testing/test_engine_universe_refresh.py`, `docs/PROJECT_REFERENCE.md`. 기존 `config.py`의 BTC 포함 설정은 유지합니다.
+- 실행/검증 방법 변경 여부: 실행 CLI와 환경변수는 변경하지 않았습니다. Python 3.8에서 `py -3.8 -B -m unittest -q testing.test_apis testing.test_engine_universe_refresh` 24개와 변경 파일 `py_compile`이 통과했습니다. 288개 KRW 후보 기준 모델 fan-out은 기존 약 411회에서 첫 refresh+entry cycle 약 92회(시장 목록 최초 조회까지 포함하면 약 93회)로 줄고, refresh 이후 감시 사이클은 watch ticker 1회와 최대 30개 시장의 3주기 candle 조회로 31회 수준입니다. 공개 Upbit 10시장 probe는 ticker 1회와 candle 30회, 총 31회 요청에서 ticker HTTP 200·candle non-200 0건이었습니다. 이 probe와 회귀 테스트는 인증·주문·WebSocket 연결을 수행하지 않았습니다. Quotation candle/ticker의 공식 제한은 초당 10회이며 [Upbit 요청 수 제한](https://docs.upbit.com/kr/kr/reference/rate-limits)을 기준으로 `Remaining-Req`를 관찰합니다.
+
+## BTC KRW 마켓 포함 및 다중 마켓 스캔 용량 점검 (2026-08-28)
+
+- 변경 요약: 기본 `do_not_trading` 목록에서 `BTC`를 제거해 `KRW-BTC`가 KRW 유니버스 후보가 되도록 했습니다. 현재 엔진은 `universe_top_n1=30`으로 1차 선별하고 `low_spec_watch_cap_n2=10`개만 실제 감시하지만, 첫 유니버스 갱신 시 전체 KRW 후보의 1m 캔들을 거래대금 보조 지표로 조회한 뒤 최대 30개 시장의 1m·5m·15m 캔들을 추가 조회합니다. 따라서 BTC 포함 자체는 문제없지만 전체 후보를 무제한 스캔하는 구조는 아니며, REST 호출량과 지연이라는 성능 제약이 있습니다. `max_holdings=1` 및 live authorization/promotion gate는 변경하지 않았습니다.
+- 영향 파일: `config.py`, `testing/test_config.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: 실행 방식 변경은 없습니다. Python 3.8에서 설정·유니버스 회귀 12개가 통과했습니다. 2026-08-28 공개 Upbit API 점검에서 전체 849개 마켓 중 KRW 288개(`KRW-BTC` 포함)를 확인했고, 10개 시장의 ticker 1회와 1m·5m·15m candle 30회를 순차 요청해 총 31회, `12.452초`, ticker HTTP 200, candle non-200 0건을 기록했습니다. 현재 공식 rate limit은 Quotation `candle`/`ticker` 각 초당 10회이며, `Remaining-Req` 헤더를 기준으로 관리해야 합니다. 기존 `apis.py` 로컬 throttle은 public 호출을 `default=25/s`로 묶고 있어 거래소의 `candle`/`ticker` 그룹별 10/s 제한을 대체하지 않으므로, 전체 후보 스캔의 REST 지연·429 가능성은 남아 있습니다. 이 점검은 공개 시세 조회만 사용했고 인증·주문·WebSocket 연결은 수행하지 않았습니다. 상세 정책은 [Upbit 요청 수 제한](https://docs.upbit.com/kr/kr/reference/rate-limits)을 참조합니다.
+
 ## 교차시장 contrarian bounce 평가 전용 후보 (2026-08-26)
 
 - 변경 요약: `cross_sectional_contrarian_bounce` 평가 전용 후보를 추가하고, BTC gate가 `btc_gate_lookback`을 독립적으로 사용하도록 보정했습니다. 고정 8시장 공통 실제 timestamp 교집합에서 36봉 수익률, BTC 72봉 수익률 `>0`, 양수 시장 breadth `5/8` 이상, 최저 수익률 시장 `<=-0.005` 조건을 적용하고, close 진입·48봉 보유 또는 실제 저가 3% stop·fee/spread/slippage의 고정 양방향 비용·노출 `0.50`을 순서대로 계산합니다. manifest의 필수 키와 허용된 collection/evaluation metadata, 실제 데이터 provenance(`synthetic_rows` 정수 0, finite positive candle 및 low `<=` close)도 경계에서 검증하며, 알 수 없는 키는 거부합니다. 이 후보는 `evaluation_only`이며 runtime 전략 승격·promotion authority가 없습니다. live readiness를 의미하지 않습니다. 수정 전 contrarian evidence는 gate/provenance 결함을 포함하므로 superseded 처리해야 합니다.

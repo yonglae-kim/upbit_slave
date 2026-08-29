@@ -70,6 +70,9 @@ class TradingEngine:
         )
         self.last_universe_selection_result = None
         self._cached_watch_markets: list[str] = []
+        self._pending_entry_candles_by_market: dict[
+            str, dict[str, list[dict[str, Any]]]
+        ] = {}
         self._last_universe_refreshed_at: datetime | None = None
         self._universe_refresh_interval = timedelta(hours=1)
         self.risk = RiskManager(
@@ -294,20 +297,6 @@ class TradingEngine:
         self._try_buy(portfolio.available_krw, portfolio.held_markets, strategy_params)
         self._print_runtime_status(stage="cycle_complete", portfolio=portfolio)
 
-    def _compute_recent_trade_value_10m(self, market: str) -> float:
-        candles_1m = self.broker.get_candles(market, interval=1, count=10)
-        trade_value = 0.0
-        for candle in candles_1m:
-            candle_trade_value = self._safe_float(candle.get("candle_acc_trade_price"))
-            if candle_trade_value <= 0:
-                candle_trade_volume = self._safe_float(
-                    candle.get("candle_acc_trade_volume")
-                )
-                trade_price = self._safe_float(candle.get("trade_price"))
-                candle_trade_value = candle_trade_volume * trade_price
-            trade_value += max(0.0, candle_trade_value)
-        return trade_value
-
     def _refresh_watch_markets_if_needed(self) -> list[str]:
         now_at = datetime.now(timezone.utc)
         should_refresh = (
@@ -324,10 +313,6 @@ class TradingEngine:
         tickers_for_selection = [
             dict(ticker) for ticker in tickers if ticker.get("market")
         ]
-        for ticker in tickers_for_selection:
-            ticker["recent_trade_value_10m"] = self._compute_recent_trade_value_10m(
-                str(ticker.get("market"))
-            )
 
         pre_rank_builder = UniverseBuilder(
             replace(
@@ -353,6 +338,10 @@ class TradingEngine:
         )
 
         self._cached_watch_markets = list(universe_result.watch_markets)
+        self._pending_entry_candles_by_market = {
+            market: candles_by_market[market]
+            for market in universe_result.watch_markets
+        }
         self.last_universe_selection_result = universe_result
         self._last_universe_refreshed_at = now_at
         return list(self._cached_watch_markets)
@@ -373,8 +362,13 @@ class TradingEngine:
             for ticker in tickers
             if ticker.get("market")
         }
+        pending_entry_candles = self._pending_entry_candles_by_market
+        self._pending_entry_candles_by_market = {}
         candles_by_market = {
-            market: self._get_strategy_candles(market) for market in watch_markets
+            market: pending_entry_candles[market]
+            if market in pending_entry_candles
+            else self._get_strategy_candles(market)
+            for market in watch_markets
         }
 
         for market in watch_markets:

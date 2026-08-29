@@ -44,11 +44,9 @@ class ApiJwtNonceTest(unittest.TestCase):
         sys.modules.pop("apis", None)
         return importlib.import_module("apis")
 
-    @staticmethod
     def _fake_encode(payload, _secret, algorithm=None):
         return f"jwt-{payload['nonce']}"
 
-    @staticmethod
     def _fake_encode_bytes(payload, _secret, algorithm=None):
         return f"jwt-{payload['nonce']}".encode("utf-8")
 
@@ -112,6 +110,21 @@ class ApiJwtNonceTest(unittest.TestCase):
             "e3cfc649139c595e1c26a8aa2b3c8504f4b15011fc2b819081451e5e845172bd5dbbb5110ec5d7a3d1d32ff71f46a78323a040e8bedf8672021fd2206190a3a8",
         )
         self.assertEqual(payload["query_hash_alg"], "SHA512")
+
+    @patch("apis._session.request", return_value=DummyResponse())
+    @patch("apis._group_throttle.wait")
+    def test_public_quotation_helpers_route_to_distinct_rate_limit_groups(self, mock_wait, _mock_request):
+        # Given: representative public quotation helper inputs.
+        # When: each helper is invoked through the real throttle seam.
+        self.apis.get_markets()
+        self.apis.get_ticker("KRW-BTC")
+        self.apis.get_candles("KRW-BTC", count=1, candle_type="minutes/1")
+
+        # Then: each helper selects its observed Upbit rate-limit group.
+        self.assertEqual(
+            [call.args[0] for call in mock_wait.call_args_list],
+            ["market", "ticker", "candles"],
+        )
 
     @patch("apis._session.request", return_value=DummyResponse())
     @patch("apis.jwt.encode", side_effect=_fake_encode)

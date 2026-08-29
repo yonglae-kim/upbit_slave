@@ -1,5 +1,5 @@
 TRADING_CONFIG = {
-    "do_not_trading": ["BTC", "BASIC", "TSHP", "NXT"],
+    "do_not_trading": ["BASIC", "TSHP", "NXT"],
     "mode": "live",
     "paper_initial_krw": 1_000_000,
     "fee_rate": 0.0005,

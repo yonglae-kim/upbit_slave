@@ -69,6 +69,43 @@ class UniverseRefreshBroker:
         return {"state": "done"}
 
 
+class BoundedUniverseRefreshBroker(UniverseRefreshBroker):
+    def __init__(self):
+        super().__init__()
+        self.markets = [f"KRW-{index:03d}" for index in range(288)]
+
+    def get_ticker(self, markets):
+        selected = [market.strip() for market in str(markets).split(",") if market.strip()]
+        return [
+            {
+                "market": market,
+                "trade_price": 100.0,
+                "ask_price": 100.1,
+                "bid_price": 100.0,
+                "acc_trade_price_24h": float(len(self.markets) - self.markets.index(market)),
+            }
+            for market in selected
+        ]
+
+    def get_candles(self, market, interval, count=200):
+        self.candle_calls.append((market, interval, count))
+        if count == 10 and interval == 1:
+            return [
+                {"candle_acc_trade_price": 100.0, "trade_price": 100.0}
+                for _ in range(10)
+            ]
+        return [
+            {
+                "candle_date_time_utc": f"2024-01-01T00:0{index}:00",
+                "trade_price": 100.0,
+                "opening_price": 100.0,
+                "high_price": 100.0,
+                "low_price": 100.0,
+            }
+            for index in range(1, 4)
+        ]
+
+
 class DummyNotifier:
     def send(self, message: str):
         _ = message
@@ -76,31 +113,94 @@ class DummyNotifier:
 
 
 class TradingEngineUniverseRefreshTest(unittest.TestCase):
-    def test_universe_10m_scan_refreshes_hourly(self):
+    def test_universe_refresh_with_empty_or_small_candidate_set(self):
+        empty_broker = UniverseRefreshBroker()
+        empty_config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=[],
+            universe_top_n1=30,
+        )
+        empty_engine = TradingEngine(empty_broker, DummyNotifier(), empty_config)
+
+        self.assertEqual(empty_engine._refresh_watch_markets_if_needed(), [])
+        self.assertEqual(empty_broker.candle_calls, [])
+
+        small_broker = UniverseRefreshBroker()
+        small_candidates = ["KRW-A", "KRW-B"]
+        small_config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=small_candidates,
+            universe_top_n1=30,
+        )
+        small_engine = TradingEngine(small_broker, DummyNotifier(), small_config)
+
+        selected_markets = small_engine._refresh_watch_markets_if_needed()
+        self.assertEqual(set(selected_markets), set(small_candidates))
+        self.assertEqual(len(selected_markets), len(small_candidates))
+        self.assertEqual(
+            {call[0] for call in small_broker.candle_calls},
+            set(small_candidates),
+        )
+        self.assertEqual(len(small_broker.candle_calls), len(small_candidates) * 3)
+
+    def test_refresh_bounds_liquidity_candidates_and_reuses_entry_candles(self):
+        broker = BoundedUniverseRefreshBroker()
+        config = TradingConfig(
+            do_not_trading=[],
+            krw_markets=broker.markets,
+            universe_top_n1=30,
+            low_spec_watch_cap_n2=3,
+        )
+        engine = TradingEngine(broker, DummyNotifier(), config)
+
+        watch_markets = engine._refresh_watch_markets_if_needed()
+        refresh_strategy_calls = [
+            call for call in broker.candle_calls if call[2] == 200
+        ]
+
+        self.assertEqual(
+            [call for call in broker.candle_calls if call[1] == 1 and call[2] == 10],
+            [],
+        )
+        self.assertEqual(
+            {call[0] for call in refresh_strategy_calls},
+            set(broker.markets[: config.universe_top_n1]),
+        )
+        self.assertEqual(len(refresh_strategy_calls), config.universe_top_n1 * 3)
+
+        engine._try_buy(1_000_000.0, [], config.to_strategy_params())
+
+        entry_strategy_calls = [
+            call for call in broker.candle_calls if call[2] == 200
+        ]
+        self.assertEqual(entry_strategy_calls, refresh_strategy_calls)
+        self.assertEqual(watch_markets, broker.markets[: config.low_spec_watch_cap_n2])
+
+    def test_universe_refreshes_hourly(self):
         broker = UniverseRefreshBroker()
         config = TradingConfig(do_not_trading=[], krw_markets=["KRW-A", "KRW-B"])
         engine = TradingEngine(broker, DummyNotifier(), config)
 
         engine._refresh_watch_markets_if_needed()
-        first_scan_calls = [
-            call for call in broker.candle_calls if call[1] == 1 and call[2] == 10
+        first_strategy_calls = [
+            call for call in broker.candle_calls if call[2] == 200
         ]
-        self.assertEqual(len(first_scan_calls), 2)
+        self.assertEqual(len(first_strategy_calls), 6)
 
         engine._refresh_watch_markets_if_needed()
-        second_scan_calls = [
-            call for call in broker.candle_calls if call[1] == 1 and call[2] == 10
+        second_strategy_calls = [
+            call for call in broker.candle_calls if call[2] == 200
         ]
-        self.assertEqual(len(second_scan_calls), 2)
+        self.assertEqual(len(second_strategy_calls), 6)
 
         engine._last_universe_refreshed_at = datetime.now(timezone.utc) - timedelta(
             hours=1, minutes=1
         )
         engine._refresh_watch_markets_if_needed()
-        third_scan_calls = [
-            call for call in broker.candle_calls if call[1] == 1 and call[2] == 10
+        third_strategy_calls = [
+            call for call in broker.candle_calls if call[2] == 200
         ]
-        self.assertEqual(len(third_scan_calls), 4)
+        self.assertEqual(len(third_strategy_calls), 12)
 
     def test_universe_refresh_applies_ict_v1_ranking_overlay_when_candles_available(
         self,

@@ -35,9 +35,15 @@ def _parse_env_bool(value):
 UPBIT_API_DEBUG = _parse_env_bool(os.getenv("UPBIT_API_DEBUG"))
 
 API_GROUP_ORDER = "order"
+API_GROUP_MARKET = "market"
+API_GROUP_TICKER = "ticker"
+API_GROUP_CANDLES = "candles"
 API_GROUP_DEFAULT = "default"
 GROUP_SECOND_LIMITS = {
     API_GROUP_ORDER: 7,
+    API_GROUP_MARKET: 8,
+    API_GROUP_TICKER: 8,
+    API_GROUP_CANDLES: 8,
     API_GROUP_DEFAULT: 25,
 }
 MAX_RATE_LIMIT_RETRIES = 3
@@ -371,12 +377,12 @@ def get_accounts():
 
 def get_markets():
     querystring = {"isDetails": "false"}
-    return _request("GET", "/v1/market/all", params=querystring)
+    return _request("GET", "/v1/market/all", params=querystring, group=API_GROUP_MARKET)
 
 
 def get_ticker(markets):
     querystring = {"markets": markets}
-    return _request("GET", "/v1/ticker", params=querystring)
+    return _request("GET", "/v1/ticker", params=querystring, group=API_GROUP_TICKER)
 
 
 def load_default_krw_universe(excluded_keywords=None):
@@ -391,7 +397,12 @@ def get_candles(market="KRW-BTC", count=200, candle_type="days", to=None):
     if to:
         querystring["to"] = to
 
-    return _request("GET", "/v1/candles/" + candle_type, params=querystring)
+    return _request(
+        "GET",
+        "/v1/candles/" + candle_type,
+        params=querystring,
+        group=API_GROUP_CANDLES,
+    )
 
 
 def get_candles_minutes(market="KRW-BTC", count=200, interval=10):
