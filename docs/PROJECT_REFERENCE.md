@@ -1,5 +1,11 @@
 # 프로젝트 참고 문서 (업데이트 기준 포함)
 
+## OPC live 실행·bounded 로그 운영 계약 (2026-08-30)
+
+- 변경 요약: `apis.py`는 `UPBIT_ACCESS_KEY`·`UPBIT_SECRET_KEY` 환경변수만 authenticated API 서명에 사용하며, 값이 없으면 fail-closed 합니다. `core/runtime_logging.py`는 `RotatingFileHandler`로 기본 `runtime_logs/trading.log`에 파일당 5 MiB·백업 3개 상한을 적용합니다. `main.py`는 `--runtime-status`와 `--once`를 제공하며 live 주문은 명시 토큰·승격 게이트·kill switch를 모두 통과해야 합니다.
+- 영향 파일: `apis.py`, `core/config_loader.py`, `core/runtime_logging.py`, `core/runtime_readiness.py`, `core/engine.py`, `main.py`, `infra/upbit_broker.py`, `infra/upbit_ws_client.py`, `testing/test_bounded_logging.py`, `docs/PROJECT_REFERENCE.md`.
+- 실행/검증 방법 변경 여부: OPC에서 key/secret을 export한 뒤 `TRADING_LIVE_AUTHORIZATION=I_UNDERSTAND_REAL_TRADING python3.8 -B -m main --runtime-status`로 readiness를 확인하고, 승인된 설정은 `python3.8 -B -m main --once`로 한 cycle만 실행합니다. `TRADING_LOG_PATH`, `TRADING_LOG_MAX_BYTES`, `TRADING_LOG_BACKUP_COUNT`, `TRADING_LOG_LEVEL`로 로그 운영값을 조정할 수 있습니다. 실제 canary 주문은 readiness·잔고·주문 상태·사후 잔고를 별도로 확인해야 합니다.
+
 ## KRW 전체 유니버스 성능 안전 감시 구현 (2026-08-29)
 
 - 변경 요약: `core/engine.py`가 전체 KRW ticker의 `acc_trade_price_24h`를 이용해 먼저 순위를 정한 뒤 `universe_top_n1=30`개에만 1m·5m·15m 캔들을 조회하고, 최종 `low_spec_watch_cap_n2=10`개만 감시합니다. 유니버스 갱신에서 제거했던 전체 후보별 1m `count=10` fan-out을 다시 만들지 않으며, 갱신 시 읽은 전략 캔들을 같은 매수 사이클에서 재사용해 중복 REST 요청을 막습니다. `apis.py`의 market/ticker/candles public helper는 Upbit 응답의 `Remaining-Req.group`과 일치하는 독립 throttle 그룹(각 보수적 8 req/s)을 사용합니다. BTC는 계속 KRW 후보에 포함되고, `max_holdings=1`과 live authorization/promotion gate는 변경하지 않았습니다.

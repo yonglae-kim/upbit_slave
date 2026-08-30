@@ -154,6 +154,16 @@ _PROMOTION_GATE_MODES = {"paper", "live"}
 _UNGATED_RUNTIME_STRATEGY_NAMES = {"baseline", "ict_v1"}
 _PROMOTION_GATED_CANDIDATES = {"candidate_v1", "nfi_v1"}
 
+_LIVE_AUTHORIZATION_ENV_KEY = "TRADING_LIVE_AUTHORIZATION"
+_LIVE_AUTHORIZATION_TOKEN = "I_UNDERSTAND_REAL_TRADING"
+
+
+def _read_live_authorization() -> bool:
+    return (
+        os.getenv(_LIVE_AUTHORIZATION_ENV_KEY, "").strip()
+        == _LIVE_AUTHORIZATION_TOKEN
+    )
+
 
 def _default_config_path() -> Path:
     return Path(__file__).resolve().parent.parent / "config.py"
@@ -778,4 +788,12 @@ def load_trading_config() -> TradingConfig:
     raw_config.setdefault("recent_trade_log_path", "runtime_logs/recent_trades.txt")
     _validate_schema(raw_config)
     _validate_runtime_strategy_selection(raw_config)
-    return TradingConfig(**raw_config)
+    trading_config = TradingConfig(**raw_config)
+    setattr(trading_config, "live_authorization", _read_live_authorization())
+    setattr(
+        trading_config,
+        "runtime_promotion_allowed",
+        _canonical_strategy_name(str(raw_config.get("strategy_name", "")))
+        in _UNGATED_RUNTIME_STRATEGY_NAMES,
+    )
+    return trading_config

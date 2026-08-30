@@ -8,16 +8,12 @@ from urllib.parse import urlencode, unquote
 import jwt
 import requests
 
-import slave_constants
-
-# need to slave_constants.py
-# ex) slave_constants.py
-# ACCESS_KEY = 'your access key'
-# SECRET_KEY = 'your scret key'
-# SERVER_URL = 'https://api.upbit.com'
-access_key = slave_constants.ACCESS_KEY
-secret_key = slave_constants.SECRET_KEY
-server_url = slave_constants.SERVER_URL
+access_key = os.getenv("UPBIT_ACCESS_KEY", "").strip()
+secret_key = os.getenv("UPBIT_SECRET_KEY", "").strip()
+server_url = (
+    os.getenv("UPBIT_SERVER_URL", "https://api.upbit.com").strip()
+    or "https://api.upbit.com"
+)
 
 CONNECT_TIMEOUT = 3.05
 READ_TIMEOUT = 10
@@ -25,6 +21,18 @@ TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
 _session = requests.Session()
 _last_remaining_req = None
 _remaining_req_by_group = {}
+
+
+class CredentialConfigurationError(RuntimeError):
+    """Raised when authenticated Upbit API use lacks environment credentials."""
+
+    def __init__(self):
+        super().__init__("UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY are required")
+
+
+def _require_credentials():
+    if not access_key or not secret_key:
+        raise CredentialConfigurationError()
 
 
 def _parse_env_bool(value):
@@ -180,6 +188,7 @@ def _build_rate_limit_signal(status_code, payload, remaining_req, retry_after=No
 
 
 def _auth_headers(query=None):
+    _require_credentials()
     if UPBIT_API_DEBUG:
         if query is None:
             query_summary = None
@@ -219,7 +228,7 @@ def _mask_bearer_token(token):
     if not raw_token:
         return "Bearer ****"
 
-    return f"Bearer ****{raw_token[-8:]}"
+    return "Bearer ****"
 
 
 def _mask_headers_for_log(headers):
@@ -472,8 +481,14 @@ def cancel_order(order_uuid):
     )
 
 
-def get_order(order_uuid):
-    query = {"uuid": str(order_uuid)}
+def get_order(order_uuid=None, identifier=None):
+    query = {}
+    if order_uuid:
+        query["uuid"] = str(order_uuid)
+    elif identifier:
+        query["identifier"] = str(identifier)
+    else:
+        raise ValueError("order uuid or identifier is required")
     query_string = build_query_string(query)
     return _request(
         "GET",

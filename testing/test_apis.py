@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import importlib
 import hashlib
 import os
@@ -6,6 +8,22 @@ import types
 import unittest
 from collections import OrderedDict
 from unittest.mock import patch
+
+
+_MODULE_NAMES = ("jwt", "pandas", "requests", "slave_constants", "apis")
+_CREDENTIAL_ENV_NAMES = ("UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "UPBIT_SERVER_URL")
+
+
+def _restore_test_modules(module_baseline, module_present, env_present, env_value):
+    for name in _MODULE_NAMES:
+        if module_present[name]:
+            sys.modules[name] = module_baseline[name]
+        else:
+            sys.modules.pop(name, None)
+    if env_present:
+        os.environ["UPBIT_API_DEBUG"] = str(env_value)
+    else:
+        os.environ.pop("UPBIT_API_DEBUG", None)
 
 
 class DummyResponse:
@@ -22,6 +40,16 @@ class DummyResponse:
 class ApiJwtNonceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls._module_baseline = {name: sys.modules.get(name) for name in _MODULE_NAMES}
+        cls._module_baseline_present = {name: name in sys.modules for name in _MODULE_NAMES}
+        cls._env_baseline_present = "UPBIT_API_DEBUG" in os.environ
+        cls._env_baseline = os.environ.get("UPBIT_API_DEBUG")
+        cls._credential_env_baseline = {
+            name: os.environ.get(name) for name in _CREDENTIAL_ENV_NAMES
+        }
+        os.environ["UPBIT_ACCESS_KEY"] = "test-access-key"
+        os.environ["UPBIT_SECRET_KEY"] = "test-secret-key"
+        os.environ["UPBIT_SERVER_URL"] = "https://example.com"
         sys.modules["jwt"] = types.SimpleNamespace(encode=lambda payload, secret, algorithm=None: "")
         sys.modules["pandas"] = types.SimpleNamespace()
         fake_session = types.SimpleNamespace(request=lambda **kwargs: None)
@@ -33,6 +61,21 @@ class ApiJwtNonceTest(unittest.TestCase):
         )
         sys.modules["slave_constants"] = fake_constants
         cls.apis = cls._reload_apis_module(debug_env="0")
+
+    @classmethod
+    def tearDownClass(cls):
+        _restore_test_modules(
+            cls._module_baseline,
+            cls._module_baseline_present,
+            cls._env_baseline_present,
+            cls._env_baseline,
+        )
+        for name, value in cls._credential_env_baseline.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        super().tearDownClass()
 
     @classmethod
     def _reload_apis_module(cls, debug_env=None):
@@ -212,7 +255,8 @@ class ApiJwtNonceTest(unittest.TestCase):
         printed_messages = "\n".join(str(call.args[0]) for call in mock_print.call_args_list)
         self.assertIn("[UPBIT_API_DEBUG] REQUEST", printed_messages)
         self.assertIn("[UPBIT_API_DEBUG] RESPONSE", printed_messages)
-        self.assertIn("Authorization': 'Bearer ****23456789", printed_messages)
+        self.assertIn("Authorization': 'Bearer ****'", printed_messages)
+        self.assertNotIn("23456789", printed_messages)
         self.assertNotIn("abcdefghijklmnopqrstuvwxyz0123456789", printed_messages)
 
     def test_request_behavior_unchanged_when_debug_enabled(self):
@@ -260,6 +304,28 @@ class ApiJwtNonceTest(unittest.TestCase):
         self.apis.get_accounts()
 
         self.assertGreater(self.apis._group_throttle._circuit_open_until.get("default", 0), 0)
+
+
+class ApiModuleCleanupTest(unittest.TestCase):
+    def test_api_module_stubs_are_restored_after_api_tests(self):
+        module_baseline = {name: sys.modules.get(name) for name in _MODULE_NAMES}
+        module_present = {name: name in sys.modules for name in _MODULE_NAMES}
+        env_present = "UPBIT_API_DEBUG" in os.environ
+        env_value = os.environ.get("UPBIT_API_DEBUG")
+        ApiJwtNonceTest.setUpClass()
+        try:
+            self.assertIsNot(sys.modules["jwt"], module_baseline.get("jwt"))
+        finally:
+            ApiJwtNonceTest.tearDownClass()
+        for name in _MODULE_NAMES:
+            if module_present[name]:
+                self.assertIs(sys.modules.get(name), module_baseline[name])
+            else:
+                self.assertNotIn(name, sys.modules)
+        if env_present:
+            self.assertEqual(os.environ.get("UPBIT_API_DEBUG"), env_value)
+        else:
+            self.assertNotIn("UPBIT_API_DEBUG", os.environ)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,9 @@ from core.strategy import (
 )
 from core.universe import UniverseBuilder
 from infra.upbit_ws_client import UpbitWebSocketClient
+
+
+_RUNTIME_LOGGER = logging.getLogger("upbit_slave.engine")
 from message.notifier import Notifier, format_entry_summary, format_exit_summary
 
 
@@ -1283,7 +1287,9 @@ class TradingEngine:
 
     def _emit_structured_log(self, event_type: str, **fields) -> None:
         event = {"type": event_type, **fields}
-        print(json.dumps(event, ensure_ascii=False, sort_keys=True, default=str))
+        serialized = json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
+        print(serialized)
+        _RUNTIME_LOGGER.info("engine.event %s", serialized)
 
     def _log_entry_diagnostics(
         self,
@@ -1752,7 +1758,9 @@ class TradingEngine:
             "max_order_retries": self.max_order_retries,
             "state": order.state.value,
         }
-        print(json.dumps(event, ensure_ascii=False, sort_keys=True))
+        serialized = json.dumps(event, ensure_ascii=False, sort_keys=True)
+        print(serialized)
+        _RUNTIME_LOGGER.info("engine.event %s", serialized)
 
     def _get_market_trade_price(self, market: str) -> float:
         tickers = self.broker.get_ticker(market)

@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any, Callable, Dict
 
 import importlib
 import importlib.util
+from urllib.parse import urlsplit
+
+from infra.upbit_broker import UpbitAuthorizationError, UpbitLiveAuthorization
 
 if TYPE_CHECKING:
     import websocket
@@ -16,12 +19,47 @@ if TYPE_CHECKING:
 
 MessageHandler = Callable[[Dict[str, Any]], None]
 AuthHeadersProvider = Callable[[], Dict[str, str]]
+OFFICIAL_UPBIT_WS_HOSTS = frozenset(("api.upbit.com",))
+PRIVATE_UPBIT_WS_PATH = "/websocket/v1/private"
+
+
+class UpbitWebSocketEndpointError(ValueError):
+    """Raised when a private websocket endpoint is outside Upbit's contract."""
+
+    def __init__(self) -> None:
+        super().__init__("private websocket URL must use the official Upbit endpoint")
+
+
+def _validate_private_ws_url(url: str) -> str:
+    if not isinstance(url, str):
+        raise UpbitWebSocketEndpointError()
+
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as error:
+        raise UpbitWebSocketEndpointError() from error
+
+    if (
+        parsed.scheme != "wss"
+        or hostname not in OFFICIAL_UPBIT_WS_HOSTS
+        or port is not None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path != PRIVATE_UPBIT_WS_PATH
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise UpbitWebSocketEndpointError()
+    return url
 
 
 class UpbitWebSocketClient:
     def __init__(
         self,
         *,
+        authorization: UpbitLiveAuthorization | None = None,
         ws_url: str = "wss://api.upbit.com/websocket/v1",
         ping_interval_seconds: int = 30,
         idle_timeout_seconds: int = 120,
@@ -32,6 +70,9 @@ class UpbitWebSocketClient:
         private_ws_url: str = "wss://api.upbit.com/websocket/v1/private",
         auth_headers_provider: AuthHeadersProvider | None = None,
     ):
+        self._authorization = authorization
+        self._require_authorization("construction")
+
         self.ws_url = ws_url
         self.ping_interval_seconds = ping_interval_seconds
         self.idle_timeout_seconds = idle_timeout_seconds
@@ -39,7 +80,7 @@ class UpbitWebSocketClient:
         self.default_format = default_format
         self.on_message = on_message
         self.message_queue = message_queue
-        self.private_ws_url = private_ws_url
+        self.private_ws_url = _validate_private_ws_url(private_ws_url)
         self.auth_headers_provider = auth_headers_provider
 
         self._lock = threading.Lock()
@@ -52,11 +93,16 @@ class UpbitWebSocketClient:
         self._monitor_thread: threading.Thread | None = None
         self._ws_app: Any | None = None
 
+    def _require_authorization(self, operation: str) -> None:
+        if not isinstance(self._authorization, UpbitLiveAuthorization):
+            raise UpbitAuthorizationError(operation)
+
     @property
     def is_connected(self) -> bool:
         return self._connected_event.is_set()
 
     def connect(self) -> None:
+        self._require_authorization("connect")
         if self._loop_thread and self._loop_thread.is_alive():
             return
 
@@ -85,6 +131,7 @@ class UpbitWebSocketClient:
         is_private: bool = False,
         extra_payload: dict[str, Any] | None = None,
     ) -> None:
+        self._require_authorization("subscribe")
         selected_markets = markets or []
         payload = self._build_subscription_payload(
             subscription_type,
@@ -134,6 +181,8 @@ class UpbitWebSocketClient:
         ]
 
     def _build_private_auth_payload(self) -> dict[str, Any]:
+        self._require_authorization("private websocket authentication")
+        _validate_private_ws_url(self.private_ws_url)
         auth_headers_provider = self.auth_headers_provider or self._default_auth_headers_provider
         headers = auth_headers_provider() if auth_headers_provider else {}
         authorization = headers.get("Authorization") if isinstance(headers, dict) else None
@@ -142,6 +191,7 @@ class UpbitWebSocketClient:
         return {"authorizationToken": authorization}
 
     def _default_auth_headers_provider(self) -> dict[str, str]:
+        self._require_authorization("private websocket authentication")
         if importlib.util.find_spec("apis") is None:
             return {}
         apis_module = importlib.import_module("apis")
@@ -150,6 +200,7 @@ class UpbitWebSocketClient:
         return apis_module._auth_headers()
 
     def _run_connection_loop(self) -> None:
+        self._require_authorization("connect")
         while not self._stop_event.is_set():
             import websocket
 
@@ -209,13 +260,15 @@ class UpbitWebSocketClient:
 
     def _select_ws_url(self) -> str:
         if self._has_private_subscriptions():
-            return self.private_ws_url
+            return _validate_private_ws_url(self.private_ws_url)
         return self.ws_url
 
     def _build_ws_headers(self) -> list[str] | None:
+        self._require_authorization("websocket authentication headers")
         if not self._has_private_subscriptions():
             return None
 
+        _validate_private_ws_url(self.private_ws_url)
         auth_headers_provider = self.auth_headers_provider or self._default_auth_headers_provider
         headers = auth_headers_provider() if auth_headers_provider else {}
         authorization = headers.get("Authorization") if isinstance(headers, dict) else None
@@ -252,6 +305,7 @@ class UpbitWebSocketClient:
             self._send_payload(payload)
 
     def _send_payload(self, payload: list[dict[str, Any]]) -> None:
+        self._require_authorization("websocket operation")
         if not self.is_connected:
             return
 
