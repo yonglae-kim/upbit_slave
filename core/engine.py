@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from infra.upbit_ws_client import UpbitWebSocketClient
 
 
 _RUNTIME_LOGGER = logging.getLogger("upbit_slave.engine")
+_DEFAULT_RECENT_TRADE_LOG_MAX_BYTES = 1024 * 1024
 from message.notifier import Notifier, format_entry_summary, format_exit_summary
 
 
@@ -747,6 +749,26 @@ class TradingEngine:
             return None
         return Path(path_value).expanduser()
 
+    @staticmethod
+    def _recent_trade_log_max_bytes() -> int:
+        raw_value = os.getenv("TRADING_RECENT_TRADE_LOG_MAX_BYTES", "").strip()
+        try:
+            return max(1, int(raw_value))
+        except ValueError:
+            return _DEFAULT_RECENT_TRADE_LOG_MAX_BYTES
+
+    @staticmethod
+    def _bound_recent_trade_log(text: str, max_bytes: int) -> str:
+        encoded = text.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return text
+        notice = "[recent trade log truncated to latest bytes]\n"
+        remaining = max(0, max_bytes - len(notice.encode("utf-8")))
+        tail = encoded[-remaining:].decode("utf-8", errors="ignore")
+        return (notice + tail).encode("utf-8")[:max_bytes].decode(
+            "utf-8", errors="ignore"
+        )
+
     def _load_recent_trade_records(self) -> list[dict[str, Any]]:
         path = self._recent_trade_log_path()
         if path is None or not path.exists():
@@ -916,7 +938,13 @@ class TradingEngine:
             )
             lines.append("")
 
-        path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        rendered_text = "\n".join(lines).rstrip() + "\n"
+        path.write_text(
+            self._bound_recent_trade_log(
+                rendered_text, self._recent_trade_log_max_bytes()
+            ),
+            encoding="utf-8",
+        )
 
     def _store_completed_trade_record(self, record: dict[str, Any]) -> None:
         self._recent_trade_records.append(self._json_safe(record))

@@ -2,9 +2,9 @@
 
 ## OPC live 실행·bounded 로그 운영 계약 (2026-08-30)
 
-- 변경 요약: `apis.py`는 `UPBIT_ACCESS_KEY`·`UPBIT_SECRET_KEY` 환경변수만 authenticated API 서명에 사용하며, 값이 없으면 fail-closed 합니다. `core/runtime_logging.py`는 `RotatingFileHandler`로 기본 `runtime_logs/trading.log`에 파일당 5 MiB·백업 3개 상한을 적용합니다. `main.py`는 `--runtime-status`와 `--once`를 제공하며 live 주문은 명시 토큰·승격 게이트·kill switch를 모두 통과해야 합니다.
+- 변경 요약: `apis.py`는 `UPBIT_ACCESS_KEY`·`UPBIT_SECRET_KEY` 환경변수만 authenticated API 서명에 사용하며, 값이 없으면 fail-closed 합니다. `core/runtime_logging.py`는 `RotatingFileHandler`로 기본 `runtime_logs/trading.log`에 파일당 5 MiB·백업 3개 상한을 적용하고, 상세 `recent_trades.txt`도 기본 1 MiB 상한(`TRADING_RECENT_TRADE_LOG_MAX_BYTES` override)을 적용합니다. `main.py`는 `--runtime-status`와 `--once`를 제공하며 live 주문은 명시 토큰·승격 게이트·kill switch를 모두 통과해야 합니다.
 - 영향 파일: `apis.py`, `core/config_loader.py`, `core/runtime_logging.py`, `core/runtime_readiness.py`, `core/engine.py`, `main.py`, `infra/upbit_broker.py`, `infra/upbit_ws_client.py`, `testing/test_bounded_logging.py`, `docs/PROJECT_REFERENCE.md`.
-- 실행/검증 방법 변경 여부: OPC에서 key/secret을 export한 뒤 `TRADING_LIVE_AUTHORIZATION=I_UNDERSTAND_REAL_TRADING python3.8 -B -m main --runtime-status`로 readiness를 확인하고, 승인된 설정은 `python3.8 -B -m main --once`로 한 cycle만 실행합니다. `TRADING_LOG_PATH`, `TRADING_LOG_MAX_BYTES`, `TRADING_LOG_BACKUP_COUNT`, `TRADING_LOG_LEVEL`로 로그 운영값을 조정할 수 있습니다. 실제 canary 주문은 readiness·잔고·주문 상태·사후 잔고를 별도로 확인해야 합니다.
+- 실행/검증 방법 변경 여부: OPC에서 key/secret을 export한 뒤 `TRADING_LIVE_AUTHORIZATION=I_UNDERSTAND_REAL_TRADING python3.8 -B -m main --runtime-status`로 readiness를 확인하고, 승인된 설정은 `python3.8 -B -m main --once`로 한 cycle만 실행합니다. `TRADING_LOG_PATH`, `TRADING_LOG_MAX_BYTES`, `TRADING_LOG_BACKUP_COUNT`, `TRADING_LOG_LEVEL`, `TRADING_RECENT_TRADE_LOG_MAX_BYTES`로 로그 운영값을 조정할 수 있습니다. 실제 canary 주문은 readiness·잔고·주문 상태·사후 잔고를 별도로 확인해야 합니다.
 
 ## KRW 전체 유니버스 성능 안전 감시 구현 (2026-08-29)
 

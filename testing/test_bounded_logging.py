@@ -1,15 +1,28 @@
 import logging
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from core.engine import TradingEngine
 from core.runtime_logging import configure_runtime_logging
 
 
 class BoundedLoggingTest(unittest.TestCase):
+    def test_recent_trade_report_is_bounded_in_utf8_bytes(self):
+        source = "header\n" + ("거래내역\n" * 200)
+
+        with patch.dict(os.environ, {"TRADING_RECENT_TRADE_LOG_MAX_BYTES": "128"}):
+            bounded = TradingEngine._bound_recent_trade_log(
+                source, TradingEngine._recent_trade_log_max_bytes()
+            )
+
+        self.assertLessEqual(len(bounded.encode("utf-8")), 128)
+        self.assertIn("recent trade log truncated", bounded)
+
     def test_engine_structured_events_are_written_to_bounded_logger(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "trading.log"
