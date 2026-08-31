@@ -136,7 +136,7 @@ class GroupThrottle:
                     if remaining_sec <= 0:
                         dynamic_sleep = max(dynamic_sleep, 1.0 - elapsed)
                     elif remaining_sec <= 2:
-                        dynamic_sleep = max(dynamic_sleep, 0.12 * (3 - remaining_sec))
+                        dynamic_sleep = max(dynamic_sleep, 0.12 * (3 - remaining_sec) - elapsed)
 
                 sleep_seconds = max(sleep_seconds, local_window_sleep, dynamic_sleep)
 

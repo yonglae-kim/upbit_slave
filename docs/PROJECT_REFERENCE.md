@@ -6,6 +6,12 @@
 - 영향 파일: `apis.py`, `core/config_loader.py`, `core/runtime_logging.py`, `core/runtime_readiness.py`, `core/engine.py`, `main.py`, `infra/upbit_broker.py`, `infra/upbit_ws_client.py`, `testing/test_bounded_logging.py`, `docs/PROJECT_REFERENCE.md`.
 - 실행/검증 방법 변경 여부: OPC에서 key/secret을 export한 뒤 `TRADING_LIVE_AUTHORIZATION=I_UNDERSTAND_REAL_TRADING python3.8 -B -m main --runtime-status`로 readiness를 확인하고, 승인된 설정은 `python3.8 -B -m main --once`로 한 cycle만 실행합니다. `TRADING_LOG_PATH`, `TRADING_LOG_MAX_BYTES`, `TRADING_LOG_BACKUP_COUNT`, `TRADING_LOG_LEVEL`, `TRADING_RECENT_TRADE_LOG_MAX_BYTES`로 로그 운영값을 조정할 수 있습니다. 실제 canary 주문은 readiness·잔고·주문 상태·사후 잔고를 별도로 확인해야 합니다.
 
+## OPC 유니버스 수집 throttle deadlock 수정 (2026-08-31)
+
+- 변경 요약: `apis.py`의 `GroupThrottle`이 Upbit `Remaining-Req`의 낮은 `sec=1/2` 관측값을 고정적으로 재사용해 동일 요청 그룹을 무한 대기시키던 문제를 수정했습니다. 낮은 잔여량에 대한 0.12/0.24초 pacing delay가 관측 시각 기준으로 한 번만 적용되고 만료되므로, 첫 live cycle이 `scheduler.cycle_started` 뒤에 멈추지 않습니다. 기존 `universe_top_n1=30`의 최대 `1 + 30*3 = 91`개 순차 요청 비용과 시간 제한은 별도 성능 특성으로 유지됩니다.
+- 영향 파일: `apis.py`, `testing/test_group_throttle.py`, `docs/PROJECT_REFERENCE.md`. 주문·전략·live authorization/promotion gate는 변경하지 않았습니다.
+- 실행/검증 방법 변경 여부: CLI와 환경변수는 변경하지 않았습니다. Python 3.8에서 `py -3.8 -B -m unittest -v testing.test_group_throttle` 및 관련 API 회귀 테스트를 실행하고, OPC에서는 `python3.8 -B -m main --once`의 `one_cycle.completed`와 `scheduler.cycle_completed`를 확인합니다. live 진단 시 주문을 만들지 않도록 기존 잔고/보유 한도 및 readiness 게이트를 먼저 확인합니다.
+
 ## KRW 전체 유니버스 성능 안전 감시 구현 (2026-08-29)
 
 - 변경 요약: `core/engine.py`가 전체 KRW ticker의 `acc_trade_price_24h`를 이용해 먼저 순위를 정한 뒤 `universe_top_n1=30`개에만 1m·5m·15m 캔들을 조회하고, 최종 `low_spec_watch_cap_n2=10`개만 감시합니다. 유니버스 갱신에서 제거했던 전체 후보별 1m `count=10` fan-out을 다시 만들지 않으며, 갱신 시 읽은 전략 캔들을 같은 매수 사이클에서 재사용해 중복 REST 요청을 막습니다. `apis.py`의 market/ticker/candles public helper는 Upbit 응답의 `Remaining-Req.group`과 일치하는 독립 throttle 그룹(각 보수적 8 req/s)을 사용합니다. BTC는 계속 KRW 후보에 포함되고, `max_holdings=1`과 live authorization/promotion gate는 변경하지 않았습니다.
